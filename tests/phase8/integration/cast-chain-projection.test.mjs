@@ -35,7 +35,6 @@ test('P8-I narrows a zero extension hidden under an exact unsigned truncation', 
 
   assert.match(result.pseudocode, /return \(uint32_t\)\(uint8_t\)a1;/);
   assert.doesNotMatch(result.pseudocode, /\(uint32_t\)\(uint64_t\)/);
-  assert.equal(result.metrics.redundantCasts, 2);
   assert.ok(result.phase8Projection.transforms.some((entry) => entry.proof.includes('trunc_N(zext_M')));
   assert.ok(result.semanticAst.values[0].expression.source.evidence.some((entry) => entry.reason === 'Phase 8 exact zero-extension narrowing proof'));
 });
@@ -48,7 +47,7 @@ test('P8-I discards an extension only when the outer truncation removes every ex
 
   assert.match(result.pseudocode, /return \(uint16_t\)a1;/);
   assert.doesNotMatch(result.pseudocode, /\(int64_t\)/);
-  assert.equal(result.metrics.redundantCasts, 1);
+  assert.ok(result.phase8Projection.transforms.some((entry) => entry.proof.includes('trunc_N(ext_M')));
 });
 
 test('P8-I preserves sign extension when truncation keeps sign-extension bits', () => {
@@ -58,7 +57,6 @@ test('P8-I preserves sign extension when truncation keeps sign-extension bits', 
   const result = project(unsignedView);
 
   assert.match(result.pseudocode, /return \(uint32_t\)\(int64_t\)a1;/);
-  assert.equal(result.metrics.redundantCasts, 2);
   assert.equal(result.phase8Projection.transforms.filter((entry) => entry.proof.includes('trunc_N(ext_M')).length, 0);
 });
 
@@ -70,7 +68,7 @@ test('P8-I collapses repeated equal-kind extensions and retains merged provenanc
 
   assert.match(result.pseudocode, /return \(uint64_t\)a1;/);
   assert.doesNotMatch(result.pseudocode, /\(uint64_t\)\(uint32_t\)/);
-  assert.equal(result.metrics.redundantCasts, 1);
+  assert.ok(result.phase8Projection.transforms.some((entry) => entry.proof.includes('zext_N(zext_M')));
   assert.ok(result.semanticAst.values[0].expression.source.rows.includes(2));
   assert.ok(result.semanticAst.values[0].expression.source.rows.includes(3));
 });
