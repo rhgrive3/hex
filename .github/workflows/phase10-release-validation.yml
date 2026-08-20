@@ -1,7 +1,8 @@
 name: Phase 10 release validation
 
 # Permanent exact-product verifier for the Runtime Provider phase. Exact-SHA
-# dispatch prevents validation-only PRs (EP-012).
+# dispatch prevents validation-only PRs (EP-012). Broad repository validation
+# runs only at release boundaries; draft inner-loop pushes stay focused.
 on:
   push:
     branches:
@@ -19,7 +20,9 @@ on:
       - 'tests/runtime-evidence-fusion.mjs'
       - 'tools/validation/phase10/**'
       - '.github/workflows/phase10-release-validation.yml'
+      - 'package.json'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'js/runtime/**'
       - 'js/debug/**'
@@ -32,6 +35,7 @@ on:
       - 'tests/runtime-evidence-fusion.mjs'
       - 'tools/validation/phase10/**'
       - '.github/workflows/phase10-release-validation.yml'
+      - 'package.json'
   workflow_dispatch:
     inputs:
       sha:
@@ -54,16 +58,20 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.sha || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      - name: Resolve current main for ownership proof
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm ci --no-audit --no-fund
+      - name: Phase 10 ownership inventory
+        run: node tools/validation/phase10/ownership-check.mjs
       - name: Phase 10 exact-product verifier
         env:
           EXPECT_SHA: ${{ github.event.inputs.sha }}
@@ -74,6 +82,9 @@ jobs:
           if [ -n "${EXPECT_SHA:-}" ]; then args+=(--expect-sha "$EXPECT_SHA"); fi
           if [ "${SHADOW:-false}" = "true" ]; then args+=(--shadow); fi
           node tools/validation/phase10/verify.mjs "${args[@]}"
+      - name: Broad repository regression at release boundary
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
+        run: npm run check
       - name: Publish validated Phase 10 evidence
         if: success()
         uses: actions/upload-artifact@v4
