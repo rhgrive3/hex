@@ -10,7 +10,17 @@ const binaryId = 'bin_sha256_' + 'ef'.repeat(32);
 
 class DebugFixture extends DebugAdapter {
   constructor() { super({ id: 'debug-fixture', kind: 'lldb', capabilities: { modules: true, readRegisters: true, writeRegister: true } }); }
-  async getModules() { return [{ id: 'main', base: 0x7000n, size: 0x1000n, staticBase: 0x1000n }]; }
+  async getModules() {
+    return [{
+      id: 'main',
+      base: 0x7000n,
+      size: 0x1000n,
+      staticBase: 0x1000n,
+      binaryId,
+      identityState: 'exact',
+      identityEvidenceIds: ['fixture:provider-plane-debug-module-match'],
+    }];
+  }
   async readRegisters() { return { pc: 0x7010n }; }
   async writeRegister(name, value) { return { name, value }; }
 }
@@ -38,7 +48,15 @@ test('P10.I provider plane composes debugger, instrumentation, trace and emulato
     recordingId: 'trace:fixture',
     sourceProvider: 'fixture-tracer',
     binaryId,
-    modules: [{ bindingKey: 'main', runtimeBase: 0x7000n, runtimeSize: 0x1000n, staticBase: 0x1000n, binaryId }],
+    modules: [{
+      bindingKey: 'main',
+      runtimeBase: 0x7000n,
+      runtimeSize: 0x1000n,
+      staticBase: 0x1000n,
+      binaryId,
+      identityState: 'exact',
+      identityEvidenceIds: ['fixture:provider-plane-trace-module-match'],
+    }],
     events: [{ type: 'call', streamId: 't1', sequence: 1, moduleBindingKey: 'main', moduleGeneration: 1, payload: { target: 'helper' } }],
   }, { id: 'trace' });
   platform.registerEmulator(new EmulatorFixture(), { id: 'emulator' });
