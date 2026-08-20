@@ -94,7 +94,7 @@ jobs:
             cd "$BASE"
             node tools/validation/phase8/baseline.mjs --force
           )
-          cp "$BASE/tests/phase8/corpus/pre-phase8-observations.json tests/phase8/corpus/pre-phase8-observations.json"
+          cp "$BASE/tests/phase8/corpus/pre-phase8-observations.json" tests/phase8/corpus/pre-phase8-observations.json
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import { stableDigest } from './js/core/identity/index.js';
