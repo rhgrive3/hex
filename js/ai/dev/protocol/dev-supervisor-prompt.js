@@ -1,4 +1,5 @@
 import { DEV_SUPERVISOR_PROTOCOL } from './hex-dev-supervisor-v1.js';
+import { DEV_TOOL_CONTRACTS } from './dev-tool-contracts.js';
 import {
   DEV_RUNTIME_ACTIVATION_TOOL,
   DEV_RUNTIME_IDENTITY_TOOL,
@@ -201,50 +202,13 @@ function delegationLines(available) {
   return lines;
 }
 
+/* Rendered from the canonical registry, in registry order, so the prompt can
+   never describe a tool the surfaces do not expose or omit one they do. */
 function devToolContractLines(availableTools) {
   const available = new Set((availableTools || []).map(String));
-  const contracts = [
-    [DEV_RUNTIME_IDENTITY_TOOL, '{}'],
-    [DEV_RUNTIME_ACTIVATION_TOOL, '{"expectedCommit":"<merged 40-hex commit>","expectedBuildId":"<24-hex runtime buildId>","expectedUserscriptVersion":"<optional version>","capabilities":["<tool gated until activation>"],"reason":"<why the runtime must be reloaded>"}'],
-    ['worker.discover', '{}'],
-    ['worker.claim', '{}'],
-    ['worker.create_chat', '{}'],
-    ['worker.send', '{"instruction":"<specific task for the Worker>"}'],
-    ['worker.observe', '{}'],
-    ['worker.followup', '{"text":"<follow-up instruction>"}'],
-    ['worker.nudge', '{}'],
-    ['worker.stop', '{}'],
-    ['worker.result', '{}'],
-    ['worker.release', '{}'],
-    ['chatgpt.page.snapshot', '{"selectors":["<CSS selector>"],"includeHtml":false,"htmlSelector":"<CSS selector>","maxNodes":96,"maxHtmlChars":16384}'],
-    ['chatgpt.page.scripts', '{}'],
-    ['chatgpt.page.script_source', '{"index":0,"offset":0,"maxChars":24576,"needle":"<optional literal>","contextChars":768,"maxMatches":5}'],
-    ['chatgpt.skill.list', '{}'],
-    ['chatgpt.skill.describe', '{"skillId":"<skill id>"}'],
-    ['chatgpt.skill.install_candidate', '{"manifest":{"schema":"hex-dom-skill-v1","skillId":"<skill id>","version":"<version>","validationPrograms":["probe"],"programs":{"probe":{"version":1,"name":"probe","readOnly":true,"steps":[]}}}}'],
-    ['chatgpt.skill.validate_candidate', '{"skillId":"<skill id>","programs":["probe"]}'],
-    ['chatgpt.skill.activate', '{"skillId":"<skill id>"}'],
-    ['chatgpt.skill.rollback', '{"skillId":"<skill id>"}'],
-    ['chatgpt.skill.run', '{"skillId":"<skill id>","program":"<program>","args":{}}'],
-    ['worker.pool.status', '{}'],
-    ['worker.pool.provision', '{"size":"<how many Workers this work actually needs, up to 6>","projectUrl":"<optional ChatGPT Project URL>"}'],
-    ['worker.pool.claim', '{"taskId":"<task id>","wait":true}'],
-    ['worker.pool.create_chat', '{"leaseId":"<returned lease id>"}'],
-    ['worker.pool.start', '{"leaseId":"<returned lease id>","instruction":"<specific task>"}'],
-    ['worker.pool.observe', '{"leaseId":"<returned lease id>"}'],
-    ['worker.pool.result', '{"leaseId":"<returned lease id>"}'],
-    ['worker.pool.followup', '{"leaseId":"<returned lease id>","text":"<follow-up>"}'],
-    ['worker.pool.nudge', '{"leaseId":"<returned lease id>"}'],
-    ['worker.pool.stop', '{"leaseId":"<returned lease id>"}'],
-    ['worker.pool.release', '{"leaseId":"<returned lease id>"}'],
-    ['worker.graph.start', '{"graphId":"<optional graph id>","maxConcurrency":"<1-6, only as many Workers as the graph needs>","tasks":[{"id":"<task id>","dependencies":["<task id this one waits for>"],"instruction":"<specific task>","maxAttempts":"<1-5>","timeoutMs":"<omit for no deadline, or an explicit deadline in ms>"}]}'],
-    ['worker.graph.status', '{"graphId":"<returned graph id>"}'],
-    ['worker.graph.task_result', '{"graphId":"<returned graph id>","taskId":"<task id>"}'],
-    ['worker.graph.cancel', '{"graphId":"<returned graph id>","reason":"<why the graph is being cancelled>"}'],
-  ];
-  return contracts
-    .filter(([tool]) => available.has(tool))
-    .map(([tool, args]) => `- ${tool}: arguments=${args}`);
+  return DEV_TOOL_CONTRACTS
+    .filter((contract) => available.has(contract.publicName))
+    .map((contract) => `- ${contract.publicName}: arguments=${contract.argumentContract}`);
 }
 
 function safeJson(value) {
