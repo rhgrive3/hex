@@ -4,9 +4,9 @@ const MAX_PACKET_BYTES = 1024 * 1024;
 const MAX_ARRAY = 65536;
 const ALLOWED_TYPES = new Set(['hello','request','response','event','cancel']);
 const BLOCKED_METHODS = /^(exec|shell|spawn|system|hostCommand|runCommand)$/i;
-const WIRE_TAG = '__hex_wire_type__';
-const BIGINT_TAG = 'bigint';
-const BYTES_TAG = 'bytes-base64';
+export const WIRE_TAG = '__hex_wire_type__';
+export const BIGINT_TAG = 'bigint';
+export const BYTES_TAG = 'bytes-base64';
 
 function jsonByteSize(value) {
   let json;
@@ -65,6 +65,7 @@ export function encodeWireValue(value, depth = 0) {
     if (keys.length > 1024) throw new DebugAdapterError('malformed-packet', 'remote object has too many fields');
     const out = {};
     for (const key of keys) {
+      if (key === WIRE_TAG) throw new DebugAdapterError('malformed-packet', `remote packet contains reserved field: ${WIRE_TAG}`);
       if (key.length > 256) throw new DebugAdapterError('malformed-packet', 'remote field name is too long');
       const field = value[key];
       if (field === undefined || typeof field === 'function' || typeof field === 'symbol') throw new DebugAdapterError('malformed-packet', `remote field is not serializable: ${key}`);

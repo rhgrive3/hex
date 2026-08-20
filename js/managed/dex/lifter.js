@@ -96,10 +96,6 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
     opSeq++;
 
     const opId = createVMOperationId(methodId, codeUnitOffset, opSeq);
-    const origin = createOriginSet({
-      operationIds: [opId],
-      byteRanges: [{ start: opByteOffset, end: opByteOffset + 2 }],
-    });
 
     let mnemonic = 'unknown';
     let completeness = 'exact';
@@ -404,6 +400,11 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
         unknownEffects.push({ category: 'other', reason: `unsupported-dex-opcode-0x${opcode.toString(16)}` });
         break;
     }
+
+    const origin = createOriginSet({
+      operationIds: [opId],
+      byteRanges: [{ start: opByteOffset, end: opByteOffset + insnLen * 2 }],
+    });
 
     bundles.push(createVMEffectBundle({
       schemaVersion: 1,

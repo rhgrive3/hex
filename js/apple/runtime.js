@@ -34,10 +34,7 @@ export function shouldFoldRuntimeCall(name, opts = {}) {
 export function resolveObjcIMP(objcIndex, address, { receiverType = null, selector = null } = {}) {
   if (!objcIndex || address == null) return { resolved: null, candidates: [], confidence: 0 };
   let candidates = (objcIndex.methodsByIMP?.get(BigInt(address).toString()) || []).slice();
-  if (selector) {
-    const narrowed = candidates.filter((m) => m.selector === selector);
-    if (narrowed.length) candidates = narrowed;
-  }
+  if (selector) candidates = candidates.filter((m) => m.selector === selector);
   if (receiverType) {
     const type = String(receiverType).replace(/\s*\*+\s*$/, '');
     const chain = new Set();
@@ -46,8 +43,7 @@ export function resolveObjcIMP(objcIndex, address, { receiverType = null, select
       chain.add(cur);
       cur = objcIndex.classes?.get(cur)?.superName || null;
     }
-    const narrowed = candidates.filter((m) => chain.has(m.className));
-    if (narrowed.length) candidates = narrowed;
+    candidates = candidates.filter((m) => chain.has(m.className));
   }
   const unique = candidates.length === 1 ? candidates[0] : null;
   return {

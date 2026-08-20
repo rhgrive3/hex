@@ -19,6 +19,15 @@ function stringArray(value, name) {
   return Object.freeze([...new Set(value.map(String).filter(Boolean))].sort());
 }
 
+function optionalSequence(value) {
+  if (value == null) return null;
+  const sequence = Number(value);
+  if (!Number.isSafeInteger(sequence) || sequence < 0) {
+    throw new DebugAdapterError('runtime-invalid-intervention-sequence', 'intervention sequence must be a non-negative safe integer');
+  }
+  return sequence;
+}
+
 function completeness(value, fallback = 'partial') {
   const normalized = String(value ?? fallback);
   if (!EVIDENCE_COMPLETENESS.includes(normalized)) throw new DebugAdapterError('runtime-invalid-completeness', `invalid evidence completeness: ${normalized}`);
@@ -35,13 +44,14 @@ export function createInterventionRecord(input = {}) {
   const runtimeSessionId = required(input.runtimeSessionId, 'runtime-session-id-required', 'intervention requires runtimeSessionId');
   const providerId = required(input.providerId, 'runtime-provider-required', 'intervention requires providerId');
   const kind = required(input.kind, 'runtime-intervention-kind-required', 'intervention kind is required');
+  const sequence = optionalSequence(input.sequence);
   const identity = {
     runtimeSessionId,
     providerId,
     kind,
     target: input.target ?? null,
     requestedChange: input.requestedChange ?? null,
-    sequence: input.sequence ?? null,
+    sequence,
     parentInterventionIds: input.parentInterventionIds ?? [],
   };
   return deepFreeze({
@@ -52,7 +62,7 @@ export function createInterventionRecord(input = {}) {
     target: input.target ?? null,
     requestedChange: input.requestedChange ?? null,
     acknowledgedResult: input.acknowledgedResult ?? null,
-    sequence: input.sequence == null ? null : Number(input.sequence),
+    sequence,
     parentInterventionIds: stringArray(input.parentInterventionIds, 'parentInterventionIds'),
     evidenceIds: stringArray(input.evidenceIds, 'evidenceIds'),
   });

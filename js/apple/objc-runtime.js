@@ -259,13 +259,18 @@ export function objcMessage(index, { receiver, receiverType, selector, args = []
  */
 export function recognizeObjcBlockLiteral(fields, opts = {}) {
   const get = (off) => fields instanceof Map ? fields.get(off) : fields && (fields[off] ?? fields['0x' + off.toString(16)]);
-  const isa = get(0), flags = get(8), invoke = get(16), descriptor = get(24);
+  const pointerSize = opts.pointerSize === 4 ? 4 : 8;
+  const flagsOffset = pointerSize;
+  const invokeOffset = pointerSize + 8;
+  const descriptorOffset = invokeOffset + pointerSize;
+  const capturesOffset = descriptorOffset + pointerSize;
+  const isa = get(0), flags = get(flagsOffset), invoke = get(invokeOffset), descriptor = get(descriptorOffset);
   if (invoke == null) return null;
   const captures = [];
   const entries = fields instanceof Map ? [...fields.entries()] : Object.entries(fields || {}).map(([k, v]) => [Number(k), v]);
   for (const [rawOff, value] of entries) {
     const off = Number(rawOff);
-    if (Number.isFinite(off) && off >= 32) captures.push({ offset: off, value });
+    if (Number.isFinite(off) && off >= capturesOffset) captures.push({ offset: off, value });
   }
   captures.sort((a, b) => a.offset - b.offset);
   return {
@@ -273,7 +278,7 @@ export function recognizeObjcBlockLiteral(fields, opts = {}) {
     invoke, descriptor: descriptor ?? null, captures,
     text: `block(${captures.map((_, i) => `capture${i + 1}`).join(', ')})`,
     confidence: isa != null || descriptor != null ? 0.9 : 0.72,
-    evidence: ['Block_layout invoke pointer at +0x10'],
+    evidence: [`Block_layout invoke pointer at +0x${invokeOffset.toString(16)}`],
     address: opts.address ?? null,
   };
 }

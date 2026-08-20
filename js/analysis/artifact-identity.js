@@ -99,7 +99,7 @@ function assertNoPresentationState(config) {
   for (const key of Object.keys(config)) {
     if (FORBIDDEN_KEY_FIELDS.includes(key)) fail(`phase7-artifact-presentation-state-in-key:${key}`);
     const value = config[key];
-    if (value && typeof value === 'object' && !Array.isArray(value)) assertNoPresentationState(value);
+    if (value && typeof value === 'object') assertNoPresentationState(value);
   }
 }
 

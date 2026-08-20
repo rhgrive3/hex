@@ -352,7 +352,7 @@ export function divisorFromMagic(magic, shift, width) {
    ──────────────────────────────────────────────────────────── */
 
 /* 呼び出しで壊れるレジスタ（AAPCS64）。 */
-const CALL_CLOBBER = /^(x([0-9]|1[0-7])|v[0-7])$/;
+const CALL_CLOBBER = /^(x([0-9]|1[0-7])|v[0-7]|v1[6-9]|v2[0-9]|v3[0-1])$/;
 
 function regKeyOf(op) {
   if (!op || op.k !== 'reg') return null;

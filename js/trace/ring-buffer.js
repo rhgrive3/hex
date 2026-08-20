@@ -1,8 +1,18 @@
 import { boundedInteger } from '../debug/adapter.js';
 
 function estimateBytes(event) {
-  try { return JSON.stringify(event, (_,v) => typeof v === 'bigint' ? v.toString() : v).length * 2; }
-  catch { return 256; }
+  const seen = new WeakSet();
+  try {
+    return JSON.stringify(event, (_,v) => {
+      if (typeof v === 'bigint') return v.toString();
+      if (v && typeof v === 'object') {
+        if (seen.has(v)) return '[Circular]';
+        seen.add(v);
+      }
+      return v;
+    }).length * 2;
+  }
+  catch { return Number.POSITIVE_INFINITY; }
 }
 
 function cloneTraceValue(value, state = null, depth = 0) {

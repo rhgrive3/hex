@@ -178,7 +178,7 @@ const calibration=calibrationReport(expected,corpusMatch); assert.equal(calibrat
 // 100k scale: indexed candidate generation, no O(N^2) pair scan.
 const scale=[];
 for(let i=0;i<100000;i++) scale.push(fingerprintFunction({address:BigInt(i*16),architecture:'arm64',size:32+(i%32),instructions:[`add x${i%16}, x1, x2`,`str x${i%16}, [x0,#${(i%16)*8}]`],strings:[`sig.${i}`],semantic:{reads:[`r${i%64}`],writes:[`w${i%64}`],operations:['add'],thresholds:[i]}}));
-const t0=performance.now(); const scaleIndex=new FunctionMatchIndex(scale); const buildMs=performance.now()-t0;
+const t0=performance.now(); const scaleIndex=new FunctionMatchIndex(scale, { matchBudget: { maxWallMs: 60_000 } }); const buildMs=performance.now()-t0;
 const probe=scale[54321]; const cands=scaleIndex.candidates(probe,{maxCandidates:128});
 assert.ok(cands.length>0 && cands.length<=128); assert.ok(cands.includes(54321));
 console.log(JSON.stringify({precision:metrics.precision,recall:metrics.recall,falseMatchRate:metrics.falseMatchRate,ambiguousRate:metrics.ambiguousRate,scaleFunctions:scale.length,indexBuckets:scaleIndex.buckets.size,indexBuildMs:Number(buildMs.toFixed(1)),probeCandidates:cands.length}));

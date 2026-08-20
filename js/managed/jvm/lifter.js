@@ -59,10 +59,6 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     opSeq++;
 
     const opId = createVMOperationId(methodId, opOffset, opSeq);
-    const origin = createOriginSet({
-      operationIds: [opId],
-      byteRanges: [{ start: codeAttr.offset + opOffset, end: codeAttr.offset + pc }],
-    });
 
     let mnemonic = 'unknown';
     let completeness = 'exact';
@@ -370,6 +366,11 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
         unknownEffects.push({ category: 'other', reason: `unsupported-jvm-opcode-0x${opcode.toString(16)}` });
         break;
     }
+
+    const origin = createOriginSet({
+      operationIds: [opId],
+      byteRanges: [{ start: codeAttr.offset + opOffset, end: codeAttr.offset + pc }],
+    });
 
     bundles.push(createVMEffectBundle({
       schemaVersion: 1,

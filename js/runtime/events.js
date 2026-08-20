@@ -188,16 +188,14 @@ export class RuntimeEventNormalizer {
     const event = input?.runtimeSessionId ? createRuntimeEvent(input) : normalizeLegacyRuntimeEvent(input, this.context);
     if (event.sessionEpoch !== Number(this.context.sessionEpoch ?? event.sessionEpoch)) return null;
     const dedupe = dedupeIdentity(event);
-    if (dedupe) {
-      const scoped = `${event.sessionEpoch}:${dedupe}`;
-      if (this.#seen.has(scoped)) return null;
-      this.#seen.add(scoped);
-    }
+    const scoped = dedupe ? `${event.sessionEpoch}:${dedupe}` : null;
+    if (scoped && this.#seen.has(scoped)) return null;
     const bytes = stableStringify(event).length * 2;
     if (this.#queue.length >= this.maxEvents || this.queuedBytes + bytes > this.maxBytes) {
       this.#dropped++;
       return null;
     }
+    if (scoped) this.#seen.add(scoped);
     this.#queue.push(event);
     this.queuedBytes += bytes;
     return event;

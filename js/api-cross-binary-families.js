@@ -33,7 +33,13 @@ const EXTRA_API_TABLE = [
   { id:'libc_locale', re:/^_?(?:__maskrune|__toupper|localeconv|strftime|setlocale|tzset)$/, cat:'runtime', args:null, ret:null, effect:'read' },
 
   // Remaining scalar libm conversions/operations.
-  { id:'libm', re:/^_?(?:acosf?|asinf?|atanf?|tanf?|cosh|sinh|tanh|modff?|div|__exp10f)$/, cat:'runtime', args:null, ret:'number', effect:'read' },
+  { id:'libm', re:/^_?(?:acosf?|asinf?|atanf?|tanf?|cosh|sinh|tanh|__exp10f)$/, cat:'runtime', args:null, ret:'number', effect:'read' },
+
+  // C div routines returning struct div_t aggregate { quot, rem }
+  { id:'libc_div', re:/^_?(?:div|ldiv|lldiv|imaxdiv)$/, cat:'runtime', args:null, ret:'div_t', effect:'pure' },
+
+  // modf/modff decomposes floating point numbers and stores integer part via output pointer
+  { id:'libm_modf', re:/^_?modff?$/, cat:'runtime', args:null, ret:'number', effect:'write' },
 
   // Explicit C++ ABI exception helpers omitted by the older cxx_runtime regexp.
   { id:'cxx_runtime', re:/^_?__cxa_(?:bad_typeid|bad_cast|current_exception_type)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },

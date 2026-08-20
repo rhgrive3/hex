@@ -77,26 +77,38 @@ export class BinaryImage {
 
   addressToOffset(address) {
     const a = BigInt(address);
-    for (const s of this.segments) {
-      if (!inRange(a, s.address, s.fileSize)) continue;
-      return s.fileOffset + (a - s.address);
-    }
-    for (const s of this.sections) {
-      if (s.address === 0n || !inRange(a, s.address, s.fileSize)) continue;
-      return s.fileOffset + (a - s.address);
+    const owner = this._virtualMappingAt(a);
+    if (!owner) return null;
+    const delta = a - owner.address;
+    const fileSize = owner.fileSize ?? 0n;
+    if (delta < fileSize) {
+      return owner.fileOffset + delta;
     }
     return null;
   }
 
   offsetToAddress(offset) {
     const o = BigInt(offset);
-    for (const s of this.segments) {
-      if (!inRange(o, s.fileOffset, s.fileSize)) continue;
-      return s.address + (o - s.fileOffset);
-    }
+    const candidates = [];
     for (const s of this.sections) {
       if (s.address === 0n || !inRange(o, s.fileOffset, s.fileSize)) continue;
-      return s.address + (o - s.fileOffset);
+      candidates.push(s);
+    }
+    for (const s of this.segments) {
+      if (!inRange(o, s.fileOffset, s.fileSize)) continue;
+      candidates.push(s);
+    }
+    candidates.sort((a, b) => (a.size < b.size ? -1 : a.size > b.size ? 1 : 0));
+    for (const s of candidates) {
+      const a = s.address + (o - s.fileOffset);
+      const owner = this._virtualMappingAt(a);
+      if (owner) {
+        const delta = a - owner.address;
+        const fileSize = owner.fileSize ?? 0n;
+        if (delta < fileSize && (owner.fileOffset + delta) === o) {
+          return a;
+        }
+      }
     }
     return null;
   }

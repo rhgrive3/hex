@@ -38,10 +38,6 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
     }
 
     const opId = createVMOperationId(methodId, opOffset, opSeq);
-    const origin = createOriginSet({
-      operationIds: [opId],
-      byteRanges: [{ start: methodBody.headerOffset + opOffset, end: methodBody.headerOffset + pc }],
-    });
 
     let mnemonic = 'unknown';
     let completeness = 'exact';
@@ -210,37 +206,61 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
           controlEffects.push({ kind: 'return' });
           break;
 
-        // short branches: br.s (0x2B), brfalse.s (0x2C), brtrue.s (0x2D), beq.s (0x2E), bge.s (0x2F), bgt.s (0x30), ble.s (0x31), blt.s (0x32), bne.un.s (0x33)
+        // short branches: br.s (0x2B), brfalse.s (0x2C), brtrue.s (0x2D),
+        // beq.s (0x2E), bge.s (0x2F), bgt.s (0x30), ble.s (0x31), blt.s (0x32), bne.un.s (0x33),
+        // bge.un.s (0x34), bgt.un.s (0x35), ble.un.s (0x36), blt.un.s (0x37)
         case 0x2b: case 0x2c: case 0x2d: case 0x2e: case 0x2f: case 0x30: case 0x31: case 0x32: case 0x33:
+        case 0x34: case 0x35: case 0x36: case 0x37:
           {
             let offset = bytecode[pc++];
             if (offset >= 128) offset -= 256;
             const targetOffset = pc + offset;
-            const isUncond = opcode === 0x2b;
-            mnemonic = isUncond ? 'br.s' : opcode === 0x2c ? 'brfalse.s' : opcode === 0x2d ? 'brtrue.s' : 'bcond.s';
-            if (isUncond) {
+            if (opcode === 0x2b) {
+              mnemonic = 'br.s';
               controlEffects.push({ kind: 'branch', targetOffset });
-            } else {
+            } else if (opcode === 0x2c || opcode === 0x2d) {
+              mnemonic = opcode === 0x2c ? 'brfalse.s' : 'brtrue.s';
               consumedValues.push({ id: 'cond' });
               currentStackHeight--;
+              controlEffects.push({ kind: 'conditional-branch', targetOffset });
+            } else {
+              const shortNames = {
+                0x2e: 'beq.s', 0x2f: 'bge.s', 0x30: 'bgt.s', 0x31: 'ble.s', 0x32: 'blt.s',
+                0x33: 'bne.un.s', 0x34: 'bge.un.s', 0x35: 'bgt.un.s', 0x36: 'ble.un.s', 0x37: 'blt.un.s',
+              };
+              mnemonic = shortNames[opcode] || 'bcond.s';
+              consumedValues.push({ id: 'val1' }, { id: 'val2' });
+              currentStackHeight -= 2;
               controlEffects.push({ kind: 'conditional-branch', targetOffset });
             }
           }
           break;
 
-        // long branches: br (0x38), brfalse (0x39), brtrue (0x3A), beq (0x3B), bge (0x3C), bgt (0x3D), ble (0x3E), blt (0x3F), bne.un (0x40)
+        // long branches: br (0x38), brfalse (0x39), brtrue (0x3A),
+        // beq (0x3B), bge (0x3C), bgt (0x3D), ble (0x3E), blt (0x3F), bne.un (0x40),
+        // bge.un (0x41), bgt.un (0x42), ble.un (0x43), blt.un (0x44)
         case 0x38: case 0x39: case 0x3a: case 0x3b: case 0x3c: case 0x3d: case 0x3e: case 0x3f: case 0x40:
+        case 0x41: case 0x42: case 0x43: case 0x44:
           {
             const offset = view.getInt32(pc, true);
             pc += 4;
             const targetOffset = pc + offset;
-            const isUncond = opcode === 0x38;
-            mnemonic = isUncond ? 'br' : opcode === 0x39 ? 'brfalse' : opcode === 0x3a ? 'brtrue' : 'bcond';
-            if (isUncond) {
+            if (opcode === 0x38) {
+              mnemonic = 'br';
               controlEffects.push({ kind: 'branch', targetOffset });
-            } else {
+            } else if (opcode === 0x39 || opcode === 0x3a) {
+              mnemonic = opcode === 0x39 ? 'brfalse' : 'brtrue';
               consumedValues.push({ id: 'cond' });
               currentStackHeight--;
+              controlEffects.push({ kind: 'conditional-branch', targetOffset });
+            } else {
+              const longNames = {
+                0x3b: 'beq', 0x3c: 'bge', 0x3d: 'bgt', 0x3e: 'ble', 0x3f: 'blt',
+                0x40: 'bne.un', 0x41: 'bge.un', 0x42: 'bgt.un', 0x43: 'ble.un', 0x44: 'blt.un',
+              };
+              mnemonic = longNames[opcode] || 'bcond';
+              consumedValues.push({ id: 'val1' }, { id: 'val2' });
+              currentStackHeight -= 2;
               controlEffects.push({ kind: 'conditional-branch', targetOffset });
             }
           }
@@ -394,6 +414,11 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
           break;
       }
     }
+
+    const origin = createOriginSet({
+      operationIds: [opId],
+      byteRanges: [{ start: methodBody.headerOffset + opOffset, end: methodBody.headerOffset + pc }],
+    });
 
     bundles.push(createVMEffectBundle({
       schemaVersion: 1,

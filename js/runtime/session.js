@@ -66,7 +66,7 @@ export class DebugSession {
   acceptEvent(event) {
     if (this.closed) return false;
     if (event && event.epoch != null && Number(event.epoch) !== this.epoch) return false;
-    if (event && event.type === 'event' && event.event) this.traces.push(event.event); else if (event) this.traces.push(event);
+    if (event) this.traces.push(event);
     return true;
   }
   newEpoch() {

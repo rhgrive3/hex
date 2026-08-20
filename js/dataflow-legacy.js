@@ -339,7 +339,7 @@ const PASS_OPS = new Set(['mov', 'fmov', 'sxtw', 'uxtw', 'sxtb', 'uxtb', 'sxth',
 /* 呼び出しの直後の x0 は「呼んだ先が決めた値」。 */
 const RET_REG = 'x0';
 /* 呼び出しで壊れるレジスタ（AAPCS64）。x19〜x28 は呼ばれた側が元に戻す。 */
-const CALL_CLOBBERED = /^(x([0-9]|1[0-8])|v[0-7])$/;
+const CALL_CLOBBERED = /^(x([0-9]|1[0-8])|v[0-7]|v1[6-9]|v2[0-9]|v3[0-1])$/;
 
 /**
  * row 行の直前の時点で、レジスタ reg が持っていた値の出どころ。
