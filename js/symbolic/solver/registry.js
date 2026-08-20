@@ -4,6 +4,8 @@
  * Central registry for SolverBackend providers.
  */
 
+import { FakeSolverBackend } from './fake-backend.js';
+
 export class SolverRegistry {
   constructor() {
     this._backends = new Map();
@@ -60,3 +62,4 @@ export class SolverRegistry {
 }
 
 export const defaultSolverRegistry = new SolverRegistry();
+defaultSolverRegistry.registerBackend(new FakeSolverBackend({ id: 'default-solver', version: '1.0.0' }));

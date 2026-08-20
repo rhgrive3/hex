@@ -5,7 +5,7 @@
  * Provides deterministic hashing, explicit polarity, and structured targets.
  */
 
-import { createHash } from 'node:crypto';
+import { stableDigest } from '../../core/identity/index.js';
 import { computeStructuralHash } from '../expr/hash.js';
 import { createCompleteness } from '../translate/support-matrix.js';
 
@@ -77,7 +77,7 @@ export function createVerificationQuery({
     requestedOutputs: normalizedOutputs,
   });
 
-  const queryHash = createHash('sha256').update(hashPayload).digest('hex');
+  const queryHash = stableDigest(hashPayload);
 
   return Object.freeze({
     kind,

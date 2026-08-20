@@ -8,4 +8,5 @@ export const AI_TOOL_NAMES = Object.freeze([
   'lookup_known_function', 'lookup_signature', 'compare_functions', 'project_search',
   'get_observation_detail', 'get_evidence_detail',
   'get_runtime_observations', 'verify_runtime_hypothesis', 'get_binary_diff',
+  'verify_edge_feasibility', 'verify_bounded_equivalence', 'verify_patch_equivalence',
 ]);

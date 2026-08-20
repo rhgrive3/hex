@@ -7,7 +7,7 @@
  * Fails closed on invalid shapes, inconsistent preconditions, or solver failures.
  */
 
-import { createHash } from 'node:crypto';
+import { stableDigest } from '../../core/identity/index.js';
 import { SOLVER_STATUS, isSolverFailure } from '../solver/result.js';
 import { EXPR_SCHEMA_VERSION } from '../expr/serialize.js';
 import { COMPLETENESS_STATUS, createCompleteness } from '../translate/support-matrix.js';
@@ -44,7 +44,7 @@ export const VALIDATION_STATUS = Object.freeze({
 });
 
 function sha256Hex(data) {
-  return createHash('sha256').update(data).digest('hex');
+  return stableDigest(data);
 }
 
 function deepFreeze(obj) {

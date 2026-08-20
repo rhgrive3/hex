@@ -1,0 +1,15 @@
+{
+  "phase": 9,
+  "checkpoints": [
+    {
+      "id": "P9-FINAL",
+      "timestamp": "2026-08-20T10:28:58.090Z",
+      "result": "accepted",
+      "integrationSha": "149e44323f42226e0df517940ad0664d071aa071",
+      "integrationTreeSha": "adec92c45ae19139b632dac3b51afb16079309ab",
+      "evidenceDigest": "cd75dd2dba23684d6200fb9a8c275d977f556e632ef6a480d52715421ccff7e3",
+      "gatesPassed": 6,
+      "testFiles": 19
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "phase": 9,
+  "name": "Solver-backed Verification",
+  "contractVersion": "1.0.0",
+  "mandatoryCapabilities": [
+    "solver-neutral-expr-dag",
+    "pure-evaluator",
+    "bitvector-semantics",
+    "semantic-ir-translator",
+    "support-matrix",
+    "slicing-scaffolding",
+    "solver-backend-abstraction",
+    "status-taxonomy",
+    "sat-model-validator",
+    "vacuous-proof-guard",
+    "conditional-edge-feasibility",
+    "bounded-equivalence",
+    "patch-verification",
+    "symbolic-evidence-schema",
+    "version-safe-cache-policy"
+  ],
+  "gates": [
+    {
+      "id": "GATE-P9-EXPR",
+      "description": "Bool and BV fixed-width Expr DAG, pure evaluation, and structural equality",
+      "mandatory": true
+    },
+    {
+      "id": "GATE-P9-TRANSLATOR",
+      "description": "Semantic IR translator and backward dependency slicing with fail-closed classification",
+      "mandatory": true
+    },
+    {
+      "id": "GATE-P9-SOLVER",
+      "description": "SolverBackend lifecycle, 9-status taxonomy, cancellation and disposal safety",
+      "mandatory": true
+    },
+    {
+      "id": "GATE-P9-FEASIBILITY",
+      "description": "Conditional Edge Feasibility with SAT witness validation and vacuous-proof guard",
+      "mandatory": true
+    },
+    {
+      "id": "GATE-P9-EQUIVALENCE",
+      "description": "Bounded Equivalence and Patch Verification with state/memory correspondence",
+      "mandatory": true
+    },
+    {
+      "id": "GATE-P9-EVIDENCE-CACHE",
+      "description": "SymbolicEvidence schema and verifier fingerprint cache isolation",
+      "mandatory": true
+    }
+  ]
+}

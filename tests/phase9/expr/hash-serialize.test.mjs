@@ -41,7 +41,7 @@ test('structural hash is deterministic and invariant to metadata differences', (
   // Both should have identical structural hash because metadata is excluded
   assert.equal(hash1, hash2);
   assert.equal(typeof hash1, 'string');
-  assert.equal(hash1.length, 64); // sha256 hex
+  assert.equal(hash1.length, 32); // stableDigest hex
 });
 
 test('structural hash distinguishes different operations, sorts, and operands', () => {

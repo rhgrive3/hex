@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase9ReleaseEvidence",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "phase",
+    "verdict",
+    "verifier",
+    "product",
+    "capabilities",
+    "evidenceDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string" },
+    "phase": { "type": "integer", "const": 9 },
+    "verdict": { "type": "string", "enum": ["READY", "BLOCKING", "NOT-INTEGRATED"] },
+    "verifier": {
+      "type": "object",
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "product": {
+      "type": "object",
+      "required": ["commitSha", "treeSha", "clean"],
+      "properties": {
+        "commitSha": { "type": "string" },
+        "treeSha": { "type": "string" },
+        "clean": { "type": "boolean" }
+      }
+    },
+    "capabilities": { "type": "object" },
+    "evidenceDigest": { "type": "string" }
+  },
+  "additionalProperties": true
+}

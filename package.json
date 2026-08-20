@@ -27,6 +27,8 @@
     "phase8:corpus": "node tools/validation/phase8/build-corpus.mjs",
     "phase8:ownership": "node tools/validation/phase8-ownership.mjs --check-manifest",
     "phase8:checkpoint": "node tools/validation/phase8/checkpoint.mjs",
+    "phase9:test": "node tests/phase9/run.mjs",
+    "phase9:verify": "node tools/validation/phase9/verify.mjs",
     "phase6:browser": "node tests/phase6/browser/wasm-decode.browser.mjs",
     "phase4:verify": "node tools/validation/phase4/verify.mjs",
     "phase4:rehearsal": "npm run check && HEX_ANALYSIS_ROUTE=artifact node tests/phase4/integration/public-artifact-route.test.mjs && node tests/phase4/migration/orchestration.test.mjs",

@@ -10,6 +10,13 @@ import {
   projectKnowledge, projectObjcDispatch, projectRuntime, projectSearch, projectSemanticFacts,
   projectSignature, projectSlice, projectSymbolic, projectVerification,
 } from './projections/index.js';
+import { getProofToolCacheOptions } from '../../symbolic/evidence/cache-policy.js';
+import {
+  verifyConditionalEdgeFeasibility,
+  verifyBoundedEquivalence,
+  verifyPatchEquivalence,
+} from '../../symbolic/verify/index.js';
+import { defaultSolverRegistry } from '../../symbolic/solver/registry.js';
 
 const COST_WEIGHT = Object.freeze({ cheap: 1, medium: 4, expensive: 12 });
 const ADDRESS_KEYS = new Set(['address', 'functionAddress', 'from', 'to', 'start', 'end', 'target']);
@@ -370,6 +377,100 @@ export function createHexToolRegistry(context = {}, options = {}) {
       verifier: true, cost: 'expensive', scopeSupport: ['auto', 'project'], category: 'verification', resultKind: 'binary-diff', modelProjection: projectBinaryDiff,
     });
   }
+
+  const proofCacheOptions = getProofToolCacheOptions();
+
+  register('verify_edge_feasibility', 'Verify feasibility of a conditional control-flow edge under explicit source preconditions.', {
+    type: 'object',
+    properties: {
+      functionAddress: { type: 'string' },
+      fromBlock: { type: 'integer', minimum: 0 },
+      toBlock: { type: 'integer', minimum: 0 },
+      edgeCondition: { type: 'object' },
+      preconditions: { type: 'object' },
+    },
+    required: ['fromBlock'],
+    additionalProperties: false,
+  }, async ({ functionAddress, fromBlock, toBlock, edgeCondition, preconditions }) => {
+    const ir = functionAddress ? await legacy.get_function(functionAddress) : null;
+    const backend = defaultSolverRegistry.getDefaultBackend();
+    return verifyConditionalEdgeFeasibility({
+      ir,
+      fromBlock,
+      toBlock,
+      edgeCondition,
+      preconditions,
+      backend,
+    });
+  }, {
+    verifier: true,
+    cost: 'expensive',
+    scopeSupport: ['auto', 'function'],
+    category: 'verification',
+    resultKind: 'symbolic-verification',
+    modelProjection: projectVerification,
+    ...proofCacheOptions,
+  });
+
+  register('verify_bounded_equivalence', 'Formally verify bounded semantic equivalence between two code blocks/slices.', {
+    type: 'object',
+    properties: {
+      beforeFunctionAddress: { type: 'string' },
+      afterFunctionAddress: { type: 'string' },
+      beforeTarget: { type: 'object' },
+      afterTarget: { type: 'object' },
+      preconditions: { type: 'object' },
+    },
+    additionalProperties: false,
+  }, async ({ beforeFunctionAddress, afterFunctionAddress, beforeTarget, afterTarget, preconditions }) => {
+    const beforeIr = beforeFunctionAddress ? await legacy.get_function(beforeFunctionAddress) : null;
+    const afterIr = afterFunctionAddress ? await legacy.get_function(afterFunctionAddress) : null;
+    const backend = defaultSolverRegistry.getDefaultBackend();
+    return verifyBoundedEquivalence({
+      beforeIr,
+      afterIr,
+      beforeTarget,
+      afterTarget,
+      preconditions,
+      backend,
+    });
+  }, {
+    verifier: true,
+    cost: 'expensive',
+    scopeSupport: ['auto', 'function'],
+    category: 'verification',
+    resultKind: 'symbolic-verification',
+    modelProjection: projectVerification,
+    ...proofCacheOptions,
+  });
+
+  register('verify_patch_equivalence', 'Verify semantic equivalence between original and patched function projections.', {
+    type: 'object',
+    properties: {
+      originalBinaryId: { type: 'string' },
+      patchedPatchSetId: { type: 'string' },
+      originalTarget: { type: 'object' },
+      patchedTarget: { type: 'object' },
+    },
+    additionalProperties: false,
+  }, async ({ originalBinaryId, patchedPatchSetId, originalTarget, patchedTarget }) => {
+    const backend = defaultSolverRegistry.getDefaultBackend();
+    return verifyPatchEquivalence({
+      originalBinaryId,
+      patchedPatchSetId,
+      originalTarget,
+      patchedTarget,
+      backend,
+    });
+  }, {
+    verifier: true,
+    cost: 'expensive',
+    scopeSupport: ['auto', 'function'],
+    category: 'verification',
+    resultKind: 'symbolic-verification',
+    modelProjection: projectVerification,
+    ...proofCacheOptions,
+  });
 
   Object.defineProperty(registry, 'legacyTools', { value: legacy, enumerable: false });
   Object.defineProperty(registry, 'analysisStats', { get: () => ({ disassembly, maxDisassembly }), enumerable: false });

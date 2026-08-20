@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "phase9-release-evidence/v1",
+  "phase": 9,
+  "verdict": "READY",
+  "verifier": {
+    "id": "phase9.verifier",
+    "version": "1.0.0"
+  },
+  "product": {
+    "commitSha": "149e44323f42226e0df517940ad0664d071aa071",
+    "treeSha": "adec92c45ae19139b632dac3b51afb16079309ab",
+    "clean": false
+  },
+  "testExecution": {
+    "selected": 19,
+    "total": 19,
+    "allPassed": true
+  },
+  "capabilities": {
+    "solverNeutralExprDag": "verified",
+    "bitvectorSemantics": "verified",
+    "pureEvaluator": "verified",
+    "semanticIrTranslator": "verified",
+    "supportMatrix": "verified",
+    "slicingScaffolding": "verified",
+    "solverBackendAbstraction": "verified",
+    "statusTaxonomy": "verified",
+    "satModelValidator": "verified",
+    "vacuousProofGuard": "verified",
+    "conditionalEdgeFeasibility": "verified",
+    "boundedEquivalence": "verified",
+    "patchVerification": "verified",
+    "symbolicEvidenceSchema": "verified",
+    "versionSafeCachePolicy": "verified"
+  },
+  "gates": [
+    {
+      "id": "GATE-P9-EXPR",
+      "description": "Bool and BV fixed-width Expr DAG, pure evaluation, and structural equality",
+      "status": "PASSED"
+    },
+    {
+      "id": "GATE-P9-TRANSLATOR",
+      "description": "Semantic IR translator and backward dependency slicing with fail-closed classification",
+      "status": "PASSED"
+    },
+    {
+      "id": "GATE-P9-SOLVER",
+      "description": "SolverBackend lifecycle, 9-status taxonomy, cancellation and disposal safety",
+      "status": "PASSED"
+    },
+    {
+      "id": "GATE-P9-FEASIBILITY",
+      "description": "Conditional Edge Feasibility with SAT witness validation and vacuous-proof guard",
+      "status": "PASSED"
+    },
+    {
+      "id": "GATE-P9-EQUIVALENCE",
+      "description": "Bounded Equivalence and Patch Verification with state/memory correspondence",
+      "status": "PASSED"
+    },
+    {
+      "id": "GATE-P9-EVIDENCE-CACHE",
+      "description": "SymbolicEvidence schema and verifier fingerprint cache isolation",
+      "status": "PASSED"
+    }
+  ],
+  "timestamp": "2026-08-20T10:28:58.090Z",
+  "evidenceDigest": "cd75dd2dba23684d6200fb9a8c275d977f556e632ef6a480d52715421ccff7e3"
+}

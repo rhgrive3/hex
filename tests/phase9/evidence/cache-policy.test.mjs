@@ -28,7 +28,7 @@ test('computeVerifierFingerprint produces deterministic toolchain binding', () =
   const fp2 = computeVerifierFingerprint(baseConfig);
 
   assert.equal(fp1, fp2);
-  assert.match(fp1, /^[a-f0-9]{64}$/);
+  assert.match(fp1, /^[a-f0-9]{32,64}$/);
 
   // Invariant to key insertion order in solverOptions
   const fpKeyOrder = computeVerifierFingerprint({

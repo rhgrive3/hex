@@ -7,7 +7,7 @@
  * the structural hash.
  */
 
-import { createHash } from 'node:crypto';
+import { stableDigest } from '../../core/identity/index.js';
 import {
   EXPR_KIND,
   sortToString,
@@ -17,7 +17,7 @@ import {
 const hashCache = new WeakMap();
 
 function sha256Hex(data) {
-  return createHash('sha256').update(data).digest('hex');
+  return stableDigest(data);
 }
 
 export function computeStructuralHash(node) {

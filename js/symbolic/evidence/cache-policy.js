@@ -8,7 +8,7 @@
  * Provides proof tool cache options for ToolRegistry / ObservationStore.
  */
 
-import { createHash } from 'node:crypto';
+import { stableDigest } from '../../core/identity/index.js';
 import { SOLVER_STATUS } from '../solver/result.js';
 import { EXPR_SCHEMA_VERSION, EXPR_DAG_VERSION } from '../expr/serialize.js';
 import { COMPLETENESS_STATUS } from '../translate/support-matrix.js';
@@ -16,7 +16,7 @@ import { COMPLETENESS_STATUS } from '../translate/support-matrix.js';
 export const VERIFIER_FINGERPRINT_SCHEMA_VERSION = '1.0.0';
 
 function sha256Hex(data) {
-  return createHash('sha256').update(data).digest('hex');
+  return stableDigest(data);
 }
 
 function canonicalizeValue(val) {
