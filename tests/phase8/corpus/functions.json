@@ -1,10 +1,29 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "corpusId": "phase8-decompiler-quality-corpus",
-  "corpusVersion": 1,
+  "corpusVersion": 2,
   "toolchain": {
     "compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)",
-    "target": "aarch64-unknown-linux-gnu",
+    "targets": [
+      {
+        "architectureId": "arm64",
+        "target": "aarch64-unknown-linux-gnu",
+        "compilerArgs": []
+      },
+      {
+        "architectureId": "x86_64",
+        "target": "x86_64-unknown-linux-gnu",
+        "compilerArgs": []
+      },
+      {
+        "architectureId": "riscv64",
+        "target": "riscv64-unknown-linux-gnu",
+        "compilerArgs": [
+          "-march=rv64im",
+          "-mabi=lp64"
+        ]
+      }
+    ],
     "optimizationLevels": [
       "-O0",
       "-O1",
@@ -19,6 +38,8 @@
       "function": "aggregate_array_stride",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #32\nstr\tx0, [sp, #24]\nstr\tw1, [sp, #20]\nstr\twzr, [sp, #16]\nstr\twzr, [sp, #12]\nb\t.LBB14_1\n.LBB14_1:\nldr\tw8, [sp, #12]\nldr\tw9, [sp, #20]\nsubs\tw8, w8, w9\nb.ge\t.LBB14_4\nb\t.LBB14_2\n.LBB14_2:\nldr\tx8, [sp, #24]\nldrsw\tx9, [sp, #12]\nmov\tx10, #12\nmul\tx9, x9, x10\nadd\tx8, x8, x9\nldr\tw9, [x8, #4]\nldr\tw8, [sp, #16]\nadd\tw8, w8, w9\nstr\tw8, [sp, #16]\nb\t.LBB14_3\n.LBB14_3:\nldr\tw8, [sp, #12]\nadd\tw8, w8, #1\nstr\tw8, [sp, #12]\nb\t.LBB14_1\n.LBB14_4:\nldr\tw0, [sp, #16]\nadd\tsp, sp, #32\nret"
     },
     {
@@ -27,6 +48,8 @@
       "function": "aggregate_array_stride",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "cmp\tw1, #1\nb.lt\t.LBB14_4\nmov\tx8, x0\nmov\tw0, wzr\nmov\tw9, w1\nadd\tx8, x8, #4\n.LBB14_2:\nldr\tw10, [x8], #12\nsubs\tx9, x9, #1\nadd\tw0, w10, w0\nb.ne\t.LBB14_2\nret\n.LBB14_4:\nmov\tw0, wzr\nret"
     },
     {
@@ -35,6 +58,8 @@
       "function": "aggregate_array_stride",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "cmp\tw1, #1\nb.lt\t.LBB14_3\ncmp\tw1, #9\nmov\tw9, w1\nb.hs\t.LBB14_4\nmov\tx10, xzr\nmov\tw8, wzr\nb\t.LBB14_7\n.LBB14_3:\nmov\tw8, wzr\nmov\tw0, w8\nret\n.LBB14_4:\nands\tx8, x9, #0x7\nmov\tw10, #8\nmovi\tv0.2d, #0000000000000000\nmovi\tv1.2d, #0000000000000000\ncsel\tx8, x10, x8, eq\nsub\tx10, x9, x8\nadd\tx8, x0, #52\nmov\tx11, x10\n.LBB14_5:\nsub\tx12, x8, #48\nld3\t{ v5.4s, v6.4s, v7.4s }, [x8]\nsubs\tx11, x11, #8\nld3\t{ v2.4s, v3.4s, v4.4s }, [x12]\nadd\tx8, x8, #96\nadd\tv1.4s, v5.4s, v1.4s\nadd\tv0.4s, v2.4s, v0.4s\nb.ne\t.LBB14_5\nadd\tv0.4s, v1.4s, v0.4s\naddv\ts0, v0.4s\nfmov\tw8, s0\n.LBB14_7:\nmov\tw11, #12\nsub\tx9, x9, x10\nmadd\tx11, x10, x11, x0\nadd\tx11, x11, #4\n.LBB14_8:\nldr\tw10, [x11], #12\nsubs\tx9, x9, #1\nadd\tw8, w10, w8\nb.ne\t.LBB14_8\nmov\tw0, w8\nret"
     },
     {
@@ -43,6 +68,8 @@
       "function": "aggregate_struct_fields",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #16\nstr\tx0, [sp, #8]\nldr\tx8, [sp, #8]\nldr\tw8, [x8]\nldr\tx9, [sp, #8]\nldr\tw9, [x9, #4]\nadd\tw8, w8, w9\nldr\tx9, [sp, #8]\nldr\tw9, [x9, #8]\nadd\tw0, w8, w9\nadd\tsp, sp, #16\nret"
     },
     {
@@ -51,6 +78,8 @@
       "function": "aggregate_struct_fields",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "ldp\tw8, w9, [x0]\nldr\tw10, [x0, #8]\nadd\tw8, w9, w8\nadd\tw0, w8, w10\nret"
     },
     {
@@ -59,6 +88,8 @@
       "function": "aggregate_struct_fields",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "ldp\tw8, w9, [x0]\nldr\tw10, [x0, #8]\nadd\tw8, w9, w8\nadd\tw0, w8, w10\nret"
     },
     {
@@ -67,6 +98,8 @@
       "function": "dce_observable_store",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #16\nstr\tx0, [sp, #8]\nstr\tw1, [sp, #4]\nldr\tw8, [sp, #4]\nadd\tw8, w8, #1\nldr\tx9, [sp, #8]\nstr\tw8, [x9]\nadd\tsp, sp, #16\nret"
     },
     {
@@ -75,6 +108,8 @@
       "function": "dce_observable_store",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "add\tw8, w1, #1\nstr\tw8, [x0]\nret"
     },
     {
@@ -83,6 +118,8 @@
       "function": "dce_observable_store",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "add\tw8, w1, #1\nstr\tw8, [x0]\nret"
     },
     {
@@ -91,6 +128,8 @@
       "function": "dce_volatile_read",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #16\nstr\tx0, [sp, #8]\nldr\tx8, [sp, #8]\nldr\tw8, [x8]\nadd\tsp, sp, #16\nret"
     },
     {
@@ -99,6 +138,8 @@
       "function": "dce_volatile_read",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "ldr\twzr, [x0]\nret"
     },
     {
@@ -107,6 +148,8 @@
       "function": "dce_volatile_read",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "ldr\twzr, [x0]\nret"
     },
     {
@@ -115,6 +158,8 @@
       "function": "gvn_call_barrier",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #32\nstp\tx29, x30, [sp, #16]\nadd\tx29, sp, #16\nstr\tx0, [sp, #8]\nldr\tx8, [sp, #8]\nldr\tw8, [x8]\nstr\tw8, [sp, #4]\nbl\topaque\nldr\tw8, [sp, #4]\nldr\tx9, [sp, #8]\nldr\tw9, [x9]\nadd\tw0, w8, w9\nldp\tx29, x30, [sp, #16]\nadd\tsp, sp, #32\nret"
     },
     {
@@ -123,6 +168,8 @@
       "function": "gvn_call_barrier",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "stp\tx29, x30, [sp, #-32]!\nstp\tx20, x19, [sp, #16]\nldr\tw20, [x0]\nmov\tx29, sp\nmov\tx19, x0\nbl\topaque\nldr\tw8, [x19]\nadd\tw0, w8, w20\nldp\tx20, x19, [sp, #16]\nldp\tx29, x30, [sp], #32\nret"
     },
     {
@@ -131,6 +178,8 @@
       "function": "gvn_call_barrier",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "stp\tx29, x30, [sp, #-32]!\nstp\tx20, x19, [sp, #16]\nldr\tw20, [x0]\nmov\tx29, sp\nmov\tx19, x0\nbl\topaque\nldr\tw8, [x19]\nadd\tw0, w8, w20\nldp\tx20, x19, [sp, #16]\nldp\tx29, x30, [sp], #32\nret"
     },
     {
@@ -139,6 +188,8 @@
       "function": "gvn_load_reuse",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #32\nstr\tx0, [sp, #24]\nstr\tx1, [sp, #16]\nldr\tx8, [sp, #24]\nldr\tw8, [x8]\nstr\tw8, [sp, #12]\nldr\tx9, [sp, #16]\nmov\tw8, #1\nstr\tw8, [x9, #16]\nldr\tx8, [sp, #24]\nldr\tw8, [x8]\nstr\tw8, [sp, #8]\nldr\tw8, [sp, #12]\nldr\tw9, [sp, #8]\nadd\tw0, w8, w9\nadd\tsp, sp, #32\nret"
     },
     {
@@ -147,6 +198,8 @@
       "function": "gvn_load_reuse",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "mov\tw8, #1\nldr\tw9, [x0]\nstr\tw8, [x1, #16]\nldr\tw8, [x0]\nadd\tw0, w8, w9\nret"
     },
     {
@@ -155,6 +208,8 @@
       "function": "gvn_load_reuse",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "mov\tw8, #1\nldr\tw9, [x0]\nstr\tw8, [x1, #16]\nldr\tw8, [x0]\nadd\tw0, w8, w9\nret"
     },
     {
@@ -163,6 +218,8 @@
       "function": "gvn_repeated_expression",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #12]\nstr\tw1, [sp, #8]\nldr\tw8, [sp, #12]\nldr\tw9, [sp, #8]\nmul\tw8, w8, w9\nadd\tw8, w8, #7\nstr\tw8, [sp, #4]\nldr\tw8, [sp, #12]\nldr\tw9, [sp, #8]\nmul\tw8, w8, w9\nadd\tw8, w8, #7\nstr\tw8, [sp]\nldr\tw8, [sp, #4]\nldr\tw9, [sp]\nadd\tw0, w8, w9\nadd\tsp, sp, #16\nret"
     },
     {
@@ -171,6 +228,8 @@
       "function": "gvn_repeated_expression",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "mul\tw8, w0, w1\nlsl\tw8, w8, #1\nadd\tw0, w8, #14\nret"
     },
     {
@@ -179,6 +238,8 @@
       "function": "gvn_repeated_expression",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "mul\tw8, w0, w1\nlsl\tw8, w8, #1\nadd\tw0, w8, #14\nret"
     },
     {
@@ -187,6 +248,8 @@
       "function": "loop_counted_sum",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #32\nstr\tx0, [sp, #24]\nstr\tw1, [sp, #20]\nstr\twzr, [sp, #16]\nstr\twzr, [sp, #12]\nb\t.LBB8_1\n.LBB8_1:\nldr\tw8, [sp, #12]\nldr\tw9, [sp, #20]\nsubs\tw8, w8, w9\nb.ge\t.LBB8_4\nb\t.LBB8_2\n.LBB8_2:\nldr\tx8, [sp, #24]\nldrsw\tx9, [sp, #12]\nldr\tw9, [x8, x9, lsl #2]\nldr\tw8, [sp, #16]\nadd\tw8, w8, w9\nstr\tw8, [sp, #16]\nb\t.LBB8_3\n.LBB8_3:\nldr\tw8, [sp, #12]\nadd\tw8, w8, #1\nstr\tw8, [sp, #12]\nb\t.LBB8_1\n.LBB8_4:\nldr\tw0, [sp, #16]\nadd\tsp, sp, #32\nret"
     },
     {
@@ -195,6 +258,8 @@
       "function": "loop_counted_sum",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "cmp\tw1, #1\nb.lt\t.LBB8_4\nmov\tx8, x0\nmov\tw0, wzr\nmov\tw9, w1\n.LBB8_2:\nldr\tw10, [x8], #4\nsubs\tx9, x9, #1\nadd\tw0, w10, w0\nb.ne\t.LBB8_2\nret\n.LBB8_4:\nmov\tw0, wzr\nret"
     },
     {
@@ -203,6 +268,8 @@
       "function": "loop_counted_sum",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "cmp\tw1, #1\nb.lt\t.LBB8_3\ncmp\tw1, #8\nmov\tw9, w1\nb.hs\t.LBB8_4\nmov\tx10, xzr\nmov\tw8, wzr\nb\t.LBB8_7\n.LBB8_3:\nmov\tw8, wzr\nmov\tw0, w8\nret\n.LBB8_4:\nmovi\tv0.2d, #0000000000000000\nmovi\tv1.2d, #0000000000000000\nand\tx10, x9, #0x7ffffff8\nadd\tx8, x0, #16\nmov\tx11, x10\n.LBB8_5:\nldp\tq2, q3, [x8, #-16]\nsubs\tx11, x11, #8\nadd\tx8, x8, #32\nadd\tv0.4s, v2.4s, v0.4s\nadd\tv1.4s, v3.4s, v1.4s\nb.ne\t.LBB8_5\nadd\tv0.4s, v1.4s, v0.4s\ncmp\tx10, x9\naddv\ts0, v0.4s\nfmov\tw8, s0\nb.eq\t.LBB8_9\n.LBB8_7:\nadd\tx11, x0, x10, lsl #2\nsub\tx9, x9, x10\n.LBB8_8:\nldr\tw10, [x11], #4\nsubs\tx9, x9, #1\nadd\tw8, w10, w8\nb.ne\t.LBB8_8\n.LBB8_9:\nmov\tw0, w8\nret"
     },
     {
@@ -211,6 +278,8 @@
       "function": "loop_decrement_step",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #12]\nstr\twzr, [sp, #8]\nldr\tw8, [sp, #12]\nstr\tw8, [sp, #4]\nb\t.LBB9_1\n.LBB9_1:\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #0\nb.le\t.LBB9_4\nb\t.LBB9_2\n.LBB9_2:\nldr\tw9, [sp, #4]\nldr\tw8, [sp, #8]\nadd\tw8, w8, w9\nstr\tw8, [sp, #8]\nb\t.LBB9_3\n.LBB9_3:\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #3\nstr\tw8, [sp, #4]\nb\t.LBB9_1\n.LBB9_4:\nldr\tw0, [sp, #8]\nadd\tsp, sp, #16\nret"
     },
     {
@@ -219,6 +288,8 @@
       "function": "loop_decrement_step",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "cmp\tw0, #1\nb.lt\t.LBB9_2\nsubs\tw8, w0, #3\nmov\tw9, #3\nmov\tw10, #43691\ncsel\tw9, w0, w9, lt\nmovk\tw10, #43690, lsl #16\nsub\tw9, w0, w9\nadd\tw9, w9, #2\numull\tx9, w9, w10\nlsr\tx9, x9, #33\nsub\tw10, w9, #1\nmadd\tw8, w9, w8, w0\numull\tx10, w9, w10\nlsr\tx10, x10, #1\nsub\tw9, w10, w10, lsl #2\nadd\tw0, w9, w8\nret\n.LBB9_2:\nmov\tw0, wzr\nret"
     },
     {
@@ -227,6 +298,8 @@
       "function": "loop_decrement_step",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "cmp\tw0, #1\nb.lt\t.LBB9_2\nsubs\tw8, w0, #3\nmov\tw9, #3\nmov\tw10, #43691\ncsel\tw9, w0, w9, lt\nmovk\tw10, #43690, lsl #16\nsub\tw9, w0, w9\nadd\tw9, w9, #2\numull\tx9, w9, w10\nlsr\tx9, x9, #33\nsub\tw10, w9, #1\nmadd\tw8, w9, w8, w0\numull\tx10, w9, w10\nlsr\tx10, x10, #1\nsub\tw9, w10, w10, lsl #2\nadd\tw0, w9, w8\nret\n.LBB9_2:\nmov\tw0, wzr\nret"
     },
     {
@@ -235,6 +308,8 @@
       "function": "loop_early_exit",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #32\nstr\tx0, [sp, #16]\nstr\tw1, [sp, #12]\nstr\tw2, [sp, #8]\nstr\twzr, [sp, #4]\nb\t.LBB10_1\n.LBB10_1:\nldr\tw8, [sp, #4]\nldr\tw9, [sp, #12]\nsubs\tw8, w8, w9\nb.ge\t.LBB10_6\nb\t.LBB10_2\n.LBB10_2:\nldr\tx8, [sp, #16]\nldrsw\tx9, [sp, #4]\nldr\tw8, [x8, x9, lsl #2]\nldr\tw9, [sp, #8]\nsubs\tw8, w8, w9\nb.ne\t.LBB10_4\nb\t.LBB10_3\n.LBB10_3:\nldr\tw8, [sp, #4]\nstr\tw8, [sp, #28]\nb\t.LBB10_7\n.LBB10_4:\nb\t.LBB10_5\n.LBB10_5:\nldr\tw8, [sp, #4]\nadd\tw8, w8, #1\nstr\tw8, [sp, #4]\nb\t.LBB10_1\n.LBB10_6:\nmov\tw8, #-1\nstr\tw8, [sp, #28]\nb\t.LBB10_7\n.LBB10_7:\nldr\tw0, [sp, #28]\nadd\tsp, sp, #32\nret"
     },
     {
@@ -243,6 +318,8 @@
       "function": "loop_early_exit",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "cmp\tw1, #1\nb.lt\t.LBB10_4\nmov\tx8, x0\nmov\tx0, xzr\nmov\tw9, w1\n.LBB10_2:\nldr\tw10, [x8, x0, lsl #2]\ncmp\tw10, w2\nb.eq\t.LBB10_5\nadd\tx0, x0, #1\ncmp\tx9, x0\nb.ne\t.LBB10_2\n.LBB10_4:\nmov\tw0, #-1\n.LBB10_5:\nret"
     },
     {
@@ -251,6 +328,8 @@
       "function": "loop_early_exit",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "cmp\tw1, #1\nb.lt\t.LBB10_4\nmov\tx8, x0\nmov\tx0, xzr\nmov\tw9, w1\n.LBB10_2:\nldr\tw10, [x8, x0, lsl #2]\ncmp\tw10, w2\nb.eq\t.LBB10_5\nadd\tx0, x0, #1\ncmp\tx9, x0\nb.ne\t.LBB10_2\n.LBB10_4:\nmov\tw0, #-1\n.LBB10_5:\nret"
     },
     {
@@ -259,6 +338,8 @@
       "function": "loop_nested",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #32\nstr\tx0, [sp, #24]\nstr\tw1, [sp, #20]\nstr\tw2, [sp, #16]\nstr\twzr, [sp, #12]\nstr\twzr, [sp, #8]\nb\t.LBB11_1\n.LBB11_1:\nldr\tw8, [sp, #8]\nldr\tw9, [sp, #20]\nsubs\tw8, w8, w9\nb.ge\t.LBB11_8\nb\t.LBB11_2\n.LBB11_2:\nstr\twzr, [sp, #4]\nb\t.LBB11_3\n.LBB11_3:\nldr\tw8, [sp, #4]\nldr\tw9, [sp, #16]\nsubs\tw8, w8, w9\nb.ge\t.LBB11_6\nb\t.LBB11_4\n.LBB11_4:\nldr\tx8, [sp, #24]\nldr\tw9, [sp, #8]\nldr\tw10, [sp, #16]\nmul\tw9, w9, w10\nldr\tw10, [sp, #4]\nadd\tw9, w9, w10\nldr\tw9, [x8, w9, sxtw #2]\nldr\tw8, [sp, #12]\nadd\tw8, w8, w9\nstr\tw8, [sp, #12]\nb\t.LBB11_5\n.LBB11_5:\nldr\tw8, [sp, #4]\nadd\tw8, w8, #1\nstr\tw8, [sp, #4]\nb\t.LBB11_3\n.LBB11_6:\nb\t.LBB11_7\n.LBB11_7:\nldr\tw8, [sp, #8]\nadd\tw8, w8, #1\nstr\tw8, [sp, #8]\nb\t.LBB11_1\n.LBB11_8:\nldr\tw0, [sp, #12]\nadd\tsp, sp, #32\nret"
     },
     {
@@ -267,6 +348,8 @@
       "function": "loop_nested",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "cmp\tw1, #1\nb.lt\t.LBB11_6\nmov\tw9, wzr\nmov\tx10, xzr\nmov\tw8, wzr\nmov\tw11, w1\nmov\tw12, w2\nb\t.LBB11_3\n.LBB11_2:\nadd\tx10, x10, #1\nadd\tw9, w9, w2\ncmp\tx10, x11\nb.eq\t.LBB11_7\n.LBB11_3:\ncmp\tw2, #1\nb.lt\t.LBB11_2\nadd\tx13, x0, w9, uxtw #2\nmov\tx14, x12\n.LBB11_5:\nldr\tw15, [x13], #4\nsubs\tx14, x14, #1\nadd\tw8, w15, w8\nb.ne\t.LBB11_5\nb\t.LBB11_2\n.LBB11_6:\nmov\tw8, wzr\n.LBB11_7:\nmov\tw0, w8\nret"
     },
     {
@@ -275,6 +358,8 @@
       "function": "loop_nested",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "cmp\tw1, #1\nb.lt\t.LBB11_11\nmov\tw11, w2\nmov\tw9, wzr\nmov\tx10, xzr\nmov\tw8, wzr\nmov\tw12, w1\nand\tx13, x11, #0x7ffffff8\nadd\tx14, x0, #16\nb\t.LBB11_3\n.LBB11_2:\nadd\tx10, x10, #1\nadd\tw9, w9, w2\ncmp\tx10, x12\nb.eq\t.LBB11_12\n.LBB11_3:\ncmp\tw2, #1\nb.lt\t.LBB11_2\nubfiz\tx15, x9, #2, #32\ncmp\tw2, #8\nb.hs\t.LBB11_6\nmov\tx16, xzr\nb\t.LBB11_9\n.LBB11_6:\nmovi\tv0.2d, #0000000000000000\nmovi\tv1.2d, #0000000000000000\nmov\tx16, x13\nmov\tv0.s[0], w8\nadd\tx8, x14, x15\n.LBB11_7:\nldp\tq2, q3, [x8, #-16]\nsubs\tx16, x16, #8\nadd\tx8, x8, #32\nadd\tv0.4s, v2.4s, v0.4s\nadd\tv1.4s, v3.4s, v1.4s\nb.ne\t.LBB11_7\nadd\tv0.4s, v1.4s, v0.4s\ncmp\tx13, x11\nmov\tx16, x13\naddv\ts0, v0.4s\nfmov\tw8, s0\nb.eq\t.LBB11_2\n.LBB11_9:\nadd\tx15, x15, x16, lsl #2\nsub\tx16, x11, x16\nadd\tx15, x0, x15\n.LBB11_10:\nldr\tw17, [x15], #4\nsubs\tx16, x16, #1\nadd\tw8, w17, w8\nb.ne\t.LBB11_10\nb\t.LBB11_2\n.LBB11_11:\nmov\tw8, wzr\n.LBB11_12:\nmov\tw0, w8\nret"
     },
     {
@@ -283,6 +368,8 @@
       "function": "sccp_dead_branch",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #8]\nmov\tw8, #4\nstr\tw8, [sp, #4]\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #8\nb.le\t.LBB0_2\nb\t.LBB0_1\n.LBB0_1:\nldr\tw8, [sp, #8]\nmov\tw9, #3\nmul\tw8, w8, w9\nstr\tw8, [sp, #12]\nb\t.LBB0_3\n.LBB0_2:\nldr\tw8, [sp, #8]\nldr\tw9, [sp, #4]\nadd\tw8, w8, w9\nstr\tw8, [sp, #12]\nb\t.LBB0_3\n.LBB0_3:\nldr\tw0, [sp, #12]\nadd\tsp, sp, #16\nret"
     },
     {
@@ -291,6 +378,8 @@
       "function": "sccp_dead_branch",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "add\tw0, w0, #4\nret"
     },
     {
@@ -299,6 +388,8 @@
       "function": "sccp_dead_branch",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "add\tw0, w0, #4\nret"
     },
     {
@@ -307,6 +398,8 @@
       "function": "sccp_narrow_extend",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #12]\nldr\tw8, [sp, #12]\nstrb\tw8, [sp, #11]\nldrsb\tw8, [sp, #11]\nadd\tw0, w8, #1\nadd\tsp, sp, #16\nret"
     },
     {
@@ -315,6 +408,8 @@
       "function": "sccp_narrow_extend",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sxtb\tw8, w0\nadd\tw0, w8, #1\nret"
     },
     {
@@ -323,6 +418,8 @@
       "function": "sccp_narrow_extend",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sxtb\tw8, w0\nadd\tw0, w8, #1\nret"
     },
     {
@@ -331,6 +428,8 @@
       "function": "sccp_wraparound",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #12]\nmov\tw8, #-16\nstr\tw8, [sp, #8]\nldr\tw8, [sp, #8]\nldr\tw9, [sp, #12]\nadd\tw0, w8, w9\nadd\tsp, sp, #16\nret"
     },
     {
@@ -339,6 +438,8 @@
       "function": "sccp_wraparound",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tw0, w0, #16\nret"
     },
     {
@@ -347,6 +448,8 @@
       "function": "sccp_wraparound",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tw0, w0, #16\nret"
     },
     {
@@ -355,6 +458,8 @@
       "function": "structure_switch",
       "optimization": "-O0",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #8]\nldr\tw8, [sp, #8]\nstr\tw8, [sp, #4]\ncbz\tw8, .LBB12_4\nb\t.LBB12_1\n.LBB12_1:\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #1\nb.eq\t.LBB12_5\nb\t.LBB12_2\n.LBB12_2:\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #2\nb.eq\t.LBB12_6\nb\t.LBB12_3\n.LBB12_3:\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #3\nb.eq\t.LBB12_7\nb\t.LBB12_8\n.LBB12_4:\nmov\tw8, #10\nstr\tw8, [sp, #12]\nb\t.LBB12_9\n.LBB12_5:\nmov\tw8, #20\nstr\tw8, [sp, #12]\nb\t.LBB12_9\n.LBB12_6:\nmov\tw8, #30\nstr\tw8, [sp, #12]\nb\t.LBB12_9\n.LBB12_7:\nmov\tw8, #40\nstr\tw8, [sp, #12]\nb\t.LBB12_9\n.LBB12_8:\nmov\tw8, #-1\nstr\tw8, [sp, #12]\nb\t.LBB12_9\n.LBB12_9:\nldr\tw0, [sp, #12]\nadd\tsp, sp, #16\nret"
     },
     {
@@ -363,6 +468,8 @@
       "function": "structure_switch",
       "optimization": "-O1",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "mov\tw8, #10\nmov\tw9, #10\ncmp\tw0, #4\nmadd\tw8, w0, w8, w9\ncsinv\tw0, w8, wzr, lo\nret"
     },
     {
@@ -371,8 +478,910 @@
       "function": "structure_switch",
       "optimization": "-O2",
       "architectureId": "arm64",
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "representation": "assembly",
       "assembly": "mov\tw8, #10\nmov\tw9, #10\ncmp\tw0, #4\nmadd\tw8, w0, w8, w9\ncsinv\tw0, w8, wzr, lo\nret"
+    },
+    {
+      "id": "riscv64.quality.aggregate_array_stride.O0",
+      "source": "quality.c",
+      "function": "aggregate_array_stride",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fd2334110223308102130401032334a4fe2322b4fe130500002320a4fe232ea4fc6f0000000325c4fd832544fe6344b5006f0000006f000000033584fe8325c4fd1306c000b385c5023305b50083254500032504fe3b05b5002320a4fe6f0000000325c4fd1b051500232ea4fc6f000000032504fe83308102033401021301010367800000"
+    },
+    {
+      "id": "riscv64.quality.aggregate_array_stride.O1",
+      "source": "quality.c",
+      "function": "aggregate_array_stride",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "6350b00013060500130500009306c000b385d50213064600b305b600832606001306c6003b85a6006310b600678000001305000067800000"
+    },
+    {
+      "id": "riscv64.quality.aggregate_array_stride.O2",
+      "source": "quality.c",
+      "function": "aggregate_array_stride",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "6350b00013060500130500009306c000b385d50213064600b305b600832606001306c6003b85a6006310b600678000001305000067800000"
+    },
+    {
+      "id": "riscv64.quality.aggregate_struct_fields.O0",
+      "source": "quality.c",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c110023388100130401022334a4fe833584fe03a5050003a645003b05c50083a585003b05b50083308101033401011301010267800000"
+    },
+    {
+      "id": "riscv64.quality.aggregate_struct_fields.O1",
+      "source": "quality.c",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "832505000326450003258500b305b6003b85a50067800000"
+    },
+    {
+      "id": "riscv64.quality.aggregate_struct_fields.O2",
+      "source": "quality.c",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "832505000326450003258500b305b6003b85a50067800000"
+    },
+    {
+      "id": "riscv64.quality.dce_observable_store.O0",
+      "source": "quality.c",
+      "function": "dce_observable_store",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c110023388100130401022334a4fe2322b4fe032544fe1b051500833584fe23a0a50083308101033401011301010267800000"
+    },
+    {
+      "id": "riscv64.quality.dce_observable_store.O1",
+      "source": "quality.c",
+      "function": "dce_observable_store",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "938515002320b50067800000"
+    },
+    {
+      "id": "riscv64.quality.dce_observable_store.O2",
+      "source": "quality.c",
+      "function": "dce_observable_store",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "938515002320b50067800000"
+    },
+    {
+      "id": "riscv64.quality.dce_volatile_read.O0",
+      "source": "quality.c",
+      "function": "dce_volatile_read",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c110023388100130401022334a4fe033584fe0325050083308101033401011301010267800000"
+    },
+    {
+      "id": "riscv64.quality.dce_volatile_read.O1",
+      "source": "quality.c",
+      "function": "dce_volatile_read",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "0320050067800000"
+    },
+    {
+      "id": "riscv64.quality.dce_volatile_read.O2",
+      "source": "quality.c",
+      "function": "dce_volatile_read",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "0320050067800000"
+    },
+    {
+      "id": "riscv64.quality.gvn_call_barrier.O0",
+      "source": "quality.c",
+      "function": "gvn_call_barrier",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c110023388100130401022334a4fe033584fe032505002322a4fe97000000e7800000032544fe833584fe83a505003b05b50083308101033401011301010267800000"
+    },
+    {
+      "id": "riscv64.quality.gvn_call_barrier.O1",
+      "source": "quality.c",
+      "function": "gvn_call_barrier",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c11002338810023349100130405008324050097000000e7800000032504003b0595008330810103340101833481001301010267800000"
+    },
+    {
+      "id": "riscv64.quality.gvn_call_barrier.O2",
+      "source": "quality.c",
+      "function": "gvn_call_barrier",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c11002338810023349100130405008324050097000000e7800000032504003b0595008330810103340101833481001301010267800000"
+    },
+    {
+      "id": "riscv64.quality.gvn_load_reuse.O0",
+      "source": "quality.c",
+      "function": "gvn_load_reuse",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fd2334110223308102130401032334a4fe2330b4fe033584fe03250500232ea4fc833504fe1305100023a8a500033584fe03250500232ca4fc0325c4fd832584fd3b05b50083308102033401021301010367800000"
+    },
+    {
+      "id": "riscv64.quality.gvn_load_reuse.O1",
+      "source": "quality.c",
+      "function": "gvn_load_reuse",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "032605009306100023a8d500032505003b05c50067800000"
+    },
+    {
+      "id": "riscv64.quality.gvn_load_reuse.O2",
+      "source": "quality.c",
+      "function": "gvn_load_reuse",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "032605009306100023a8d500032505003b05c50067800000"
+    },
+    {
+      "id": "riscv64.quality.gvn_repeated_expression.O0",
+      "source": "quality.c",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c110023388100130401022326a4fe2324b4fe0325c4fe832584fe3b05b5021b0575002322a4fe0325c4fe832584fe3b05b5021b0575002320a4fe032544fe832504fe3b05b50083308101033401011301010267800000"
+    },
+    {
+      "id": "riscv64.quality.gvn_repeated_expression.O1",
+      "source": "quality.c",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "3305b502131515001b05e50067800000"
+    },
+    {
+      "id": "riscv64.quality.gvn_repeated_expression.O2",
+      "source": "quality.c",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "3305b502131515001b05e50067800000"
+    },
+    {
+      "id": "riscv64.quality.loop_counted_sum.O0",
+      "source": "quality.c",
+      "function": "loop_counted_sum",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fd2334110223308102130401032334a4fe2322b4fe130500002320a4fe232ea4fc6f0000000325c4fd832544fe6344b5006f0000006f000000033584fe8325c4fd939525003305b50083250500032504fe3b05b5002320a4fe6f0000000325c4fd1b051500232ea4fc6f000000032504fe83308102033401021301010367800000"
+    },
+    {
+      "id": "riscv64.quality.loop_counted_sum.O1",
+      "source": "quality.c",
+      "function": "loop_counted_sum",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130600006350b00093952500b305b50083260500130545003b86c6006310b5001305060067800000"
+    },
+    {
+      "id": "riscv64.quality.loop_counted_sum.O2",
+      "source": "quality.c",
+      "function": "loop_counted_sum",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130600006350b00093952500b305b50083260500130545003b86c6006310b5001305060067800000"
+    },
+    {
+      "id": "riscv64.quality.loop_decrement_step.O0",
+      "source": "quality.c",
+      "function": "loop_decrement_step",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c110023388100130401022326a4fe130500002324a4fe0325c4fe2322a4fe6f000000832544fe130500006344b5006f0000006f000000832544fe032584fe3b05b5002324a4fe6f000000032544fe1b05d5ff2322a4fe6f000000032584fe83308101033401011301010267800000"
+    },
+    {
+      "id": "riscv64.quality.loop_decrement_step.O1",
+      "source": "quality.c",
+      "function": "loop_decrement_step",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "6350a00013063000930505006340c50093053000bb05b540938525009395050237b6aaaa1306b6aa13160602b3b5c50293d515021386f5ff13160602135606023386c5029376e6ff135616003386c6009306d5ffb385d5023385a5003b05c540678000001305000067800000"
+    },
+    {
+      "id": "riscv64.quality.loop_decrement_step.O2",
+      "source": "quality.c",
+      "function": "loop_decrement_step",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "6350a00013063000930505006340c50093053000bb05b540938525009395050237b6aaaa1306b6aa13160602b3b5c50293d515021306d5ff3386c5029386f5ff9396060293d60602b385d50293f6e5ff93d51500b385b6003305a6003b05b540678000001305000067800000"
+    },
+    {
+      "id": "riscv64.quality.loop_early_exit.O0",
+      "source": "quality.c",
+      "function": "loop_early_exit",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fd2334110223308102130401032330a4fe232eb4fc232cc4fc13050000232aa4fc6f000000032544fd8325c4fd6344b5006f0000006f000000033504fe832544fd939525003305b50003250500832584fd6304b5006f0000006f000000032544fd2326a4fe6f0000006f000000032544fd1b051500232aa4fc6f0000001305f0ff2326a4fe6f0000000325c4fe83308102033401021301010367800000"
+    },
+    {
+      "id": "riscv64.quality.loop_early_exit.O1",
+      "source": "quality.c",
+      "function": "loop_early_exit",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "930605001305f0ff6350b0001307000083a706006380c7001b0717009385f5ff9386460063900500678000001305070067800000"
+    },
+    {
+      "id": "riscv64.quality.loop_early_exit.O2",
+      "source": "quality.c",
+      "function": "loop_early_exit",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "930605001305f0ff6350b0001307000083a706006380c7001b0717009385f5ff9386460063900500678000001305070067800000"
+    },
+    {
+      "id": "riscv64.quality.loop_nested.O0",
+      "source": "quality.c",
+      "function": "loop_nested",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fd2334110223308102130401032334a4fe2322b4fe2320c4fe13050000232ea4fc232ca4fc6f000000032584fd832544fe6344b5006f0000006f00000013050000232aa4fc6f000000032544fd832504fe6344b5006f0000006f000000033584fe832584fd032604febb85c502032644fdbb85c500939525003305b500832505000325c4fd3b05b500232ea4fc6f000000032544fd1b051500232aa4fc6f0000006f000000032584fd1b051500232ca4fc6f0000000325c4fd83308102033401021301010367800000"
+    },
+    {
+      "id": "riscv64.quality.loop_nested.O1",
+      "source": "quality.c",
+      "function": "loop_nested",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "6350b000130700009307000093060000131806021358e801330805016f000000938717003307c7006380b7006350c0009318070293d2e801b3085800b302550003a3020093824200bb06d300639012016f000000930600001385060067800000"
+    },
+    {
+      "id": "riscv64.quality.loop_nested.O2",
+      "source": "quality.c",
+      "function": "loop_nested",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "6350b000130700009307000093060000131806021358e801330805016f000000938717003307c7006380b7006350c0009318070293d2e801b3085800b302550003a3020093824200bb06d300639012016f000000930600001385060067800000"
+    },
+    {
+      "id": "riscv64.quality.sccp_dead_branch.O0",
+      "source": "quality.c",
+      "function": "sccp_dead_branch",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c110023388100130401022324a4fe130540002322a4fe032544fe930590006354b5006f0000006f000000832584fe1b9515003b05b5002326a4fe6f000000032584fe832544fe3b05b5002326a4fe6f0000000325c4fe83308101033401011301010267800000"
+    },
+    {
+      "id": "riscv64.quality.sccp_dead_branch.O1",
+      "source": "quality.c",
+      "function": "sccp_dead_branch",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "1b05450067800000"
+    },
+    {
+      "id": "riscv64.quality.sccp_dead_branch.O2",
+      "source": "quality.c",
+      "function": "sccp_dead_branch",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "1b05450067800000"
+    },
+    {
+      "id": "riscv64.quality.sccp_narrow_extend.O0",
+      "source": "quality.c",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c110023388100130401022326a4fe0345c4fea305a4fe0305b4fe1305150083308101033401011301010267800000"
+    },
+    {
+      "id": "riscv64.quality.sccp_narrow_extend.O1",
+      "source": "quality.c",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "13158503135585431305150067800000"
+    },
+    {
+      "id": "riscv64.quality.sccp_narrow_extend.O2",
+      "source": "quality.c",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "13158503135585431305150067800000"
+    },
+    {
+      "id": "riscv64.quality.sccp_wraparound.O0",
+      "source": "quality.c",
+      "function": "sccp_wraparound",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c110023388100130401022326a4fe130500ff2324a4fe032584fe8325c4fe3b05b50083308101033401011301010267800000"
+    },
+    {
+      "id": "riscv64.quality.sccp_wraparound.O1",
+      "source": "quality.c",
+      "function": "sccp_wraparound",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "1b0505ff67800000"
+    },
+    {
+      "id": "riscv64.quality.sccp_wraparound.O2",
+      "source": "quality.c",
+      "function": "sccp_wraparound",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "1b0505ff67800000"
+    },
+    {
+      "id": "riscv64.quality.structure_switch.O0",
+      "source": "quality.c",
+      "function": "structure_switch",
+      "optimization": "-O0",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "130101fe233c110023388100130401022324a4fe032584fe2330a4fe631405006f0000006f000000033504fe1b050500930510006314b5006f0000006f000000033504fe1b050500930520006314b5006f0000006f000000033504fe1b050500930530006314b5006f0000006f0000001305a0002326a4fe6f000000130540012326a4fe6f0000001305e0012326a4fe6f000000130580022326a4fe6f0000001305f0ff2326a4fe6f0000000325c4fe83308101033401011301010267800000"
+    },
+    {
+      "id": "riscv64.quality.structure_switch.O1",
+      "source": "quality.c",
+      "function": "structure_switch",
+      "optimization": "-O1",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "933545001306a0003305c5021b05a5009385f5ff33e5a50067800000"
+    },
+    {
+      "id": "riscv64.quality.structure_switch.O2",
+      "source": "quality.c",
+      "function": "structure_switch",
+      "optimization": "-O2",
+      "architectureId": "riscv64",
+      "targetTriple": "riscv64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "933545001306a0003305c5021b05a5009385f5ff33e5a50067800000"
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O0",
+      "source": "quality.c",
+      "function": "aggregate_array_stride",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e548897df88975f4c745f000000000c745ec000000008b45ec3b45f40f8d26000000488b45f848634dec486bc90c4801c88b40040345f08945f08b45ec83c0018945ece9ceffffff8b45f05dc3"
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O1",
+      "source": "quality.c",
+      "function": "aggregate_array_stride",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "85f67e2a89f048c1e002488d0c4031d231c066666666662e0f1f840000000000034417044883c20c4839d175f3c331c0c3"
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "source": "quality.c",
+      "function": "aggregate_array_stride",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "85f67e1089f183fe09730c31d231c0e99700000031c0c389c883e007be08000000480f45f04889ca4829f2488d4758660fefc04889d6660fefc9660f1f440000660f6e50d0660f6e58c4660f62da660f6e50b8660f6e60ac660f62e2660f6ce3660ffec4660f6e10660f6e58f4660f62da660f6e50e8660f6e60dc660f62e2660f6ce3660ffecc4883c0604883c6f875af660ffec8660f70c1ee660ffec1660f70c855660ffec8660f7ec8488d3452488d34b74883c6044829d1660f1f44000003064883c60c48ffc975f5c3"
+    },
+    {
+      "id": "x86_64.quality.aggregate_struct_fields.O0",
+      "source": "quality.c",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e548897df8488b45f88b00488b4df8034104488b4df80341085dc3"
+    },
+    {
+      "id": "x86_64.quality.aggregate_struct_fields.O1",
+      "source": "quality.c",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "8b47040307034708c3"
+    },
+    {
+      "id": "x86_64.quality.aggregate_struct_fields.O2",
+      "source": "quality.c",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "8b47040307034708c3"
+    },
+    {
+      "id": "x86_64.quality.dce_observable_store.O0",
+      "source": "quality.c",
+      "function": "dce_observable_store",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e548897df88975f48b4df483c101488b45f889085dc3"
+    },
+    {
+      "id": "x86_64.quality.dce_observable_store.O1",
+      "source": "quality.c",
+      "function": "dce_observable_store",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "ffc68937c3"
+    },
+    {
+      "id": "x86_64.quality.dce_observable_store.O2",
+      "source": "quality.c",
+      "function": "dce_observable_store",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "ffc68937c3"
+    },
+    {
+      "id": "x86_64.quality.dce_volatile_read.O0",
+      "source": "quality.c",
+      "function": "dce_volatile_read",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e548897df8488b45f88b005dc3"
+    },
+    {
+      "id": "x86_64.quality.dce_volatile_read.O1",
+      "source": "quality.c",
+      "function": "dce_volatile_read",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "8b07c3"
+    },
+    {
+      "id": "x86_64.quality.dce_volatile_read.O2",
+      "source": "quality.c",
+      "function": "dce_volatile_read",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "8b07c3"
+    },
+    {
+      "id": "x86_64.quality.gvn_call_barrier.O0",
+      "source": "quality.c",
+      "function": "gvn_call_barrier",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e54883ec1048897df8488b45f88b008945f4e8000000008b45f4488b4df803014883c4105dc3"
+    },
+    {
+      "id": "x86_64.quality.gvn_call_barrier.O1",
+      "source": "quality.c",
+      "function": "gvn_call_barrier",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "5553504889fb8b2fe800000000032b89e84883c4085b5dc3"
+    },
+    {
+      "id": "x86_64.quality.gvn_call_barrier.O2",
+      "source": "quality.c",
+      "function": "gvn_call_barrier",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "5553504889fb8b2fe800000000032b89e84883c4085b5dc3"
+    },
+    {
+      "id": "x86_64.quality.gvn_load_reuse.O0",
+      "source": "quality.c",
+      "function": "gvn_load_reuse",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e548897df8488975f0488b45f88b008945ec488b45f0c7401001000000488b45f88b008945e88b45ec0345e85dc3"
+    },
+    {
+      "id": "x86_64.quality.gvn_load_reuse.O1",
+      "source": "quality.c",
+      "function": "gvn_load_reuse",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "8b07c74610010000000307c3"
+    },
+    {
+      "id": "x86_64.quality.gvn_load_reuse.O2",
+      "source": "quality.c",
+      "function": "gvn_load_reuse",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "8b07c74610010000000307c3"
+    },
+    {
+      "id": "x86_64.quality.gvn_repeated_expression.O0",
+      "source": "quality.c",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e5897dfc8975f88b45fc0faf45f883c0078945f48b45fc0faf45f883c0078945f08b45f40345f05dc3"
+    },
+    {
+      "id": "x86_64.quality.gvn_repeated_expression.O1",
+      "source": "quality.c",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "0faffe8d047d0e000000c3"
+    },
+    {
+      "id": "x86_64.quality.gvn_repeated_expression.O2",
+      "source": "quality.c",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "0faffe8d047d0e000000c3"
+    },
+    {
+      "id": "x86_64.quality.loop_counted_sum.O0",
+      "source": "quality.c",
+      "function": "loop_counted_sum",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e548897df88975f4c745f000000000c745ec000000008b45ec3b45f40f8d1f000000488b45f848634dec8b04880345f08945f08b45ec83c0018945ece9d5ffffff8b45f05dc3"
+    },
+    {
+      "id": "x86_64.quality.loop_counted_sum.O1",
+      "source": "quality.c",
+      "function": "loop_counted_sum",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "85f67e1889f131d231c0660f1f44000003049748ffc24839d175f5c331c0c3"
+    },
+    {
+      "id": "x86_64.quality.loop_counted_sum.O2",
+      "source": "quality.c",
+      "function": "loop_counted_sum",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "85f67e0d89f183fe08730931d231c0eb6f31c0c389ca81e2f8ffff7f89c8c1e80325ffffff0f48c1e005660fefc031f6660fefc96666662e0f1f840000000000f30f6f1437660ffec2f30f6f543710660ffeca4883c6204839f075e4660ffec8660f70c1ee660ffec1660f70c855660ffec8660f7ec84839ca74100f1f44000003049748ffc24839d175f5c3"
+    },
+    {
+      "id": "x86_64.quality.loop_decrement_step.O0",
+      "source": "quality.c",
+      "function": "loop_decrement_step",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e5897dfcc745f8000000008b45fc8945f4837df4000f8e170000008b45f40345f88945f88b45f483e8038945f4e9dfffffff8b45f85dc3"
+    },
+    {
+      "id": "x86_64.quality.loop_decrement_step.O1",
+      "source": "quality.c",
+      "function": "loop_decrement_step",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "85ff7e3783ff03b8030000000f4cc7f7d801f883c002b9abaaaaaa480fafc848c1e9218d41ff480fafc148d1e88d14408d47fd0fafc101f829d0c331c0c3"
+    },
+    {
+      "id": "x86_64.quality.loop_decrement_step.O2",
+      "source": "quality.c",
+      "function": "loop_decrement_step",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "85ff7e3783ff03b8030000000f4cc7f7d801f883c002b9abaaaaaa480fafc848c1e9218d47fd0fafc18d51ff480fafd148d1ea8d0c5201f829c8c331c0c3"
+    },
+    {
+      "id": "x86_64.quality.loop_early_exit.O0",
+      "source": "quality.c",
+      "function": "loop_early_exit",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e548897df08975ec8955e8c745e4000000008b45e43b45ec0f8d32000000488b45f048634de48b04883b45e80f850b0000008b45e48945fce91a000000e9000000008b45e483c0018945e4e9c2ffffffc745fcffffffff8b45fc5dc3"
+    },
+    {
+      "id": "x86_64.quality.loop_early_exit.O1",
+      "source": "quality.c",
+      "function": "loop_early_exit",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "b8ffffffff85f67e1489f631c90f1f0039148f740948ffc14839ce75f3c389c8c3"
+    },
+    {
+      "id": "x86_64.quality.loop_early_exit.O2",
+      "source": "quality.c",
+      "function": "loop_early_exit",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "b8ffffffff85f67e1489f631c90f1f0039148f740948ffc14839ce75f3c389c8c3"
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "source": "quality.c",
+      "function": "loop_nested",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e548897df88975f48955f0c745ec00000000c745e8000000008b45e83b45f40f8d4e000000c745e4000000008b45e43b45f00f8d28000000488b45f88b4de80faf4df0034de44863c98b04880345ec8945ec8b45e483c0018945e4e9ccffffffe9000000008b45e883c0018945e8e9a6ffffff8b45ec5dc3"
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O1",
+      "source": "quality.c",
+      "function": "loop_nested",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "85f67e4b89f189d64531c04531c931c0eb1966666666662e0f1f84000000000049ffc14101d04939c9742385d27ef14589c24e8d14974531db0f1f80000000004303049a49ffc34c39de75f4ebd2c331c0c3"
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "source": "quality.c",
+      "function": "loop_nested",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "85f60f8ecf000000415741565389f189d64189f04181e0f8ffff7f4c8d4f104189d241c1ea034181e2ffffff0f49c1e2054531db31db31c0eb15660f1f44000048ffc34101d34839cb0f848200000085d27eed4589de83fa0873054531ffeb504f8d3cb1660f6ec8660fefc031c06690f3410f6f5407f0660ffecaf3410f6f1407660ffec24883c0204939c275e2660ffec1660f70c8ee660ffec8660f70c155660ffec1660f7ec04d89c74939f074904e8d34b76666662e0f1f840000000000430304be49ffc74c39fe75f4e96fffffff5b415e415fc331c0c3"
+    },
+    {
+      "id": "x86_64.quality.sccp_dead_branch.O0",
+      "source": "quality.c",
+      "function": "sccp_dead_branch",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e5897df8c745f404000000837df4080f8e0c0000006b45f8038945fce9090000008b45f80345f48945fc8b45fc5dc3"
+    },
+    {
+      "id": "x86_64.quality.sccp_dead_branch.O1",
+      "source": "quality.c",
+      "function": "sccp_dead_branch",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "8d4704c3"
+    },
+    {
+      "id": "x86_64.quality.sccp_dead_branch.O2",
+      "source": "quality.c",
+      "function": "sccp_dead_branch",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "8d4704c3"
+    },
+    {
+      "id": "x86_64.quality.sccp_narrow_extend.O0",
+      "source": "quality.c",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e5897dfc8b45fc8845fb0fbe45fb83c0015dc3"
+    },
+    {
+      "id": "x86_64.quality.sccp_narrow_extend.O1",
+      "source": "quality.c",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "400fbec7ffc0c3"
+    },
+    {
+      "id": "x86_64.quality.sccp_narrow_extend.O2",
+      "source": "quality.c",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "400fbec7ffc0c3"
+    },
+    {
+      "id": "x86_64.quality.sccp_wraparound.O0",
+      "source": "quality.c",
+      "function": "sccp_wraparound",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e5897dfcc745f8f0ffffff8b45f80345fc5dc3"
+    },
+    {
+      "id": "x86_64.quality.sccp_wraparound.O1",
+      "source": "quality.c",
+      "function": "sccp_wraparound",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "8d47f0c3"
+    },
+    {
+      "id": "x86_64.quality.sccp_wraparound.O2",
+      "source": "quality.c",
+      "function": "sccp_wraparound",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "8d47f0c3"
+    },
+    {
+      "id": "x86_64.quality.structure_switch.O0",
+      "source": "quality.c",
+      "function": "structure_switch",
+      "optimization": "-O0",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "554889e5897df88b45f8488945f04883e8030f8744000000488b45f0488d0d00000000486304814801c8ffe0c745fc0a000000e92b000000c745fc14000000e91f000000c745fc1e000000e913000000c745fc28000000e907000000c745fcffffffff8b45fc5dc3"
+    },
+    {
+      "id": "x86_64.quality.structure_switch.O1",
+      "source": "quality.c",
+      "function": "structure_switch",
+      "optimization": "-O1",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "83ff048d04bf8d4c000ab8ffffffff0f42c1c3"
+    },
+    {
+      "id": "x86_64.quality.structure_switch.O2",
+      "source": "quality.c",
+      "function": "structure_switch",
+      "optimization": "-O2",
+      "architectureId": "x86_64",
+      "targetTriple": "x86_64-unknown-linux-gnu",
+      "representation": "machine-bytes",
+      "bytes": "83ff048d04bf8d4c000ab8ffffffff0f42c1c3"
     }
   ],
-  "corpusDigest": "37c049e8ed51a7f0d46538a894be3c7b"
+  "corpusDigest": "3b4770ee3cf7f73c6cc18024acf19915"
 }

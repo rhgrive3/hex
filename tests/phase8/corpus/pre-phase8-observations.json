@@ -1,13 +1,32 @@
 {
   "schemaVersion": 1,
-  "note": "Frozen pre-Phase-8 decompiler output for the Phase 8 corpus. Captured from the product at the Phase 8 base commit with the rewrite engine time valve disabled and a pass-manager allowance far above what any corpus function needs, so the fixed point depends only on the input and the rules. Regenerating this file is an acceptance-semantics change: it invalidates every Phase 8 no-op and quality comparison derived from it.",
+  "note": "Frozen pre-Phase-8 decompiler output for the Phase 8 corpus. Captured from the product at the Phase 8 base commit with the rewrite engine time valve disabled, so the fixed point depends only on the input and the rules. Regenerating this file is an acceptance-semantics change: it invalidates every Phase 8 no-op and quality comparison derived from it.",
   "baseCommit": "bd03d1a860863814dbdcc00559709794d460189d",
   "corpusId": "phase8-decompiler-quality-corpus",
-  "corpusVersion": 1,
-  "corpusDigest": "37c049e8ed51a7f0d46538a894be3c7b",
+  "corpusVersion": 2,
+  "corpusDigest": "3b4770ee3cf7f73c6cc18024acf19915",
   "toolchain": {
     "compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)",
-    "target": "aarch64-unknown-linux-gnu",
+    "targets": [
+      {
+        "architectureId": "arm64",
+        "target": "aarch64-unknown-linux-gnu",
+        "compilerArgs": []
+      },
+      {
+        "architectureId": "x86_64",
+        "target": "x86_64-unknown-linux-gnu",
+        "compilerArgs": []
+      },
+      {
+        "architectureId": "riscv64",
+        "target": "riscv64-unknown-linux-gnu",
+        "compilerArgs": [
+          "-march=rv64im",
+          "-mabi=lp64"
+        ]
+      }
+    ],
     "optimizationLevels": [
       "-O0",
       "-O1",
@@ -19,6 +38,7 @@
   "observations": [
     {
       "id": "quality.aggregate_array_stride.O0",
+      "architectureId": "arm64",
       "function": "aggregate_array_stride",
       "optimization": "-O0",
       "semantic": false,
@@ -27,6 +47,7 @@
       "sourceMappedNodes": 0,
       "provenanceDigest": "e2206acc55c77a119735019db204bd5e",
       "budgetExceeded": null,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": null,
         "gotos": null,
@@ -37,10 +58,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": null,
-      "aggregateLayouts": null
+      "aggregateLayouts": null,
+      "phase8Projection": null
     },
     {
       "id": "quality.aggregate_array_stride.O1",
+      "architectureId": "arm64",
       "function": "aggregate_array_stride",
       "optimization": "-O1",
       "semantic": true,
@@ -49,6 +72,7 @@
       "sourceMappedNodes": 14,
       "provenanceDigest": "f0c8ad031df747f802391c8392e725ed",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 4,
@@ -59,10 +83,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 95,
-      "aggregateLayouts": 1
+      "aggregateLayouts": 1,
+      "phase8Projection": null
     },
     {
       "id": "quality.aggregate_array_stride.O2",
+      "architectureId": "arm64",
       "function": "aggregate_array_stride",
       "optimization": "-O2",
       "semantic": true,
@@ -71,6 +97,7 @@
       "sourceMappedNodes": 36,
       "provenanceDigest": "7008da5e6f1d3deef20f98d569500b7d",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 12,
         "gotos": 9,
@@ -81,10 +108,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 347,
-      "aggregateLayouts": 1
+      "aggregateLayouts": 1,
+      "phase8Projection": null
     },
     {
       "id": "quality.aggregate_struct_fields.O0",
+      "architectureId": "arm64",
       "function": "aggregate_struct_fields",
       "optimization": "-O0",
       "semantic": true,
@@ -93,6 +122,7 @@
       "sourceMappedNodes": 5,
       "provenanceDigest": "b722c7b9a645ed99fbca7091e941cd70",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -103,10 +133,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 62,
-      "aggregateLayouts": 3
+      "aggregateLayouts": 3,
+      "phase8Projection": null
     },
     {
       "id": "quality.aggregate_struct_fields.O1",
+      "architectureId": "arm64",
       "function": "aggregate_struct_fields",
       "optimization": "-O1",
       "semantic": true,
@@ -115,6 +147,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "81efb498b32ad8f2c82f583d300e66cb",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -125,10 +158,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 36,
-      "aggregateLayouts": 2
+      "aggregateLayouts": 2,
+      "phase8Projection": null
     },
     {
       "id": "quality.aggregate_struct_fields.O2",
+      "architectureId": "arm64",
       "function": "aggregate_struct_fields",
       "optimization": "-O2",
       "semantic": true,
@@ -137,6 +172,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "0f645eb2c5de1951f0450559c2dfb48c",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -147,10 +183,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 35,
-      "aggregateLayouts": 2
+      "aggregateLayouts": 2,
+      "phase8Projection": null
     },
     {
       "id": "quality.dce_observable_store.O0",
+      "architectureId": "arm64",
       "function": "dce_observable_store",
       "optimization": "-O0",
       "semantic": true,
@@ -159,6 +197,7 @@
       "sourceMappedNodes": 7,
       "provenanceDigest": "4a4522e5cf55ee27d4fae585b7f27448",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -169,10 +208,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 53,
-      "aggregateLayouts": 1
+      "aggregateLayouts": 1,
+      "phase8Projection": null
     },
     {
       "id": "quality.dce_observable_store.O1",
+      "architectureId": "arm64",
       "function": "dce_observable_store",
       "optimization": "-O1",
       "semantic": true,
@@ -181,6 +222,7 @@
       "sourceMappedNodes": 5,
       "provenanceDigest": "a736370a0ce9f1b096127c2f6a930f17",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -191,10 +233,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 16,
-      "aggregateLayouts": 1
+      "aggregateLayouts": 1,
+      "phase8Projection": null
     },
     {
       "id": "quality.dce_observable_store.O2",
+      "architectureId": "arm64",
       "function": "dce_observable_store",
       "optimization": "-O2",
       "semantic": true,
@@ -203,6 +247,7 @@
       "sourceMappedNodes": 5,
       "provenanceDigest": "431d92b7d55e97cba29bcb63d1a79e88",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -213,10 +258,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 17,
-      "aggregateLayouts": 1
+      "aggregateLayouts": 1,
+      "phase8Projection": null
     },
     {
       "id": "quality.dce_volatile_read.O0",
+      "architectureId": "arm64",
       "function": "dce_volatile_read",
       "optimization": "-O0",
       "semantic": true,
@@ -225,6 +272,7 @@
       "sourceMappedNodes": 5,
       "provenanceDigest": "3feec18f03a38994f0f57479ec3b6247",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -235,10 +283,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 30,
-      "aggregateLayouts": 1
+      "aggregateLayouts": 1,
+      "phase8Projection": null
     },
     {
       "id": "quality.dce_volatile_read.O1",
+      "architectureId": "arm64",
       "function": "dce_volatile_read",
       "optimization": "-O1",
       "semantic": false,
@@ -247,6 +297,7 @@
       "sourceMappedNodes": 0,
       "provenanceDigest": "6ec40ae08eb5b9ac2b59d86aca54f687",
       "budgetExceeded": null,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": null,
         "gotos": null,
@@ -257,10 +308,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": null,
-      "aggregateLayouts": null
+      "aggregateLayouts": null,
+      "phase8Projection": null
     },
     {
       "id": "quality.dce_volatile_read.O2",
+      "architectureId": "arm64",
       "function": "dce_volatile_read",
       "optimization": "-O2",
       "semantic": false,
@@ -269,6 +322,7 @@
       "sourceMappedNodes": 0,
       "provenanceDigest": "6ec40ae08eb5b9ac2b59d86aca54f687",
       "budgetExceeded": null,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": null,
         "gotos": null,
@@ -279,10 +333,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": null,
-      "aggregateLayouts": null
+      "aggregateLayouts": null,
+      "phase8Projection": null
     },
     {
       "id": "quality.gvn_call_barrier.O0",
+      "architectureId": "arm64",
       "function": "gvn_call_barrier",
       "optimization": "-O0",
       "semantic": false,
@@ -291,6 +347,7 @@
       "sourceMappedNodes": 0,
       "provenanceDigest": "1a7c6a1040d0c374cd3d599d0845caef",
       "budgetExceeded": null,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": null,
         "gotos": null,
@@ -301,10 +358,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": null,
-      "aggregateLayouts": null
+      "aggregateLayouts": null,
+      "phase8Projection": null
     },
     {
       "id": "quality.gvn_call_barrier.O1",
+      "architectureId": "arm64",
       "function": "gvn_call_barrier",
       "optimization": "-O1",
       "semantic": false,
@@ -313,6 +372,7 @@
       "sourceMappedNodes": 0,
       "provenanceDigest": "b210085699f8ec10261ae1708932402b",
       "budgetExceeded": null,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": null,
         "gotos": null,
@@ -323,10 +383,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": null,
-      "aggregateLayouts": null
+      "aggregateLayouts": null,
+      "phase8Projection": null
     },
     {
       "id": "quality.gvn_call_barrier.O2",
+      "architectureId": "arm64",
       "function": "gvn_call_barrier",
       "optimization": "-O2",
       "semantic": false,
@@ -335,6 +397,7 @@
       "sourceMappedNodes": 0,
       "provenanceDigest": "b210085699f8ec10261ae1708932402b",
       "budgetExceeded": null,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": null,
         "gotos": null,
@@ -345,10 +408,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": null,
-      "aggregateLayouts": null
+      "aggregateLayouts": null,
+      "phase8Projection": null
     },
     {
       "id": "quality.gvn_load_reuse.O0",
+      "architectureId": "arm64",
       "function": "gvn_load_reuse",
       "optimization": "-O0",
       "semantic": true,
@@ -357,6 +422,7 @@
       "sourceMappedNodes": 9,
       "provenanceDigest": "d5d0bffb126160a3d945a25ebb37a976",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -367,10 +433,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 73,
-      "aggregateLayouts": 3
+      "aggregateLayouts": 3,
+      "phase8Projection": null
     },
     {
       "id": "quality.gvn_load_reuse.O1",
+      "architectureId": "arm64",
       "function": "gvn_load_reuse",
       "optimization": "-O1",
       "semantic": true,
@@ -379,6 +447,7 @@
       "sourceMappedNodes": 5,
       "provenanceDigest": "89642099dc38ca537e012dac59ed38ac",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -389,10 +458,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 32,
-      "aggregateLayouts": 3
+      "aggregateLayouts": 3,
+      "phase8Projection": null
     },
     {
       "id": "quality.gvn_load_reuse.O2",
+      "architectureId": "arm64",
       "function": "gvn_load_reuse",
       "optimization": "-O2",
       "semantic": true,
@@ -401,6 +472,7 @@
       "sourceMappedNodes": 5,
       "provenanceDigest": "2a86763d0abd74f4e0ea7ab0cd23e88f",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -411,10 +483,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 30,
-      "aggregateLayouts": 3
+      "aggregateLayouts": 3,
+      "phase8Projection": null
     },
     {
       "id": "quality.gvn_repeated_expression.O0",
+      "architectureId": "arm64",
       "function": "gvn_repeated_expression",
       "optimization": "-O0",
       "semantic": true,
@@ -423,6 +497,7 @@
       "sourceMappedNodes": 8,
       "provenanceDigest": "47822a7bcaf31d851b5c3fd98e173c62",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -433,10 +508,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 91,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.gvn_repeated_expression.O1",
+      "architectureId": "arm64",
       "function": "gvn_repeated_expression",
       "optimization": "-O1",
       "semantic": true,
@@ -445,6 +522,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "6dc40fb2ed890d48ed02fd76bd815f11",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -455,10 +533,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 21,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.gvn_repeated_expression.O2",
+      "architectureId": "arm64",
       "function": "gvn_repeated_expression",
       "optimization": "-O2",
       "semantic": true,
@@ -467,6 +547,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "ed2cbea16d1746e4fb89cdf45eb2eb59",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -477,10 +558,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 20,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_counted_sum.O0",
+      "architectureId": "arm64",
       "function": "loop_counted_sum",
       "optimization": "-O0",
       "semantic": false,
@@ -489,6 +572,7 @@
       "sourceMappedNodes": 0,
       "provenanceDigest": "d48e9c2ca1f159b003cdb33221d3fbfd",
       "budgetExceeded": null,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": null,
         "gotos": null,
@@ -499,10 +583,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": null,
-      "aggregateLayouts": null
+      "aggregateLayouts": null,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_counted_sum.O1",
+      "architectureId": "arm64",
       "function": "loop_counted_sum",
       "optimization": "-O1",
       "semantic": true,
@@ -511,6 +597,7 @@
       "sourceMappedNodes": 14,
       "provenanceDigest": "7c5002e5e5ee0584364edb0e7f5cbe09",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 4,
@@ -521,10 +608,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 87,
-      "aggregateLayouts": 1
+      "aggregateLayouts": 1,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_counted_sum.O2",
+      "architectureId": "arm64",
       "function": "loop_counted_sum",
       "optimization": "-O2",
       "semantic": true,
@@ -533,6 +622,7 @@
       "sourceMappedNodes": 26,
       "provenanceDigest": "4722ef67d1639ba656367f3286ddf25b",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 11,
@@ -543,10 +633,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 301,
-      "aggregateLayouts": 2
+      "aggregateLayouts": 2,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_decrement_step.O0",
+      "architectureId": "arm64",
       "function": "loop_decrement_step",
       "optimization": "-O0",
       "semantic": false,
@@ -555,6 +647,7 @@
       "sourceMappedNodes": 0,
       "provenanceDigest": "dcbf74d17b55101fd5fa73af57e990c4",
       "budgetExceeded": null,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": null,
         "gotos": null,
@@ -565,10 +658,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": null,
-      "aggregateLayouts": null
+      "aggregateLayouts": null,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_decrement_step.O1",
+      "architectureId": "arm64",
       "function": "loop_decrement_step",
       "optimization": "-O1",
       "semantic": true,
@@ -576,7 +671,8 @@
       "lineCount": 10,
       "sourceMappedNodes": 10,
       "provenanceDigest": "4e18f0a59fca6d6a30c05663fb1af253",
-      "budgetExceeded": false,
+      "budgetExceeded": true,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 2,
@@ -587,10 +683,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 125,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_decrement_step.O2",
+      "architectureId": "arm64",
       "function": "loop_decrement_step",
       "optimization": "-O2",
       "semantic": true,
@@ -599,6 +697,7 @@
       "sourceMappedNodes": 10,
       "provenanceDigest": "54394481166ac8e1a9358f4ce5a94d48",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 2,
@@ -609,10 +708,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 124,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_early_exit.O0",
+      "architectureId": "arm64",
       "function": "loop_early_exit",
       "optimization": "-O0",
       "semantic": false,
@@ -621,6 +722,7 @@
       "sourceMappedNodes": 0,
       "provenanceDigest": "67f05b9c0cf6a39d06ec98906b70baa0",
       "budgetExceeded": null,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": null,
         "gotos": null,
@@ -631,10 +733,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": null,
-      "aggregateLayouts": null
+      "aggregateLayouts": null,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_early_exit.O1",
+      "architectureId": "arm64",
       "function": "loop_early_exit",
       "optimization": "-O1",
       "semantic": true,
@@ -643,6 +747,7 @@
       "sourceMappedNodes": 14,
       "provenanceDigest": "745fc88f12fb5d14c5cb47e6fa60c5e5",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 2,
@@ -653,10 +758,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 120,
-      "aggregateLayouts": 1
+      "aggregateLayouts": 1,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_early_exit.O2",
+      "architectureId": "arm64",
       "function": "loop_early_exit",
       "optimization": "-O2",
       "semantic": true,
@@ -665,6 +772,7 @@
       "sourceMappedNodes": 14,
       "provenanceDigest": "51968779334b59c8e85d8a3501a555d5",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 2,
@@ -675,10 +783,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 120,
-      "aggregateLayouts": 1
+      "aggregateLayouts": 1,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_nested.O0",
+      "architectureId": "arm64",
       "function": "loop_nested",
       "optimization": "-O0",
       "semantic": false,
@@ -687,6 +797,7 @@
       "sourceMappedNodes": 0,
       "provenanceDigest": "db62f705417310c0904d04fe7f3600bb",
       "budgetExceeded": null,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": null,
         "gotos": null,
@@ -697,10 +808,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": null,
-      "aggregateLayouts": null
+      "aggregateLayouts": null,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_nested.O1",
+      "architectureId": "arm64",
       "function": "loop_nested",
       "optimization": "-O1",
       "semantic": true,
@@ -709,6 +822,7 @@
       "sourceMappedNodes": 14,
       "provenanceDigest": "7033ec88039b87cb34d7d82885fe6d70",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 1,
@@ -719,10 +833,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 213,
-      "aggregateLayouts": 1
+      "aggregateLayouts": 1,
+      "phase8Projection": null
     },
     {
       "id": "quality.loop_nested.O2",
+      "architectureId": "arm64",
       "function": "loop_nested",
       "optimization": "-O2",
       "semantic": true,
@@ -731,6 +847,7 @@
       "sourceMappedNodes": 22,
       "provenanceDigest": "58de0889befb0d71d3e56f7da08f092a",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 2,
@@ -741,10 +858,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 453,
-      "aggregateLayouts": 2
+      "aggregateLayouts": 2,
+      "phase8Projection": null
     },
     {
       "id": "quality.sccp_dead_branch.O0",
+      "architectureId": "arm64",
       "function": "sccp_dead_branch",
       "optimization": "-O0",
       "semantic": true,
@@ -753,6 +872,7 @@
       "sourceMappedNodes": 11,
       "provenanceDigest": "470771ee90c3cf9da459f3396b026b62",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -763,10 +883,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 109,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.sccp_dead_branch.O1",
+      "architectureId": "arm64",
       "function": "sccp_dead_branch",
       "optimization": "-O1",
       "semantic": true,
@@ -775,6 +897,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "8b742bd921c9ad6502f464094ca19c5c",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -785,10 +908,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 11,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.sccp_dead_branch.O2",
+      "architectureId": "arm64",
       "function": "sccp_dead_branch",
       "optimization": "-O2",
       "semantic": true,
@@ -797,6 +922,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "f0fa56d7e9d025505d67562a287b06a9",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -807,10 +933,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 13,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.sccp_narrow_extend.O0",
+      "architectureId": "arm64",
       "function": "sccp_narrow_extend",
       "optimization": "-O0",
       "semantic": true,
@@ -819,6 +947,7 @@
       "sourceMappedNodes": 6,
       "provenanceDigest": "e00dc3a33935c32a9f8618b15235b937",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -829,10 +958,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 45,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.sccp_narrow_extend.O1",
+      "architectureId": "arm64",
       "function": "sccp_narrow_extend",
       "optimization": "-O1",
       "semantic": true,
@@ -841,6 +972,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "9a670f09485e10e13e01c406698a69d4",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -851,10 +983,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 13,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.sccp_narrow_extend.O2",
+      "architectureId": "arm64",
       "function": "sccp_narrow_extend",
       "optimization": "-O2",
       "semantic": true,
@@ -863,6 +997,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "b0e8560cb3da1d70563c5a951454f501",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -873,10 +1008,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 15,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.sccp_wraparound.O0",
+      "architectureId": "arm64",
       "function": "sccp_wraparound",
       "optimization": "-O0",
       "semantic": true,
@@ -885,6 +1022,7 @@
       "sourceMappedNodes": 6,
       "provenanceDigest": "df043d6cc52500e906aa383dc8c1e620",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -895,10 +1033,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 44,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.sccp_wraparound.O1",
+      "architectureId": "arm64",
       "function": "sccp_wraparound",
       "optimization": "-O1",
       "semantic": true,
@@ -907,6 +1047,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "63c534267bdb33f71e8dc98d9919f6da",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -917,10 +1058,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 12,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.sccp_wraparound.O2",
+      "architectureId": "arm64",
       "function": "sccp_wraparound",
       "optimization": "-O2",
       "semantic": true,
@@ -929,6 +1072,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "1bd8996985ef70abe2d523512312bcf2",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -939,10 +1083,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 12,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.structure_switch.O0",
+      "architectureId": "arm64",
       "function": "structure_switch",
       "optimization": "-O0",
       "semantic": true,
@@ -951,6 +1097,7 @@
       "sourceMappedNodes": 23,
       "provenanceDigest": "fb63dfb735d30904c952b4ff20897c4b",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -961,10 +1108,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 165,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.structure_switch.O1",
+      "architectureId": "arm64",
       "function": "structure_switch",
       "optimization": "-O1",
       "semantic": true,
@@ -973,6 +1122,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "fa7b6ea6051c3cfe5b5b830bdec1557f",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -983,10 +1133,12 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 37,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     },
     {
       "id": "quality.structure_switch.O2",
+      "architectureId": "arm64",
       "function": "structure_switch",
       "optimization": "-O2",
       "semantic": true,
@@ -995,6 +1147,7 @@
       "sourceMappedNodes": 4,
       "provenanceDigest": "0752cc02f51b0425de653020cacf60a0",
       "budgetExceeded": false,
+      "completeness": null,
       "readability": {
         "rawAssemblyFallbacks": 0,
         "gotos": 0,
@@ -1005,8 +1158,2139 @@
       },
       "prototypeArity": null,
       "highVariableGroups": 36,
-      "aggregateLayouts": 0
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.aggregate_array_stride.O0",
+      "architectureId": "riscv64",
+      "function": "aggregate_array_stride",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 aggregate_array_stride(uint64 a1, uint64 a2)\n{\n    local_p1FFFFFFFFFFFFFFE8 = local_x10;\n    local_p1FFFFFFFFFFFFFFE4 = local_x11;\n    local_p1FFFFFFFFFFFFFFE0 = 0;\n    local_p1FFFFFFFFFFFFFFDC = 0;\n    goto loc_3D0024;\n}",
+      "lineCount": 8,
+      "sourceMappedNodes": 8,
+      "provenanceDigest": "371c339e93c14b5cf855c4492d9c041d",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 1,
+        "temporaries": 0,
+        "redundantCasts": 53,
+        "rewrittenExpressions": 18,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 126,
+      "aggregateLayouts": 12,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.aggregate_array_stride.O1",
+      "architectureId": "riscv64",
+      "failure": "semantic-ssa-entry-has-predecessors"
+    },
+    {
+      "id": "riscv64.quality.aggregate_array_stride.O2",
+      "architectureId": "riscv64",
+      "failure": "semantic-ssa-entry-has-predecessors"
+    },
+    {
+      "id": "riscv64.quality.aggregate_struct_fields.O0",
+      "architectureId": "riscv64",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 aggregate_struct_fields(uint64 a1)\n{\n    local_p1FFFFFFFFFFFFFFE8 = local_x10;\n    return (int64_t)(uint32_t)((int64_t)(uint32_t)((int64_t)memory_unknown +\n        (int64_t)memory_unknown) +\n        (int64_t)memory_unknown);\n}",
+      "lineCount": 5,
+      "sourceMappedNodes": 5,
+      "provenanceDigest": "fe1485764fbc4d73b36468beb234c98c",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 40,
+        "rewrittenExpressions": 17,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 58,
+      "aggregateLayouts": 3,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.aggregate_struct_fields.O1",
+      "architectureId": "riscv64",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 aggregate_struct_fields(uint64 a1)\n{\n    return (int64_t)(uint32_t)((int64_t)local_x10->field_4 +\n        (int64_t)local_x10->field_0 +\n        (int64_t)local_x10->field_8);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "2162bb4691dabef7a48a850a27c61034",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 29,
+        "rewrittenExpressions": 3,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 29,
+      "aggregateLayouts": 3,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.aggregate_struct_fields.O2",
+      "architectureId": "riscv64",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 aggregate_struct_fields(uint64 a1)\n{\n    return (int64_t)(uint32_t)((int64_t)local_x10->field_4 +\n        (int64_t)local_x10->field_0 +\n        (int64_t)local_x10->field_8);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "e26166751fb659bac48b0123c8084d9d",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 29,
+        "rewrittenExpressions": 3,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 29,
+      "aggregateLayouts": 3,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.dce_observable_store.O0",
+      "architectureId": "riscv64",
+      "function": "dce_observable_store",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 dce_observable_store(uint64 a1, uint64 a2)\n{\n    local_p1FFFFFFFFFFFFFFE8 = local_x10;\n    local_p1FFFFFFFFFFFFFFE4 = local_x11;\n    memory_unknown = (int64_t)(uint32_t)((int64_t)(uint32_t)local_x11 + 1);\n    return (int64_t)(uint32_t)((int64_t)(uint32_t)local_x11 + 1);\n}",
+      "lineCount": 7,
+      "sourceMappedNodes": 7,
+      "provenanceDigest": "bc056125831c2665ca689f9bfa6b7472",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 13,
+        "rewrittenExpressions": 23,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 55,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.dce_observable_store.O1",
+      "architectureId": "riscv64",
+      "function": "dce_observable_store",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 dce_observable_store(uint64 a1, uint64 a2)\n{\n    local_x10->field_0 = local_x11 + 1;\n    return local_x10;\n}",
+      "lineCount": 5,
+      "sourceMappedNodes": 5,
+      "provenanceDigest": "39c0f58690afaa13359ca4535eef631a",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 3,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 14,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.dce_observable_store.O2",
+      "architectureId": "riscv64",
+      "function": "dce_observable_store",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 dce_observable_store(uint64 a1, uint64 a2)\n{\n    local_x10->field_0 = local_x11 + 1;\n    return local_x10;\n}",
+      "lineCount": 5,
+      "sourceMappedNodes": 5,
+      "provenanceDigest": "35a85fc9b53b926d5acd0db1649cc298",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 3,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 16,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.dce_volatile_read.O0",
+      "architectureId": "riscv64",
+      "function": "dce_volatile_read",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 dce_volatile_read(uint64 a1)\n{\n    return (int64_t)memory_unknown;\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "308711b8c7aa456569deb58d9655afb4",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 2,
+        "rewrittenExpressions": 17,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 42,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.dce_volatile_read.O1",
+      "architectureId": "riscv64",
+      "function": "dce_volatile_read",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 dce_volatile_read(uint64 a1)\n{\n    return local_x10;\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "b23d72a87b6a963368b10708f9835648",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 1,
+        "rewrittenExpressions": 3,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 12,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.dce_volatile_read.O2",
+      "architectureId": "riscv64",
+      "function": "dce_volatile_read",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 dce_volatile_read(uint64 a1)\n{\n    return local_x10;\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "94f740d7b5fc51256a4f950bde973672",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 1,
+        "rewrittenExpressions": 3,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 12,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.gvn_call_barrier.O0",
+      "architectureId": "riscv64",
+      "function": "gvn_call_barrier",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_call_barrier(uint64 a1, uint64 a2)\n{\n    local_p1FFFFFFFFFFFFFFE8 = local_x10;\n    local_p1FFFFFFFFFFFFFFE4 = (int64_t)memory_unknown;\n    unknown_call(x10);\n    return (int64_t)(uint32_t)((int64_t)memory_unknown + (int64_t)memory_unknown);\n}",
+      "lineCount": 7,
+      "sourceMappedNodes": 7,
+      "provenanceDigest": "16406a753c102a86fd25b07d3a2b5239",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 20,
+        "rewrittenExpressions": 25,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 80,
+      "aggregateLayouts": 2,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.gvn_call_barrier.O1",
+      "architectureId": "riscv64",
+      "function": "gvn_call_barrier",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_call_barrier(uint64 a1)\n{\n    unknown_call(x10);\n    return (int64_t)(uint32_t)((int64_t)memory_unknown + call_40);\n}",
+      "lineCount": 5,
+      "sourceMappedNodes": 5,
+      "provenanceDigest": "a61c74ee77c73810a75e9a8bc6494053",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 1,
+        "redundantCasts": 11,
+        "rewrittenExpressions": 9,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 71,
+      "aggregateLayouts": 2,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.gvn_call_barrier.O2",
+      "architectureId": "riscv64",
+      "function": "gvn_call_barrier",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_call_barrier(uint64 a1)\n{\n    unknown_call(x10);\n    return (int64_t)(uint32_t)((int64_t)memory_unknown + call_40);\n}",
+      "lineCount": 5,
+      "sourceMappedNodes": 5,
+      "provenanceDigest": "6d3e5af4020c9ffa5d21fb5c87d4c621",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 1,
+        "redundantCasts": 11,
+        "rewrittenExpressions": 9,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 72,
+      "aggregateLayouts": 2,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.gvn_load_reuse.O0",
+      "architectureId": "riscv64",
+      "function": "gvn_load_reuse",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_load_reuse(uint64 a1, uint64 a2)\n{\n    local_p1FFFFFFFFFFFFFFDC = (int64_t)memory_unknown;\n    memory_unknown = 1;\n    local_p1FFFFFFFFFFFFFFD8 = (int64_t)memory_unknown;\n    return (int64_t)(uint32_t)((int64_t)local_p1FFFFFFFFFFFFFFDC +\n        (int64_t)memory_unknown);\n}",
+      "lineCount": 7,
+      "sourceMappedNodes": 7,
+      "provenanceDigest": "3f64f3638cd723c5fe2764042a7eb31c",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 24,
+        "rewrittenExpressions": 47,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 82,
+      "aggregateLayouts": 3,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.gvn_load_reuse.O1",
+      "architectureId": "riscv64",
+      "function": "gvn_load_reuse",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_load_reuse(uint64 a1, uint64 a2)\n{\n    local_x11->field_10 = 1;\n    return (int64_t)(uint32_t)((int64_t)local_x10->field_0 +\n        (int64_t)local_x10->field_0);\n}",
+      "lineCount": 5,
+      "sourceMappedNodes": 5,
+      "provenanceDigest": "f1062939c26daef1f889b9f6fde80900",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 16,
+        "rewrittenExpressions": 4,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 31,
+      "aggregateLayouts": 3,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.gvn_load_reuse.O2",
+      "architectureId": "riscv64",
+      "function": "gvn_load_reuse",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_load_reuse(uint64 a1, uint64 a2)\n{\n    local_x11->field_10 = 1;\n    return (int64_t)(uint32_t)((int64_t)local_x10->field_0 +\n        (int64_t)local_x10->field_0);\n}",
+      "lineCount": 5,
+      "sourceMappedNodes": 5,
+      "provenanceDigest": "621305b505f50552854dce7d0bb628f3",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 16,
+        "rewrittenExpressions": 4,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 31,
+      "aggregateLayouts": 3,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.gvn_repeated_expression.O0",
+      "architectureId": "riscv64",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_repeated_expression(uint64 a1, uint64 a2)\n{\n    local_p1FFFFFFFFFFFFFFEC = local_x10;\n    local_p1FFFFFFFFFFFFFFE8 = local_x11;\n    local_p1FFFFFFFFFFFFFFE4 = (int64_t)(uint32_t)((int64_t)(uint32_t)((int64_t)(uint32_t)local_x10 * (int64_t)(uint32_t)local_x11) +\n        7);\n    local_p1FFFFFFFFFFFFFFE0 = (int64_t)(uint32_t)((int64_t)(uint32_t)((int64_t)(uint32_t)local_x10 * (int64_t)(uint32_t)local_x11) +\n        7);\n    return (int64_t)(uint32_t)((uint64_t)(int64_t)(uint32_t)((int64_t)(uint32_t)((int64_t)(uint32_t)local_x10 * (int64_t)(uint32_t)local_x11) +\n        7) << 1);\n}",
+      "lineCount": 8,
+      "sourceMappedNodes": 8,
+      "provenanceDigest": "53a8aa82531603c2073f3dc9da40b21b",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 130,
+        "rewrittenExpressions": 60,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 90,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.gvn_repeated_expression.O1",
+      "architectureId": "riscv64",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_repeated_expression(uint64 a1, uint64 a2)\n{\n    return (int64_t)(uint32_t)(((uint64_t)(local_x10 * local_x11) << 1) + 14);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "4c5bba4d29439bf1622d95bc773e7c96",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 2,
+        "rewrittenExpressions": 2,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 17,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.gvn_repeated_expression.O2",
+      "architectureId": "riscv64",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_repeated_expression(uint64 a1, uint64 a2)\n{\n    return (int64_t)(uint32_t)(((uint64_t)(local_x10 * local_x11) << 1) + 14);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "fbe11296bb77d5cf9618c81985a252c0",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 2,
+        "rewrittenExpressions": 2,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 18,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.loop_counted_sum.O0",
+      "architectureId": "riscv64",
+      "function": "loop_counted_sum",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 loop_counted_sum(uint64 a1, uint64 a2)\n{\n    local_p1FFFFFFFFFFFFFFE8 = local_x10;\n    local_p1FFFFFFFFFFFFFFE4 = local_x11;\n    local_p1FFFFFFFFFFFFFFE0 = 0;\n    local_p1FFFFFFFFFFFFFFDC = 0;\n    goto loc_520024;\n}",
+      "lineCount": 8,
+      "sourceMappedNodes": 8,
+      "provenanceDigest": "61414ae76ac9b8d7ef58628570132a22",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 1,
+        "temporaries": 0,
+        "redundantCasts": 53,
+        "rewrittenExpressions": 19,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 123,
+      "aggregateLayouts": 12,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.loop_counted_sum.O1",
+      "architectureId": "riscv64",
+      "function": "loop_counted_sum",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 loop_counted_sum(uint64 a1, uint64 a2)\n{\n    while (0 >= (int64_t)x11) {\n    }\n    while ((uint64_t)x10 + 4 != (uint64_t)x10 + (x11 << 2)) {\n    }\n    return (int64_t)local_x10->field_0;\n}",
+      "lineCount": 8,
+      "sourceMappedNodes": 8,
+      "provenanceDigest": "04e9eb5024c03c8157ca94824b656aee",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 10,
+        "rewrittenExpressions": 17,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 38,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.loop_counted_sum.O2",
+      "architectureId": "riscv64",
+      "function": "loop_counted_sum",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 loop_counted_sum(uint64 a1, uint64 a2)\n{\n    while (0 >= (int64_t)x11) {\n    }\n    while ((uint64_t)x10 + 4 != (uint64_t)x10 + (x11 << 2)) {\n    }\n    return (int64_t)local_x10->field_0;\n}",
+      "lineCount": 8,
+      "sourceMappedNodes": 8,
+      "provenanceDigest": "1c8592f61b5370d0c2271be0af607947",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 10,
+        "rewrittenExpressions": 17,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 36,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.loop_decrement_step.O0",
+      "architectureId": "riscv64",
+      "function": "loop_decrement_step",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 loop_decrement_step(uint64 a1)\n{\n    local_p1FFFFFFFFFFFFFFEC = local_x10;\n    local_p1FFFFFFFFFFFFFFE8 = 0;\n    local_p1FFFFFFFFFFFFFFE4 = (int64_t)(uint32_t)local_x10;\n    goto loc_550024;\n}",
+      "lineCount": 7,
+      "sourceMappedNodes": 7,
+      "provenanceDigest": "72c065c17f435869c94ca8bcc13789f8",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 1,
+        "temporaries": 0,
+        "redundantCasts": 44,
+        "rewrittenExpressions": 18,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 107,
+      "aggregateLayouts": 9,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.loop_decrement_step.O1",
+      "architectureId": "riscv64",
+      "failure": "semantic-ssa-entry-has-predecessors"
+    },
+    {
+      "id": "riscv64.quality.loop_decrement_step.O2",
+      "architectureId": "riscv64",
+      "failure": "semantic-ssa-entry-has-predecessors"
+    },
+    {
+      "id": "riscv64.quality.loop_early_exit.O0",
+      "architectureId": "riscv64",
+      "function": "loop_early_exit",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 loop_early_exit(uint64 a1, uint64 a2, uint64 a3)\n{\n    local_p1FFFFFFFFFFFFFFE0 = local_x10;\n    local_p1FFFFFFFFFFFFFFDC = local_x11;\n    local_p1FFFFFFFFFFFFFFD8 = local_x12;\n    local_p1FFFFFFFFFFFFFFD4 = 0;\n    goto loc_580024;\n}",
+      "lineCount": 8,
+      "sourceMappedNodes": 8,
+      "provenanceDigest": "ba3afe41fde69f4b754d71e88556662e",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 1,
+        "temporaries": 0,
+        "redundantCasts": 41,
+        "rewrittenExpressions": 19,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 141,
+      "aggregateLayouts": 14,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.loop_early_exit.O1",
+      "architectureId": "riscv64",
+      "function": "loop_early_exit",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 loop_early_exit(uint64 a1, uint64 a2, uint64 a3)\n{\n    while (0 >= (int64_t)x11) {\n    }\n    while ((uint64_t)sext(x10 + 0->field_0) == (uint64_t)x12) {\n    }\n    while ((uint64_t)x11 + 0xFFFFFFFFFFFFFFFF != 0) {\n    }\n    return local_x10;\n}",
+      "lineCount": 10,
+      "sourceMappedNodes": 10,
+      "provenanceDigest": "9b3e652def66dcd33f56a011e6f8c25c",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 3,
+        "rewrittenExpressions": 14,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 57,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.loop_early_exit.O2",
+      "architectureId": "riscv64",
+      "function": "loop_early_exit",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 loop_early_exit(uint64 a1, uint64 a2, uint64 a3)\n{\n    while (0 >= (int64_t)x11) {\n    }\n    while ((uint64_t)sext(x10 + 0->field_0) == (uint64_t)x12) {\n    }\n    while ((uint64_t)x11 + 0xFFFFFFFFFFFFFFFF != 0) {\n    }\n    return local_x10;\n}",
+      "lineCount": 10,
+      "sourceMappedNodes": 10,
+      "provenanceDigest": "5b11399e8dd4a42ae30adf2e0bff5405",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 3,
+        "rewrittenExpressions": 14,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 55,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.loop_nested.O0",
+      "architectureId": "riscv64",
+      "function": "loop_nested",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 loop_nested(uint64 a1, uint64 a2, uint64 a3)\n{\n    local_p1FFFFFFFFFFFFFFE8 = local_x10;\n    local_p1FFFFFFFFFFFFFFE4 = local_x11;\n    local_p1FFFFFFFFFFFFFFE0 = local_x12;\n    local_p1FFFFFFFFFFFFFFDC = 0;\n    local_p1FFFFFFFFFFFFFFD8 = 0;\n    goto loc_5B0028;\n}",
+      "lineCount": 9,
+      "sourceMappedNodes": 9,
+      "provenanceDigest": "13aacfea9f409f4a4d5a0eb2730d67cf",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 1,
+        "temporaries": 0,
+        "redundantCasts": 142,
+        "rewrittenExpressions": 22,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 190,
+      "aggregateLayouts": 19,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.loop_nested.O1",
+      "architectureId": "riscv64",
+      "failure": "semantic-ssa-entry-has-predecessors"
+    },
+    {
+      "id": "riscv64.quality.loop_nested.O2",
+      "architectureId": "riscv64",
+      "failure": "semantic-ssa-entry-has-predecessors"
+    },
+    {
+      "id": "riscv64.quality.sccp_dead_branch.O0",
+      "architectureId": "riscv64",
+      "function": "sccp_dead_branch",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_dead_branch(uint64 a1)\n{\n    loc_5E0000:\n        local_p1FFFFFFFFFFFFFFE8 = local_x10;\n        local_p1FFFFFFFFFFFFFFE4 = 4;\n        if (4 >= 9) goto loc_5E002C;\n        goto loc_5E0028;\n    loc_5E002C:\n        goto loc_5E002C;\n    loc_5E0028:\n        goto loc_5E0028;\n}",
+      "lineCount": 12,
+      "sourceMappedNodes": 12,
+      "provenanceDigest": "489b212f16dfde9c3c7ec1b7de9cfd49",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 4,
+        "temporaries": 0,
+        "redundantCasts": 48,
+        "rewrittenExpressions": 25,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 98,
+      "aggregateLayouts": 8,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.sccp_dead_branch.O1",
+      "architectureId": "riscv64",
+      "function": "sccp_dead_branch",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_dead_branch(uint64 a1)\n{\n    return (int64_t)(uint32_t)(local_x10 + 4);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "aabd99b4baf3be519847b84a6a855bea",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 2,
+        "rewrittenExpressions": 2,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 12,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.sccp_dead_branch.O2",
+      "architectureId": "riscv64",
+      "function": "sccp_dead_branch",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_dead_branch(uint64 a1)\n{\n    return (int64_t)(uint32_t)(local_x10 + 4);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "59ececa28ac25ded8ef953342b1f2082",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 2,
+        "rewrittenExpressions": 2,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 12,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.sccp_narrow_extend.O0",
+      "architectureId": "riscv64",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_narrow_extend(uint64 a1)\n{\n    local_p1FFFFFFFFFFFFFFEC = local_x10;\n    local_p1FFFFFFFFFFFFFFEB = local_p1FFFFFFFFFFFFFFEC;\n    return (int64_t)local_p1FFFFFFFFFFFFFFEC + 1;\n}",
+      "lineCount": 6,
+      "sourceMappedNodes": 6,
+      "provenanceDigest": "875770567adcd8106dfa55cbfa80234d",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 5,
+        "rewrittenExpressions": 22,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 49,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.sccp_narrow_extend.O1",
+      "architectureId": "riscv64",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_narrow_extend(uint64 a1)\n{\n    return ((int64_t)((uint64_t)local_x10 << 56) >> 56) + 1;\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "bdacdf9fbfa823f5a65be77bb169219e",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 5,
+        "rewrittenExpressions": 2,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 15,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.sccp_narrow_extend.O2",
+      "architectureId": "riscv64",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_narrow_extend(uint64 a1)\n{\n    return ((int64_t)((uint64_t)local_x10 << 56) >> 56) + 1;\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "75e5aebcaaa74c68ed1a06cefd84fc4b",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 5,
+        "rewrittenExpressions": 2,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 16,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.sccp_wraparound.O0",
+      "architectureId": "riscv64",
+      "function": "sccp_wraparound",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_wraparound(uint64 a1)\n{\n    local_p1FFFFFFFFFFFFFFEC = local_x10;\n    local_p1FFFFFFFFFFFFFFE8 = 0xFFFFFFF0;\n    return (int64_t)(uint32_t)(0xFFFFFFFFFFFFFFF0 + (int64_t)(uint32_t)local_x10);\n}",
+      "lineCount": 6,
+      "sourceMappedNodes": 6,
+      "provenanceDigest": "f0fd6c29fac6720c3dd55db1bbe14553",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 9,
+        "rewrittenExpressions": 22,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 55,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.sccp_wraparound.O1",
+      "architectureId": "riscv64",
+      "function": "sccp_wraparound",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_wraparound(uint64 a1)\n{\n    return (int64_t)(uint32_t)(local_x10 + 0xFFFFFFFFFFFFFFF0);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "a32c2ca8a4166730e5f7650ad26a65d7",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 2,
+        "rewrittenExpressions": 2,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 12,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.sccp_wraparound.O2",
+      "architectureId": "riscv64",
+      "function": "sccp_wraparound",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_wraparound(uint64 a1)\n{\n    return (int64_t)(uint32_t)(local_x10 + 0xFFFFFFFFFFFFFFF0);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "802ebb2331d5769cbdfbcf3be6623483",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 2,
+        "rewrittenExpressions": 2,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 12,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.structure_switch.O0",
+      "architectureId": "riscv64",
+      "function": "structure_switch",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 structure_switch(uint64 a1)\n{\n    loc_670000:\n        local_p1FFFFFFFFFFFFFFE8 = local_x10;\n        local_p1FFFFFFFFFFFFFFE0 = (int64_t)(uint32_t)local_x10;\n        if ((uint64_t)var_m20 != 0) goto loc_670024;\n        goto loc_670020;\n    loc_670024:\n        goto loc_670024;\n    loc_670020:\n        goto loc_670020;\n}",
+      "lineCount": 12,
+      "sourceMappedNodes": 12,
+      "provenanceDigest": "8c4bb5ce91a758d7f89a6e160dde1af6",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 4,
+        "temporaries": 0,
+        "redundantCasts": 15,
+        "rewrittenExpressions": 30,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 149,
+      "aggregateLayouts": 11,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.structure_switch.O1",
+      "architectureId": "riscv64",
+      "function": "structure_switch",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 structure_switch(uint64 a1)\n{\n    return local_15 + 0xFFFFFFFFFFFFFFFF | (int64_t)(uint32_t)(local_x10 * 10 + 10);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "1c9d3a136c76c3f01aeab8eed8e77dd5",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 5,
+        "rewrittenExpressions": 2,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 26,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "riscv64.quality.structure_switch.O2",
+      "architectureId": "riscv64",
+      "function": "structure_switch",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 structure_switch(uint64 a1)\n{\n    return local_18 + 0xFFFFFFFFFFFFFFFF | (int64_t)(uint32_t)(local_x10 * 10 + 10);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "bf4caa2950d4033299ea397c5a58d79f",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 5,
+        "rewrittenExpressions": 2,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 25,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O0",
+      "architectureId": "x86_64",
+      "function": "aggregate_array_stride",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 aggregate_array_stride(uint64 a1, uint64 a2, uint64 a4)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    while ((int32_t)bit_extract(v82, 0, 32) < (int32_t)v81) {\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        continue;\n    }\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    return local_29;\n}",
+      "lineCount": 56,
+      "sourceMappedNodes": 56,
+      "provenanceDigest": "95be35ae12bde7859d828943e1aa1a1a",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 49,
+        "gotos": 0,
+        "temporaries": 51,
+        "redundantCasts": 3,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 110,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O1",
+      "architectureId": "x86_64",
+      "function": "aggregate_array_stride",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 aggregate_array_stride(uint64 a2, uint64 a3)\n{\n    loc_6B0000:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rsi,\n            0,\n            32) & (uint32_t)bit_extract(rsi,\n            0,\n            32)) <= 0) goto loc_6B002E;\n        goto loc_6B0004;\n    loc_6B0004:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n    loc_6B002E:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        return 0;\n    loc_6B002D:\n        return local_112;\n    loc_6B0020:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (condition_ne) goto loc_6B0020;\n        goto loc_6B002D;\n}",
+      "lineCount": 41,
+      "sourceMappedNodes": 41,
+      "provenanceDigest": "f0dda0f09a39ca3c1c2ff74cabad79ff",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 27,
+        "gotos": 4,
+        "temporaries": 27,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 10,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 148,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.aggregate_array_stride.O2",
+      "architectureId": "x86_64",
+      "function": "aggregate_array_stride",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 aggregate_array_stride(uint64 a1, uint64 a2, uint64 a3)\n{\n    loc_6C0000:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: architecture-lifter-returned-no-exact-effects\");\n        __asm(\"semantic-v2 function unknown: architecture-lifter-returned-no-exact-effects\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rsi,\n            0,\n            32) & (uint32_t)bit_extract(rsi,\n            0,\n            32)) <= 0) goto loc_6C0014;\n        goto loc_6C0004;\n    loc_6C0091:\n    loc_6C000B:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        goto loc_6C00AB;\n    loc_6C0040:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-state-write\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-control-effect\");\n        __asm(\"semantic-v2 incomplete\");\n        __asm(\"semantic-v2 unknown-control-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-state-write\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-control-effect\");\n        __asm(\"semantic-v2 incomplete\");\n        __asm(\"semantic-v2 unknown-control-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if ((uint64_t)((uint64_t)rsi +\n            (uint64_t)0xFFFFFFFFFFFFFFF8) != 0) goto loc_6C0040;\n        goto loc_6C0091;\n    loc_6C0014:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        return 0;\n    loc_6C00CB:\n        return local_298;\n    loc_6C00AB:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n    loc_6C00C0:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if ((uint64_t)phi((phi(rcx,\n            bit_extract(rsi,\n            0,\n            32))) - (phi(rdx,\n            (bit_extract(rdx,\n            0,\n            32)) ^ (bit_extract(rdx,\n            0,\n            32)))),\n            v149 - 1) != 1) goto loc_6C00C0;\n        goto loc_6C00CB;\n    loc_6C0004:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (__arm64_condition_ae(/* NZCV */)) goto loc_6C0017;\n        goto loc_6C000B;\n    loc_6C0017:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n}",
+      "lineCount": 108,
+      "sourceMappedNodes": 108,
+      "provenanceDigest": "7a63044ce0a62e81902421f91b1d5cdc",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 84,
+        "gotos": 9,
+        "temporaries": 85,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 75,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 472,
+      "aggregateLayouts": 1,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.aggregate_struct_fields.O0",
+      "architectureId": "x86_64",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 aggregate_struct_fields(uint64 a1)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(bit_extract(local_34, 0, 32) + local_13, 0, 32) + local_35;\n}",
+      "lineCount": 28,
+      "sourceMappedNodes": 28,
+      "provenanceDigest": "324909ff5d2edf5367bcfd6436947e00",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 24,
+        "gotos": 0,
+        "temporaries": 24,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 54,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.aggregate_struct_fields.O1",
+      "architectureId": "x86_64",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 aggregate_struct_fields(void)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(bit_extract(local_20, 0, 32) + local_14, 0, 32) + local_6;\n}",
+      "lineCount": 20,
+      "sourceMappedNodes": 20,
+      "provenanceDigest": "e173484a799b96e45d9022ab6ef16f51",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 16,
+        "gotos": 0,
+        "temporaries": 16,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 36,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.aggregate_struct_fields.O2",
+      "architectureId": "x86_64",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 aggregate_struct_fields(void)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(bit_extract(local_23, 0, 32) + local_1, 0, 32) + local_2;\n}",
+      "lineCount": 20,
+      "sourceMappedNodes": 20,
+      "provenanceDigest": "0ef24f19fd1d31551e84ccb8dc7bbb60",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 16,
+        "gotos": 0,
+        "temporaries": 16,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 37,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.dce_observable_store.O0",
+      "architectureId": "x86_64",
+      "function": "dce_observable_store",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 dce_observable_store(uint64 a1, uint64 a2)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return local_4;\n}",
+      "lineCount": 19,
+      "sourceMappedNodes": 19,
+      "provenanceDigest": "56af42db7ce79e5c259ba7699e59657d",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 15,
+        "gotos": 0,
+        "temporaries": 15,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 44,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.dce_observable_store.O1",
+      "architectureId": "x86_64",
+      "function": "dce_observable_store",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "void dce_observable_store(uint64 a2)\n{\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return;\n}",
+      "lineCount": 10,
+      "sourceMappedNodes": 10,
+      "provenanceDigest": "3f91c8679d7c14c58563c8ac005c509e",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 6,
+        "gotos": 0,
+        "temporaries": 6,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 22,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.dce_observable_store.O2",
+      "architectureId": "x86_64",
+      "function": "dce_observable_store",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "void dce_observable_store(uint64 a2)\n{\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return;\n}",
+      "lineCount": 10,
+      "sourceMappedNodes": 10,
+      "provenanceDigest": "9a472bcfa935a8df11dd339dab1f523c",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 6,
+        "gotos": 0,
+        "temporaries": 6,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 24,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.dce_volatile_read.O0",
+      "architectureId": "x86_64",
+      "function": "dce_volatile_read",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 dce_volatile_read(uint64 a1)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return local_7;\n}",
+      "lineCount": 10,
+      "sourceMappedNodes": 10,
+      "provenanceDigest": "2eb4b80c3e0f43ccd0aaf68214f83997",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 6,
+        "gotos": 0,
+        "temporaries": 6,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 19,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.dce_volatile_read.O1",
+      "architectureId": "x86_64",
+      "function": "dce_volatile_read",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 dce_volatile_read(void)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return local_6;\n}",
+      "lineCount": 6,
+      "sourceMappedNodes": 6,
+      "provenanceDigest": "2948852602017a607015e6e4ba4db4f9",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 2,
+        "gotos": 0,
+        "temporaries": 2,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 8,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.dce_volatile_read.O2",
+      "architectureId": "x86_64",
+      "function": "dce_volatile_read",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 dce_volatile_read(void)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return local_1;\n}",
+      "lineCount": 6,
+      "sourceMappedNodes": 6,
+      "provenanceDigest": "ebe092d5363b6e57bba26fb0bf4f1c86",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 2,
+        "gotos": 0,
+        "temporaries": 2,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 7,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.gvn_call_barrier.O0",
+      "architectureId": "x86_64",
+      "function": "gvn_call_barrier",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_call_barrier(uint64 a1, uint64 a4)\n{\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    local_m20 = 0x76001A;\n    unknown_call(rdi);\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(local_5, 0, 32) + local_11;\n}",
+      "lineCount": 35,
+      "sourceMappedNodes": 35,
+      "provenanceDigest": "7c3219806a2fcb59b9141b0a5f2fcfca",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 29,
+        "gotos": 0,
+        "temporaries": 29,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 14,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 81,
+      "aggregateLayouts": 2,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.gvn_call_barrier.O1",
+      "architectureId": "x86_64",
+      "function": "gvn_call_barrier",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_call_barrier(uint64 a1)\n{\n    local_m10 = local_55;\n    local_m18 = local_53;\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    local_m20 = 0x77000D;\n    unknown_call(rdi);\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(bit_extract(call_30, 0, 32) + local_23, 0, 32);\n}",
+      "lineCount": 22,
+      "sourceMappedNodes": 22,
+      "provenanceDigest": "f90214b5932cb3a5112120e26453caa8",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 14,
+        "gotos": 0,
+        "temporaries": 15,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 30,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 83,
+      "aggregateLayouts": 3,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.gvn_call_barrier.O2",
+      "architectureId": "x86_64",
+      "function": "gvn_call_barrier",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_call_barrier(uint64 a1)\n{\n    local_m10 = local_77;\n    local_m18 = local_50;\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    local_m20 = 0x78000D;\n    unknown_call(rdi);\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(bit_extract(call_30, 0, 32) + local_43, 0, 32);\n}",
+      "lineCount": 22,
+      "sourceMappedNodes": 22,
+      "provenanceDigest": "112157971216a4da86045809afd35c7f",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 14,
+        "gotos": 0,
+        "temporaries": 15,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 30,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 81,
+      "aggregateLayouts": 3,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.gvn_load_reuse.O0",
+      "architectureId": "x86_64",
+      "function": "gvn_load_reuse",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_load_reuse(uint64 a1, uint64 a2)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(local_13, 0, 32) + local_25;\n}",
+      "lineCount": 33,
+      "sourceMappedNodes": 33,
+      "provenanceDigest": "0edeb529335ab5ec545d6c2bd39c1d5b",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 29,
+        "gotos": 0,
+        "temporaries": 29,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 51,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.gvn_load_reuse.O1",
+      "architectureId": "x86_64",
+      "function": "gvn_load_reuse",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_load_reuse(void)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(local_5, 0, 32) + local_8;\n}",
+      "lineCount": 15,
+      "sourceMappedNodes": 15,
+      "provenanceDigest": "22bb3320bee0066d6f248a91cb9da80a",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 11,
+        "gotos": 0,
+        "temporaries": 11,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 25,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.gvn_load_reuse.O2",
+      "architectureId": "x86_64",
+      "function": "gvn_load_reuse",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_load_reuse(void)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(local_7, 0, 32) + local_11;\n}",
+      "lineCount": 15,
+      "sourceMappedNodes": 15,
+      "provenanceDigest": "e327229e4b5a182b49680a0fba32f21c",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 11,
+        "gotos": 0,
+        "temporaries": 11,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 27,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.gvn_repeated_expression.O0",
+      "architectureId": "x86_64",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_repeated_expression(uint64 a1, uint64 a2)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(local_64, 0, 32) + local_27;\n}",
+      "lineCount": 41,
+      "sourceMappedNodes": 41,
+      "provenanceDigest": "5dc2d6e152eb3179263474b755413c32",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 37,
+        "gotos": 0,
+        "temporaries": 37,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 90,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.gvn_repeated_expression.O1",
+      "architectureId": "x86_64",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_repeated_expression(uint64 a1, uint64 a2)\n{\n    __asm(\"semantic-v2 intrinsic\");\n    return (uint32_t)(((uint64_t)local_9 << 1) + 14);\n}",
+      "lineCount": 5,
+      "sourceMappedNodes": 5,
+      "provenanceDigest": "e35be36895ad40284920bc9d7da5e0c9",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 1,
+        "gotos": 0,
+        "temporaries": 1,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 31,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.gvn_repeated_expression.O2",
+      "architectureId": "x86_64",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 gvn_repeated_expression(uint64 a1, uint64 a2)\n{\n    __asm(\"semantic-v2 intrinsic\");\n    return (uint32_t)(((uint64_t)local_16 << 1) + 14);\n}",
+      "lineCount": 5,
+      "sourceMappedNodes": 5,
+      "provenanceDigest": "ccd8716772f6a25ab3ccd3e9a03418ff",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 1,
+        "gotos": 0,
+        "temporaries": 1,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 30,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_counted_sum.O0",
+      "architectureId": "x86_64",
+      "function": "loop_counted_sum",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 loop_counted_sum(uint64 a1, uint64 a2, uint64 a4)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    while ((int32_t)bit_extract(v44, 0, 32) < (int32_t)v60) {\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        continue;\n    }\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    return local_20;\n}",
+      "lineCount": 50,
+      "sourceMappedNodes": 50,
+      "provenanceDigest": "3ac3446b408c136888169fb553bade7b",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 43,
+        "gotos": 0,
+        "temporaries": 45,
+        "redundantCasts": 2,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 97,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_counted_sum.O1",
+      "architectureId": "x86_64",
+      "function": "loop_counted_sum",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 loop_counted_sum(uint64 a2, uint64 a3)\n{\n    loc_800000:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rsi,\n            0,\n            32) & (uint32_t)bit_extract(rsi,\n            0,\n            32)) <= 0) goto loc_80001C;\n        goto loc_800004;\n    loc_800010:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (condition_ne) goto loc_800010;\n        goto loc_80001B;\n    loc_80001C:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        return 0;\n    loc_80001B:\n        return local_119;\n    loc_800004:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n}",
+      "lineCount": 38,
+      "sourceMappedNodes": 38,
+      "provenanceDigest": "0ef1ce3914d26589d4b50c4ea1ae1a78",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 24,
+        "gotos": 4,
+        "temporaries": 24,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 10,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 135,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_counted_sum.O2",
+      "architectureId": "x86_64",
+      "function": "loop_counted_sum",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 loop_counted_sum(uint64 a2, uint64 a3)\n{\n    loc_810000:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rsi,\n            0,\n            32) & (uint32_t)bit_extract(rsi,\n            0,\n            32)) <= 0) goto loc_810011;\n        goto loc_810004;\n    loc_81008B:\n        return local_phi_343;\n    loc_810080:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (condition_ne) goto loc_810080;\n        goto loc_81008B;\n    loc_810011:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        return 0;\n    loc_81000B:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        goto loc_810080;\n    loc_810014:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n    loc_81005C:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (__arm64_condition_e(/* NZCV */)) goto loc_81008B;\n        goto loc_81007B;\n    loc_810040:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (condition_ne) goto loc_810040;\n        goto loc_81005C;\n    loc_81007B:\n    loc_810004:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (__arm64_condition_ae(/* NZCV */)) goto loc_810014;\n        goto loc_81000B;\n}",
+      "lineCount": 84,
+      "sourceMappedNodes": 84,
+      "provenanceDigest": "5e46fead881a3651ad9dd8d5b987c678",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 58,
+        "gotos": 11,
+        "temporaries": 58,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 50,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 375,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_decrement_step.O0",
+      "architectureId": "x86_64",
+      "function": "loop_decrement_step",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 loop_decrement_step(uint64 a1)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    while ((int32_t)v46 > 0) {\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        continue;\n    }\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    return local_11;\n}",
+      "lineCount": 44,
+      "sourceMappedNodes": 44,
+      "provenanceDigest": "0fc4d759f1b61390a59443a792cb140d",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 37,
+        "gotos": 0,
+        "temporaries": 38,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 8,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 91,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_decrement_step.O1",
+      "architectureId": "x86_64",
+      "function": "loop_decrement_step",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 loop_decrement_step(uint64 a1)\n{\n    loc_830000:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rdi,\n            0,\n            32) & (uint32_t)bit_extract(rdi,\n            0,\n            32)) <= 0) goto loc_83003B;\n        goto loc_830004;\n    loc_830004:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        return bit_extract(bit_extract(local_16,\n            0,\n            32) + bit_extract(local_174,\n            0,\n            32),\n            0,\n            32) - bit_extract((uint32_t)(local_24 + ((uint64_t)local_24 << 1)),\n            0,\n            32);\n    loc_83003B:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        return 0;\n}",
+      "lineCount": 51,
+      "sourceMappedNodes": 51,
+      "provenanceDigest": "b4d3e207b77a34e2f244ef549ebbcb31",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 41,
+        "gotos": 2,
+        "temporaries": 41,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 4,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 184,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_decrement_step.O2",
+      "architectureId": "x86_64",
+      "function": "loop_decrement_step",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 loop_decrement_step(uint64 a1)\n{\n    loc_840000:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rdi,\n            0,\n            32) & (uint32_t)bit_extract(rdi,\n            0,\n            32)) <= 0) goto loc_84003B;\n        goto loc_840004;\n    loc_84003B:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        return 0;\n    loc_840004:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        return bit_extract(bit_extract(local_137,\n            0,\n            32) + bit_extract(local_174,\n            0,\n            32),\n            0,\n            32) - bit_extract((uint32_t)(local_83 + ((uint64_t)local_83 << 1)),\n            0,\n            32);\n}",
+      "lineCount": 51,
+      "sourceMappedNodes": 51,
+      "provenanceDigest": "9bb95b90df4e75afc76dace7db0f26f2",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 41,
+        "gotos": 2,
+        "temporaries": 41,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 4,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 184,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_early_exit.O0",
+      "architectureId": "x86_64",
+      "function": "loop_early_exit",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 loop_early_exit(uint64 a1, uint64 a2, uint64 a3, uint64 a4)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    if ((int32_t)bit_extract(v35, 0, 32) >= (int32_t)v5) {\n        __asm(\"semantic-v2 unknown-memory-effect\");\n    } else {\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if ((uint32_t)bit_extract(v51, 0, 32) != (uint32_t)v31) {\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            goto loc_850015;\n        } else {\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            __asm(\"semantic-v2 unknown-memory-effect\");\n        }\n    }\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    return local_32;\n}",
+      "lineCount": 65,
+      "sourceMappedNodes": 65,
+      "provenanceDigest": "a578c806ceec5770dfc0d148b8b0c3ed",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 54,
+        "gotos": 1,
+        "temporaries": 58,
+        "redundantCasts": 2,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 127,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_early_exit.O1",
+      "architectureId": "x86_64",
+      "function": "loop_early_exit",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 loop_early_exit(uint64 a2, uint64 a3, uint64 a4)\n{\n    loc_860000:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rsi,\n            0,\n            32) & (uint32_t)bit_extract(rsi,\n            0,\n            32)) <= 0) goto loc_86001D;\n        goto loc_860009;\n    loc_86001D:\n        return 0xFFFFFFFF;\n    loc_86001E:\n        return bit_extract(local_phi_92, 0, 32);\n    loc_860010:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (__arm64_condition_e(/* NZCV */)) goto loc_86001E;\n        goto loc_860015;\n    loc_860015:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (condition_ne) goto loc_860010;\n        goto loc_86001D;\n    loc_860009:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n}",
+      "lineCount": 37,
+      "sourceMappedNodes": 37,
+      "provenanceDigest": "b2a76d3c7aa3a9741266b3537ecef727",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 20,
+        "gotos": 6,
+        "temporaries": 20,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 4,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 123,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_early_exit.O2",
+      "architectureId": "x86_64",
+      "function": "loop_early_exit",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 loop_early_exit(uint64 a2, uint64 a3, uint64 a4)\n{\n    loc_870000:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rsi,\n            0,\n            32) & (uint32_t)bit_extract(rsi,\n            0,\n            32)) <= 0) goto loc_87001D;\n        goto loc_870009;\n    loc_870009:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n    loc_870010:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (__arm64_condition_e(/* NZCV */)) goto loc_87001E;\n        goto loc_870015;\n    loc_87001D:\n        return 0xFFFFFFFF;\n    loc_870015:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (condition_ne) goto loc_870010;\n        goto loc_87001D;\n    loc_87001E:\n        return bit_extract(local_phi_76, 0, 32);\n}",
+      "lineCount": 37,
+      "sourceMappedNodes": 37,
+      "provenanceDigest": "1d4cd21c828d071634bee1ad6e9c0ed1",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 20,
+        "gotos": 6,
+        "temporaries": 20,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 4,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 124,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O0",
+      "architectureId": "x86_64",
+      "function": "loop_nested",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 loop_nested(uint64 a1, uint64 a2, uint64 a3, uint64 a4)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    while ((int32_t)bit_extract(v78, 0, 32) < (int32_t)v126) {\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if ((int32_t)bit_extract(v82, 0, 32) < (int32_t)v21) {\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 intrinsic\");\n            __asm(\"semantic-v2 unknown-memory-effect\");\n            goto loc_88002F;\n        }\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        continue;\n    }\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    return local_73;\n}",
+      "lineCount": 85,
+      "sourceMappedNodes": 85,
+      "provenanceDigest": "e669fb0405874003bd472e0d63b80c68",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 75,
+        "gotos": 1,
+        "temporaries": 79,
+        "redundantCasts": 2,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 175,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O1",
+      "architectureId": "x86_64",
+      "function": "loop_nested",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 loop_nested(uint64 a1, uint64 a2, uint64 a3, uint64 a5, uint64 a6)\n{\n    loc_890000:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rsi,\n            0,\n            32) & (uint32_t)bit_extract(rsi,\n            0,\n            32)) <= 0) goto loc_89004F;\n        goto loc_890004;\n    loc_890020:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (__arm64_condition_e(/* NZCV */)) goto loc_89004E;\n        goto loc_89002B;\n    loc_890004:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        goto loc_89002B;\n    loc_89002B:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rdx,\n            0,\n            32) & (uint32_t)bit_extract(rdx,\n            0,\n            32)) <= 0) goto loc_890020;\n        goto loc_89002F;\n    loc_89004F:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        return 0;\n    loc_890040:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (condition_ne) goto loc_890040;\n        goto loc_89004C;\n    loc_89002F:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n    loc_89004E:\n        return local_163;\n    loc_89004C:\n        goto loc_890020;\n}",
+      "lineCount": 68,
+      "sourceMappedNodes": 68,
+      "provenanceDigest": "879e574744b42bb3dc50259bfbbc1dec",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 44,
+        "gotos": 10,
+        "temporaries": 44,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 16,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 278,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.loop_nested.O2",
+      "architectureId": "x86_64",
+      "function": "loop_nested",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 loop_nested(uint64 a1, uint64 a2, uint64 a3)\n{\n    loc_8A0000:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rsi,\n            0,\n            32) & (uint32_t)bit_extract(rsi,\n            0,\n            32)) <= 0) goto loc_8A00D7;\n        goto loc_8A0008;\n    loc_8A00B0:\n    loc_8A00D1:\n        return local_407;\n    loc_8A004F:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if ((int32_t)(uint32_t)((uint32_t)bit_extract(rdx,\n            0,\n            32) & (uint32_t)bit_extract(rdx,\n            0,\n            32)) <= 0) goto loc_8A0040;\n        goto loc_8A0053;\n    loc_8A005B:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        goto loc_8A00B0;\n    loc_8A0060:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n    loc_8A0053:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (__arm64_condition_ae(/* NZCV */)) goto loc_8A0060;\n        goto loc_8A005B;\n    loc_8A00D7:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        return 0;\n    loc_8A0008:\n        local_m8 = local_477;\n        local_m10 = local_374;\n        local_m18 = local_371;\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        goto loc_8A004F;\n    loc_8A00CC:\n        goto loc_8A0040;\n    loc_8A008E:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (__arm64_condition_e(/* NZCV */)) goto loc_8A0040;\n        goto loc_8A00B0;\n    loc_8A0070:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (condition_ne) goto loc_8A0070;\n        goto loc_8A008E;\n    loc_8A0040:\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (__arm64_condition_e(/* NZCV */)) goto loc_8A00D1;\n        goto loc_8A004F;\n    loc_8A00C0:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        if (condition_ne) goto loc_8A00C0;\n        goto loc_8A00CC;\n}",
+      "lineCount": 117,
+      "sourceMappedNodes": 117,
+      "provenanceDigest": "e40c1fbfd10529ded6240eba9fb994c7",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 78,
+        "gotos": 17,
+        "temporaries": 78,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 108,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 552,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.sccp_dead_branch.O0",
+      "architectureId": "x86_64",
+      "function": "sccp_dead_branch",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_dead_branch(uint64 a1)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    if ((int32_t)v32 <= 8) {\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n    } else {\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n    }\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    return local_13;\n}",
+      "lineCount": 36,
+      "sourceMappedNodes": 36,
+      "provenanceDigest": "2d0b01db15bf345c6de304092070d093",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 29,
+        "gotos": 0,
+        "temporaries": 30,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 88,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.sccp_dead_branch.O1",
+      "architectureId": "x86_64",
+      "function": "sccp_dead_branch",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_dead_branch(uint64 a1)\n{\n    return (uint32_t)(local_9 + 4);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "78ac8b525f984bbad42f347265ef0045",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 11,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.sccp_dead_branch.O2",
+      "architectureId": "x86_64",
+      "function": "sccp_dead_branch",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_dead_branch(uint64 a1)\n{\n    return (uint32_t)(local_9 + 4);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "b6db513dde5dc9571448876efdc42d08",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 11,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.sccp_narrow_extend.O0",
+      "architectureId": "x86_64",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_narrow_extend(uint64 a1)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract((int32_t)local_18, 0, 32) + 1;\n}",
+      "lineCount": 17,
+      "sourceMappedNodes": 17,
+      "provenanceDigest": "c19020f62a30e9f01c6ba095b55c2cbb",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 13,
+        "gotos": 0,
+        "temporaries": 13,
+        "redundantCasts": 8,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 41,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.sccp_narrow_extend.O1",
+      "architectureId": "x86_64",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_narrow_extend(uint64 a1)\n{\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    return bit_extract((int32_t)bit_extract(local_19, 0, 8), 0, 32) + 1;\n}",
+      "lineCount": 8,
+      "sourceMappedNodes": 8,
+      "provenanceDigest": "bb9e08dd09962206c9e8929b85b82e1b",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 4,
+        "gotos": 0,
+        "temporaries": 4,
+        "redundantCasts": 8,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 26,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.sccp_narrow_extend.O2",
+      "architectureId": "x86_64",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_narrow_extend(uint64 a1)\n{\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    return bit_extract((int32_t)bit_extract(local_22, 0, 8), 0, 32) + 1;\n}",
+      "lineCount": 8,
+      "sourceMappedNodes": 8,
+      "provenanceDigest": "6c9efaf92abd4e2d8cdacad1637e55d0",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 4,
+        "gotos": 0,
+        "temporaries": 4,
+        "redundantCasts": 8,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 27,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.sccp_wraparound.O0",
+      "architectureId": "x86_64",
+      "function": "sccp_wraparound",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_wraparound(uint64 a1)\n{\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 unknown-memory-effect\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n    return bit_extract(local_18, 0, 32) + local_20;\n}",
+      "lineCount": 17,
+      "sourceMappedNodes": 17,
+      "provenanceDigest": "d49136c49bbf712952149ed0b9cf2194",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 13,
+        "gotos": 0,
+        "temporaries": 13,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 7,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 39,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.sccp_wraparound.O1",
+      "architectureId": "x86_64",
+      "function": "sccp_wraparound",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_wraparound(uint64 a1)\n{\n    return (uint32_t)(local_9 + 0xFFFFFFFFFFFFFFF0);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "e1b72bbeca3681bd110bd410e839a8c2",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 10,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.sccp_wraparound.O2",
+      "architectureId": "x86_64",
+      "function": "sccp_wraparound",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 sccp_wraparound(uint64 a1)\n{\n    return (uint32_t)(local_9 + 0xFFFFFFFFFFFFFFF0);\n}",
+      "lineCount": 4,
+      "sourceMappedNodes": 4,
+      "provenanceDigest": "e59e53cc70ba33116b6f93917dc1395e",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 0,
+        "gotos": 0,
+        "temporaries": 0,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 0,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 10,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.structure_switch.O0",
+      "architectureId": "x86_64",
+      "function": "structure_switch",
+      "optimization": "-O0",
+      "semantic": true,
+      "pseudocode": "uint64 structure_switch(uint64 a1)\n{\n    loc_940000:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unresolved-indirect-control-flow\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        __asm(\"semantic-v2 function unknown: unsupported-machine-expression:x86-effective-address\");\n        if (__arm64_condition_a(/* NZCV */)) goto loc_94005C;\n        goto loc_940018;\n    loc_940004:\n    loc_940063:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        return local_34;\n    loc_940018:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 unknown-memory-effect\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 intrinsic\");\n        __asm(\"semantic-v2 unknown-control-effect\");\n    loc_94005C:\n        __asm(\"semantic-v2 unknown-memory-effect\");\n}",
+      "lineCount": 41,
+      "sourceMappedNodes": 41,
+      "provenanceDigest": "ef2ab19b7cc0e276f5642a69bbf89b4f",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 30,
+        "gotos": 2,
+        "temporaries": 30,
+        "redundantCasts": 6,
+        "rewrittenExpressions": 7,
+        "structured": false
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 62,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.structure_switch.O1",
+      "architectureId": "x86_64",
+      "function": "structure_switch",
+      "optimization": "-O1",
+      "semantic": true,
+      "pseudocode": "uint64 structure_switch(uint64 a1)\n{\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    return __arm64_nzcv_sub_b(bit_extract(local_32,\n        0,\n        32),\n        4) ? bit_extract((uint32_t)(((uint64_t)(uint32_t)(local_32 + ((uint64_t)local_32 << 2)) << 1) + 10),\n        0,\n        32) : 0xFFFFFFFF;\n}",
+      "lineCount": 9,
+      "sourceMappedNodes": 9,
+      "provenanceDigest": "0a653f67d7b1bd7391653ee568423f8c",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 5,
+        "gotos": 0,
+        "temporaries": 5,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 20,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 42,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
+    },
+    {
+      "id": "x86_64.quality.structure_switch.O2",
+      "architectureId": "x86_64",
+      "function": "structure_switch",
+      "optimization": "-O2",
+      "semantic": true,
+      "pseudocode": "uint64 structure_switch(uint64 a1)\n{\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    __asm(\"semantic-v2 intrinsic\");\n    return __arm64_nzcv_sub_b(bit_extract(local_35,\n        0,\n        32),\n        4) ? bit_extract((uint32_t)(((uint64_t)(uint32_t)(local_35 + ((uint64_t)local_35 << 2)) << 1) + 10),\n        0,\n        32) : 0xFFFFFFFF;\n}",
+      "lineCount": 9,
+      "sourceMappedNodes": 9,
+      "provenanceDigest": "cec4f4ae20ec86bd1fae1f3581a2341a",
+      "budgetExceeded": false,
+      "completeness": null,
+      "readability": {
+        "rawAssemblyFallbacks": 5,
+        "gotos": 0,
+        "temporaries": 5,
+        "redundantCasts": 0,
+        "rewrittenExpressions": 20,
+        "structured": true
+      },
+      "prototypeArity": null,
+      "highVariableGroups": 44,
+      "aggregateLayouts": 0,
+      "phase8Projection": null
     }
   ],
-  "observationsDigest": "4f287eb84c083c404474e0cfd8d97a17"
+  "observationsDigest": "8914457f3f3bbdc71969c2606388e48a"
 }
