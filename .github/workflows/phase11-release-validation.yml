@@ -29,8 +29,6 @@ on:
       - 'tools/validation/phase11/**'
       - '.github/workflows/phase11-release-validation.yml'
       - 'docs/SUPPORT_MATRIX.md'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
       - 'package.json'
   workflow_dispatch:
     inputs:
