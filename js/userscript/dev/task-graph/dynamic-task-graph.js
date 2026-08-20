@@ -41,7 +41,8 @@ export class DynamicTaskGraphHost {
     pollMs = DEFAULT_POLL_MS,
     cleanupTimeoutMs = DEFAULT_CLEANUP_TIMEOUT_MS,
   } = {}) {
-    if (!workerPool || typeof workerPool.claim !== 'function' || typeof workerPool.release !== 'function') {
+    if (!workerPool || typeof workerPool.claim !== 'function' || typeof workerPool.release !== 'function'
+      || typeof workerPool.waitResult !== 'function') {
       throw new TypeError('Dynamic Task Graph requires an IframeWorkerPool-compatible workerPool.');
     }
     this.workerPool = workerPool;
@@ -280,16 +281,28 @@ export class DynamicTaskGraph {
     }
   }
 
+  /* One await for the whole model turn. The Pool owns the turn and wakes us
+     when it settles, so nothing re-reads it on a timer while the Worker
+     generates. Graph cancellation and the task deadline share one controller so
+     that either simply aborts the wait; the Worker it may still be running stays
+     owned by this lease until cleanupLease() completes the existing stop ->
+     release -> discard transaction. */
   async waitForWorkerResult(task, leaseId) {
-    const started = Date.now();
-    while (true) {
+    if (this.abortController.signal.aborted) throw graphError('cancelled', this.cancelReason || 'cancelled');
+    const controller = new AbortController();
+    const onGraphCancel = () => controller.abort(this.cancelReason || 'cancelled');
+    this.abortController.signal.addEventListener('abort', onGraphCancel, { once: true });
+    let deadlineExpired = false;
+    const deadline = setTimeout(() => { deadlineExpired = true; controller.abort('task-timeout'); }, task.timeoutMs);
+    try {
+      return await this.workerPool.waitResult({ leaseId }, { signal: controller.signal });
+    } catch (error) {
+      if (deadlineExpired) throw graphError('task-timeout', `Task ${task.id} exceeded ${task.timeoutMs}ms.`);
       if (this.abortController.signal.aborted) throw graphError('cancelled', this.cancelReason || 'cancelled');
-      const result = await this.workerPool.result({ leaseId });
-      if (String(result?.status || '').toLowerCase() !== 'working') return result;
-      if (Date.now() - started >= task.timeoutMs) {
-        throw graphError('task-timeout', `Task ${task.id} exceeded ${task.timeoutMs}ms.`);
-      }
-      await this.sleep(this.pollMs);
+      throw error;
+    } finally {
+      clearTimeout(deadline);
+      this.abortController.signal.removeEventListener('abort', onGraphCancel);
     }
   }
 

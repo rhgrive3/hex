@@ -168,7 +168,7 @@ async function testOneStartPerLeaseAttemptAndExecutionOnlySuccess() {
 
 /* Records the exact Pool calls the Graph makes without changing any of them. */
 function observedPool(pool) {
-  const calls = { claims: [], starts: [], results: [], releases: [] };
+  const calls = { claims: [], starts: [], results: [], releases: [], waits: [] };
   return {
     calls,
     provision: (args) => pool.provision(args),
@@ -185,10 +185,13 @@ function observedPool(pool) {
       calls.starts.push(String(args?.leaseId || ''));
       return pool.start(args);
     },
-    async result(args) {
-      const value = await pool.result(args);
+    result(args) {
       calls.results.push(String(args?.leaseId || ''));
-      return value;
+      return pool.result(args);
+    },
+    waitResult(args, options) {
+      calls.waits.push(String(args?.leaseId || ''));
+      return pool.waitResult(args, options);
     },
     stop: (args) => pool.stop(args),
     async release(args) {
@@ -197,6 +200,59 @@ function observedPool(pool) {
     },
     discard: (args) => pool.discard(args),
   };
+}
+
+/* CARD C's core claim: a long model turn costs the Graph nothing. The Pool wakes
+   it once, so nothing re-reads the turn on a cadence while the Worker generates,
+   and two turns in flight settle through their own waits. */
+async function testLongTurnIsAwaitedNotPolled() {
+  const harness = new WorkerHarness({ slowA: { hang: true }, slowB: { hang: true } });
+  const pool = harness.pool();
+  const observed = observedPool(pool);
+  const host = graphHost(observed);
+  await host.start({
+    graphId: 'no-poll',
+    maxConcurrency: 2,
+    tasks: [{ ...task('slowA'), timeoutMs: 5000 }, { ...task('slowB'), timeoutMs: 5000 }],
+  });
+  await waitFor(() => host.status({ graphId: 'no-poll' }).tasks.every((item) => item.state === 'RUNNING'));
+  await waitFor(() => observed.calls.waits.length === 2);
+
+  // This host is configured with pollMs: 1, so the previous implementation would
+  // have issued hundreds of result() reads across this window.
+  const readsBefore = observed.calls.results.length;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(observed.calls.results.length, readsBefore, 'an active Worker turn must never be re-read on a timer');
+  assert.equal(observed.calls.waits.length, 2, 'one wait per attempt, not one per scan');
+  assert.deepEqual(
+    [...observed.calls.waits].sort(),
+    observed.calls.claims.map((claim) => claim.leaseId).sort(),
+    'each attempt waits on exactly the lease it claimed',
+  );
+  assert.equal(host.status({ graphId: 'no-poll' }).activeCount, 2, 'both tasks are still running');
+
+  // Independent settlement: finishing one turn must not settle the other.
+  harness.finish('slowA', { status: 'completed', responseText: 'a done' });
+  await waitFor(() => host.taskResult({ graphId: 'no-poll', taskId: 'slowA' }).state === 'SUCCEEDED');
+  const stillRunning = host.taskResult({ graphId: 'no-poll', taskId: 'slowB' });
+  assert.equal(stillRunning.state, 'RUNNING', 'one completion must not settle another task');
+  assert.equal(stillRunning.finishedAt, null);
+
+  // A terminal task transitions once: cancelling the graph afterwards must not
+  // rewrite the result it already earned.
+  const succeeded = host.taskResult({ graphId: 'no-poll', taskId: 'slowA' });
+  host.cancel({ graphId: 'no-poll', reason: 'test-terminal-once' });
+  const cancelled = await waitTerminal(host, 'no-poll');
+  assert.equal(cancelled.state, 'CANCELLED');
+  const afterCancel = host.taskResult({ graphId: 'no-poll', taskId: 'slowA' });
+  assert.equal(afterCancel.state, 'SUCCEEDED', 'an already-terminal task must not transition twice');
+  assert.equal(afterCancel.finishedAt, succeeded.finishedAt, 'its terminal timestamp is written once');
+  assert.deepEqual(afterCancel.result, succeeded.result);
+  assert.equal(host.taskResult({ graphId: 'no-poll', taskId: 'slowB' }).state, 'CANCELLED');
+  assert.equal(pool.status().claimedCount, 0, 'cancellation still completes the lease cleanup transaction');
+
+  host.close();
+  pool.close();
 }
 
 function task(id, dependencies = []) {
@@ -234,6 +290,15 @@ class WorkerHarness {
     this.peak = 0;
     this.sawNestingBan = false;
     this.frames = [];
+    this.pending = new Map();
+  }
+
+  /* Settles one hanging Worker turn, so a test can prove that completions are
+     independent rather than batched behind a shared scan. */
+  finish(taskId, value) {
+    const settle = this.pending.get(taskId);
+    assert.ok(settle, `task ${taskId} has no in-flight Worker turn`);
+    settle(value);
   }
 
   pool() {
@@ -287,12 +352,14 @@ class WorkerHarness {
         const behavior = harness.behaviors[currentTask] || {};
         harness.events.push(`start:${currentTask}`);
         harness.active += 1;
+        const owner = currentTask;
         harness.peak = Math.max(harness.peak, harness.active);
         return new Promise((resolve) => {
           let settled = false;
           const finish = (value) => {
             if (settled) return;
             settled = true;
+            harness.pending.delete(owner);
             if (current?.timer) clearTimeout(current.timer);
             harness.active -= 1;
             last = value;
@@ -301,6 +368,7 @@ class WorkerHarness {
             resolve(value);
           };
           current = { finish, timer: null };
+          harness.pending.set(owner, finish);
           if (behavior.hang) return;
           current.timer = setTimeout(() => {
             if (attempt <= Number(behavior.failTimes || 0)) finish({ status: 'failed', error: { code: 'fixture-failure', message: `failed ${currentTask}` } });
@@ -361,4 +429,5 @@ await testTimeoutCancellationAndLeaseCleanup();
 await testCleanupFallsBackToFrameDiscard();
 await testGraphValidationAndSupervisorRouting();
 await testOneStartPerLeaseAttemptAndExecutionOnlySuccess();
+await testLongTurnIsAwaitedNotPolled();
 console.log('dynamic task graph: ok');
