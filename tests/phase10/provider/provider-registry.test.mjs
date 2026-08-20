@@ -10,7 +10,7 @@ import {
 const binaryId = 'bin_sha256_' + '12'.repeat(32);
 
 class FixtureAdapter extends DebugAdapter {
-  constructor(kind = 'lldb') {
+  constructor(kind = 'lldb', { moduleIdentity = true } = {}) {
     super({
       id: `fixture-${kind}`,
       kind,
@@ -27,8 +27,19 @@ class FixtureAdapter extends DebugAdapter {
       },
     });
     this.memory = new Uint8Array([1, 2, 3, 4]);
+    this.moduleIdentity = moduleIdentity;
   }
-  async getModules() { return [{ id: 'main', base: 0x7000n, size: 0x1000n, staticBase: 0x1000n }]; }
+  async getModules() {
+    const module = { id: 'main', base: 0x7000n, size: 0x1000n, staticBase: 0x1000n };
+    if (!this.moduleIdentity) return [module];
+    return [{
+      ...module,
+      binaryId,
+      sliceId: 'slice:arm64',
+      identityState: 'exact',
+      identityEvidenceIds: ['fixture:module-content-match'],
+    }];
+  }
   async getThreads() { return [{ id: 't1' }]; }
   async readMemory(_address, size) { return this.memory.slice(0, size); }
   async writeMemory(_address, bytes) { this.memory = Uint8Array.from(bytes); return { written: this.memory.length }; }
@@ -48,7 +59,7 @@ test('P10.2 registry owns providers and rejects duplicate identity', () => {
   assert.throws(() => registry.register(provider), /already registered/);
 });
 
-test('P10.2 compatibility provider creates one canonical runtime session and module bindings', async () => {
+test('P10.2 compatibility provider creates one canonical runtime session and proven module bindings', async () => {
   const registry = new RuntimeProviderRegistry();
   const provider = registry.register(wrapDebugAdapterAsRuntimeProvider(new FixtureAdapter('lldb'), { id: 'lldb-provider' }));
   const session = await registry.openSession('lldb-provider', {
@@ -70,6 +81,24 @@ test('P10.2 compatibility provider creates one canonical runtime session and mod
   await assert.rejects(() => provider.openSession({ binaryId, targetIdentity: 'other', sessionNonce: 'nonce-2' }), /one live session|in-use/i);
   await session.close();
   assert.equal(session.state, 'closed');
+});
+
+test('P10.2 session primary binary must not implicitly authenticate the first backend module', async () => {
+  const provider = wrapDebugAdapterAsRuntimeProvider(new FixtureAdapter('lldb', { moduleIdentity: false }), { id: 'unproven-module-provider' });
+  const session = await provider.openSession({
+    binaryId,
+    sliceId: 'slice:arm64',
+    targetIdentity: 'fixture-unproven',
+    sessionNonce: 'nonce-unproven',
+  });
+  const [module] = session.modules.active();
+  assert.equal(module.identityState, 'unresolved');
+  assert.equal(module.binaryId, null);
+  assert.equal(module.sliceId, null);
+  const resolution = session.modules.resolve(0x7010n, { binaryId });
+  assert.equal(resolution.state, 'unresolved');
+  assert.equal(resolution.binaryId, null);
+  await session.close();
 });
 
 test('P10.2 debugger writes return intervention lineage instead of silent mutation', async () => {
