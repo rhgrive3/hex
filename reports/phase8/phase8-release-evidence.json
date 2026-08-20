@@ -3,10 +3,10 @@
   "verifierId": "phase8.verifier",
   "verifierVersion": "1.0.0",
   "verifierSourceSha256": "524b1e3ce071f4d8efba4be5447f217acec4447f0c33b2eeb7e2d8ed88b186d4",
-  "generatedAt": "2026-08-20T00:46:45.237Z",
+  "generatedAt": "2026-08-20T01:18:56.824Z",
   "product": {
-    "commitSha": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
-    "treeSha": "f2e8e3929843ed321a236ef72cedef1195ae9aaf",
+    "commitSha": "17b9957a91d3a660e9279095fea8af88cededf61",
+    "treeSha": "e38a85acd7df34bdaf8c002c0ba11bbedda0d82b",
     "workingTreeClean": true,
     "dirtyPaths": [],
     "branch": "phase8/decompiler-quality"
@@ -29,7 +29,7 @@
     "baselineCommit": "bd03d1a860863814dbdcc00559709794d460189d"
   },
   "registry": {
-    "passRegistryDigest": "09781c442a4800d21b87307b2b229251",
+    "passRegistryDigest": "291c5572aa4e15cc2190d3fca9f17ed1",
     "passes": [
       {
         "id": "phase8.identity",
@@ -55,6 +55,11 @@
         "id": "phase8.induction",
         "version": "1.0.0",
         "stage": "loop-facts"
+      },
+      {
+        "id": "phase8.structuring",
+        "version": "1.0.0",
+        "stage": "structuring"
       }
     ]
   },
@@ -90,7 +95,6 @@
         "rewrite-engine",
         "equivalence-verification",
         "cancellation-deadline",
-        "irreducible-exception-structuring",
         "aggregate-array-recovery",
         "language-compiler-providers",
         "architecture-lane-x86-64",
@@ -101,7 +105,8 @@
         "sccp",
         "gvn-cse",
         "effect-aware-dce",
-        "loop-induction"
+        "loop-induction",
+        "irreducible-exception-structuring"
       ],
       "UPSTREAM_BLOCKED": [
         "load-store-forwarding"
@@ -194,7 +199,18 @@
     "transformDeterminismFailures": [],
     "completeResultDivergenceCount": 0,
     "completeResultDivergences": [],
-    "lostCfgEdgeCount": null,
+    "lostCfgEdgeCount": 0,
+    "edgeAccounting": {
+      "lostCfgEdgeCount": 0,
+      "accountingFailures": [],
+      "functionsCovered": 45,
+      "functionsWithoutIr": [],
+      "functionsWithoutFacts": [],
+      "edgeCount": 150,
+      "residualGotoCount": 0,
+      "constraintEdgeCount": 0,
+      "unknownEdgeCount": 0
+    },
     "forcedTypeContradictionCount": null
   },
   "architectureLanes": [
@@ -216,32 +232,24 @@
     "repetitions": 3,
     "aggregate": "median",
     "coldActiveFunctionMs": {
-      "medianMs": 108.71111111111111,
+      "medianMs": 116.91111111111111,
       "samples": [
-        108.711,
-        110.844,
-        108.222
+        118.667,
+        116.911,
+        114.267
       ]
     },
     "publishedLedgers": 35
   },
   "gates": [],
-  "evidenceDigest": "f16401ab0751127eaa40b2e43d990c0d",
+  "evidenceDigest": "2da6d6b8b1dc24babbf1b3201bd99fef",
   "failures": [
     {
       "category": "coverage",
       "firstDivergence": "forcedTypeContradictionCount is not measurable on this head",
       "expected": "measured from P8-6",
       "actual": "null (not measured)",
-      "identity": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
-      "blocking": true
-    },
-    {
-      "category": "coverage",
-      "firstDivergence": "lostCfgEdgeCount is not measurable on this head",
-      "expected": "measured from P8-5",
-      "actual": "null (not measured)",
-      "identity": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
+      "identity": "17b9957a91d3a660e9279095fea8af88cededf61",
       "blocking": true
     },
     {
@@ -249,7 +257,7 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: riscv64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
+      "identity": "17b9957a91d3a660e9279095fea8af88cededf61",
       "blocking": true
     },
     {
@@ -257,7 +265,7 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: x86_64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
+      "identity": "17b9957a91d3a660e9279095fea8af88cededf61",
       "blocking": true
     },
     {
@@ -265,7 +273,7 @@
       "firstDivergence": "a required checkpoint has no accepted evidence on this head",
       "expected": "P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I",
       "actual": "missing: P8-5,P8-6,P8-7,P8-I",
-      "identity": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
+      "identity": "17b9957a91d3a660e9279095fea8af88cededf61",
       "blocking": true
     }
   ],

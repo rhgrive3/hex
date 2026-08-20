@@ -1,12 +1,12 @@
 # Phase 8 release evidence — BLOCKING
 
-- product: `1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a` (tree `f2e8e3929843ed321a236ef72cedef1195ae9aaf`, branch `phase8/decompiler-quality`, clean: true)
+- product: `17b9957a91d3a660e9279095fea8af88cededf61` (tree `e38a85acd7df34bdaf8c002c0ba11bbedda0d82b`, branch `phase8/decompiler-quality`, clean: true)
 - verifier: phase8.verifier 1.0.0 (source sha256 `524b1e3ce071f4d8`)
 - profile version: 2
 - corpus: phase8-decompiler-quality-corpus v1, digest `37c049e8ed51a7f0d46538a894be3c7b`
 - toolchain: Ubuntu clang version 18.1.3 (1ubuntu1) (aarch64-unknown-linux-gnu)
 - baseline: `4f287eb84c083c404474e0cfd8d97a17` captured at `bd03d1a860863814dbdcc00559709794d460189d`
-- pass registry: `09781c442a4800d21b87307b2b229251` (phase8.identity@1.0.0, phase8.sccp@1.0.0, phase8.dce@1.0.0, phase8.gvn@1.0.0, phase8.induction@1.0.0)
+- pass registry: `291c5572aa4e15cc2190d3fca9f17ed1` (phase8.identity@1.0.0, phase8.sccp@1.0.0, phase8.dce@1.0.0, phase8.gvn@1.0.0, phase8.induction@1.0.0, phase8.structuring@1.0.0)
 
 ## Hard-zero safety counters
 
@@ -19,7 +19,7 @@
 | staleArtifactAcceptanceCount | 0 |
 | transformDeterminismFailureCount | 0 |
 | completeResultDivergenceCount | 0 |
-| lostCfgEdgeCount | not measured |
+| lostCfgEdgeCount | 0 |
 | forcedTypeContradictionCount | not measured |
 
 ## Readability / recovery vector
@@ -62,7 +62,6 @@
 | category | first divergence | expected | actual | blocking |
 |---|---|---|---|---|
 | coverage | forcedTypeContradictionCount is not measurable on this head | measured from P8-6 | null (not measured) | true |
-| coverage | lostCfgEdgeCount is not measurable on this head | measured from P8-5 | null (not measured) | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: riscv64 | corpus evidence | missing | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: x86_64 | corpus evidence | missing | true |
 | integration | a required checkpoint has no accepted evidence on this head | P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I | missing: P8-5,P8-6,P8-7,P8-I | true |

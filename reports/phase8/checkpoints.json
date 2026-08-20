@@ -184,6 +184,36 @@
       "result": "accepted",
       "blockingReason": null,
       "notes": ""
+    },
+    {
+      "id": "P8-5",
+      "recordedAt": "2026-08-20T01:19:24.096Z",
+      "integrationSha": "17b9957a91d3a660e9279095fea8af88cededf61",
+      "integrationTreeSha": "e38a85acd7df34bdaf8c002c0ba11bbedda0d82b",
+      "mergeBaseSha": "59a9c5641204747d5793ce3cf270663016218d6b",
+      "branch": "phase8/decompiler-quality",
+      "changedFileCount": 13,
+      "changedFileInventoryDigest": "ba9dd0fcc17fc11188abec5d22285498",
+      "ownershipPolicyVersion": 1,
+      "corpusId": "phase8-decompiler-quality-corpus",
+      "corpusDigest": "37c049e8ed51a7f0d46538a894be3c7b",
+      "toolchain": {
+        "compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+        "target": "aarch64-unknown-linux-gnu",
+        "optimizationLevels": [
+          "-O0",
+          "-O1",
+          "-O2"
+        ]
+      },
+      "passRegistryDigest": "291c5572aa4e15cc2190d3fca9f17ed1",
+      "verifierVersion": "1.0.0",
+      "profileVersion": 2,
+      "gates": [],
+      "generatedOutputDiff": "zero",
+      "result": "accepted",
+      "blockingReason": null,
+      "notes": ""
     }
   ]
 }

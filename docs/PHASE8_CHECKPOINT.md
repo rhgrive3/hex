@@ -20,15 +20,15 @@ gate. Where it disagrees with `PHASE8_CHECKPOINT_CONTRACTS.md`, the contract win
 | P8-2 SCCP + wrapped range/value set | **accepted** | see below |
 | P8-3 GVN/CSE + effect-aware DCE | **accepted** | see below |
 | P8-4 Induction / loop facts | **accepted** | see below |
-| P8-5 Irreducible / exception structuring | not started | — |
+| P8-5 Irreducible / exception structuring | **accepted** | see below |
 | P8-6 Aggregate / array / union recovery | not started | — |
 | P8-7 Language / compiler providers | not started | — |
 | P8-I Final integration / cutover | not started | — |
 
 Verifier verdict on this head: **BLOCKING** — correct, and the point. P8-0 to
-P8-4 are accepted; the remaining checkpoints have no evidence, two hard-zero
-counters are not measurable yet, and two mandatory architecture lanes have no
-corpus. The verifier exists and reports the truth from
+P8-5 are accepted; the remaining checkpoints have no evidence, one hard-zero
+counter (`forcedTypeContradictionCount`, owned by P8-6) is not measurable yet,
+and two mandatory architecture lanes have no corpus. The verifier exists and reports the truth from
 the first checkpoint instead of being assembled at the end (EP-011).
 
 Acceptance profile is now **v2**. The bump added `completeResultDivergenceCount`,
@@ -466,6 +466,98 @@ no second loop detector, no trip count claimed where the evidence is partial.
 
 ---
 
+## P8-5 — every edge accounted for
+
+`js/decompiler/phase8/structuring.js` publishes `structuredRegions`
+(`summaryVersion` 1). Per function: one record per CFG edge naming what became
+of it, the region tree that follows, the residual jumps, the constraint edges,
+and node-split candidates with their proofs.
+
+The claim a structurer has to be able to make is not that a function became a
+tidy `while`. It is that every edge in the original CFG is still there and can be
+named — a structured construct, an explicit jump, or an explicit unknown. An edge
+in none of those three answers has been lost, and a lost edge is a path through
+the program the reader will never see.
+
+### The accounting is checked, not asserted
+
+`lostCfgEdgeCount` is recomputed in `tools/validation/phase8/metrics.mjs` from
+each corpus function's own successor list and declared edge labels, then diffed
+against the published accounting. The pass does not get to mark its own work. A
+function with no semantic IR counts as missing coverage, never as zero: an edge
+nobody looked at is not an edge nobody lost.
+
+`tests/phase8/structuring/edge-accounting.test.mjs` doctors the published facts
+four ways — a dropped edge, an invented edge, a dropped kind label, a missing
+reason — and asserts the recount catches each.
+
+### Rules the accounting enforces
+
+- **`gotoCount = 0` is not a goal and not a gate.** An edge that cannot be
+  structured safely stays an explicit jump. No assertion anywhere rewards
+  removing one, and a run with jumps reports the same completeness as one
+  without.
+- **An unrecognised edge kind is a constraint, not a construct** — even when
+  another label on the same edge looks ordinary. Folding an unwind edge into an
+  `if` because it also carries `branch` is how an exception path disappears.
+- **An irreducible region never receives a loop construct.** Its edges become
+  explicit jumps with the reason recorded.
+- **Node splitting is offered, never applied**, and a block carrying a store, a
+  call or a load is not offered at all, because duplicating it would duplicate
+  the effect.
+
+### One edge, two names
+
+The upstream CFG labels the not-taken arm of a conditional twice — once
+`conditional-false`, once `fallthrough` — for the same target. Counting those as
+two edges inflated the total by 44 and, worse, let the accounting agree with
+itself while disagreeing with `succ`. Targets are now merged and every label
+kept, so the edge count matches the CFG and no kind is dropped.
+
+### Post-dominance travels with dominance
+
+`analyzeGraph` already computed post-dominators; nothing consumed them.
+`semantic-core.js` now attaches them to the IR and the Phase 8 seed reads them
+alongside dominance. That is what lets the join point of a conditional come from
+the canonical control-flow analysis rather than from a second opinion derived
+here.
+
+### Results on the frozen corpus
+
+| measure | value |
+|---|---|
+| functions covered | 45 of 45 |
+| CFG edges | 150 |
+| **lost edges** | **0** |
+| unknown edges | 0 |
+| residual jumps | 0 |
+| constraint edges | 0 |
+| worst optimize-stage latency | 30.7 ms against a 120 ms budget |
+| structuring pass latency | 1.9 ms |
+
+Zero residual jumps is a property of this corpus, not a target. Two shapes were
+initially accounted as jumps and are now named correctly: a conditional whose
+arms never meet again is an ordinary early return, and a loop exit is a `break`
+when every non-guard exit agrees on where to land. Both were fixed by reading
+post-dominance properly, not by loosening the rule.
+
+### What this checkpoint does not do
+
+It does not rewrite control flow, split any node, or change the rendered output;
+the corpus differential against the pre-Phase-8 baseline is still byte-exact.
+Switch and exception shapes are proved on architecture-neutral fixtures because
+the frozen corpus contains neither, and the corpus must not be re-frozen without
+invalidating the pre-Phase-8 baseline it is compared against.
+
+### Stop condition
+
+The P8-5 contract asks for structured regions, exception-edge constraints,
+irreducible handling, controlled splitting only under proof, an explicit goto
+fallback, and an edge-accounting verifier. All are delivered, with
+`lostCfgEdgeCount = 0` measured rather than assumed.
+
+---
+
 ## Next allowed action
 
-P8-5 — irreducible and exception-aware structuring, consuming the P8-4 loop facts.
+P8-6 — aggregate, array and union recovery, consuming the P8-4 stride facts.
