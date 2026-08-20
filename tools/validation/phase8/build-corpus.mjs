@@ -39,6 +39,13 @@ export const ARCHITECTURES = Object.freeze([
   Object.freeze({ architectureId:'riscv64', targetTriple:'riscv64-unknown-linux-gnu', representation:'machine-bytes', compilerArgs:Object.freeze(['-march=rv64im', '-mabi=lp64']) }),
 ]);
 
+// The corpus deliberately contains an unknown-call barrier. Machine-byte lanes
+// must still contain executable, relocation-resolved call bytes, so final links
+// get a separate architecture-neutral definition of that external. It remains
+// opaque to the function under test: the public product only decompiles the
+// selected STT_FUNC bytes and does not inline or import this companion body.
+const LINK_SUPPORT_SOURCE = '__attribute__((noinline,used)) void opaque(void) { __asm__ __volatile__("" ::: "memory"); }\n';
+
 function codeText(line) { return String(line || '').replace(/\/\/.*$/, '').trim(); }
 
 export function extractFunction(assembly, name) {
@@ -172,17 +179,23 @@ function compileObject(clang, architecture, optimization, sourcePath, outputPath
   return outputPath;
 }
 
-function linkObject(clang, architecture, optimization, objectPath, outputPath) {
+function compileLinkSupport(clang, architecture, optimization, directory) {
+  const sourcePath = path.join(directory, `${architecture.architectureId}-link-support.c`);
+  const outputPath = path.join(directory, `${architecture.architectureId}-${optimization.slice(1)}-link-support.o`);
+  if (!fs.existsSync(sourcePath)) fs.writeFileSync(sourcePath, LINK_SUPPORT_SOURCE);
+  return compileObject(clang, architecture, optimization, sourcePath, outputPath);
+}
+
+function linkObjects(clang, architecture, optimization, objectPaths, outputPath) {
   const linked = spawnSync(clang, [
     `--target=${architecture.targetTriple}`,
     ...architecture.compilerArgs,
     '-fuse-ld=lld',
     '-nostdlib',
     '-no-pie',
-    '-Wl,--unresolved-symbols=ignore-all',
     '-Wl,--build-id=none',
     '-Wl,-e,0',
-    '-o', outputPath, objectPath,
+    '-o', outputPath, ...objectPaths,
   ], { encoding:'utf8', maxBuffer:32 * 1024 * 1024 });
   if (linked.status !== 0) throw new Error(`phase8 corpus: final link failed for ${architecture.architectureId} ${optimization}: ${String(linked.stderr).trim().slice(0, 300)}`);
   const result = fs.readFileSync(outputPath);
@@ -232,7 +245,8 @@ export function buildCorpus({ clang = process.env.CLANG || 'clang' } = {}) {
             const objectPath = path.join(temporaryDirectory, `${stem}.o`);
             const linkedPath = path.join(temporaryDirectory, `${stem}.elf`);
             compileObject(clang, architecture, optimization, sourcePath, objectPath);
-            const linked = linkObject(clang, architecture, optimization, objectPath, linkedPath);
+            const supportObject = compileLinkSupport(clang, architecture, optimization, temporaryDirectory);
+            const linked = linkObjects(clang, architecture, optimization, [objectPath, supportObject], linkedPath);
             for (const name of names) {
               const bytes = extractElfFunctionBytes(linked, name);
               if (!bytes) throw new Error(`phase8 corpus: function not found in linked ELF: ${architecture.architectureId} ${name} ${optimization}`);
