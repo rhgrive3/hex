@@ -14,7 +14,13 @@ export class HypothesisStore {
 
   upsert(input = {}, authority = null) {
     const now = new Date().toISOString();
-    const id = String(input.id || `hyp_${sequence++}`);
+    let id;
+    if (input.id) {
+      id = String(input.id);
+    } else {
+      do id = `hyp_${sequence++}`;
+      while (this.records.has(id));
+    }
     const previous = this.records.get(id);
 
     /* A model may refer to hypothesis IDs, but it must never rewrite the claim
