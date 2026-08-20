@@ -11,19 +11,10 @@ function evidenceSource(source, reason) {
   return { ...current, evidence:[...(current.evidence || []), { reason }] };
 }
 
-function collapseExactNestedTruncation(node, records) {
-  if (node?.kind !== 'unary' || node.op !== 'trunc') return node;
-  const inner = node.arg;
-  if (inner?.kind !== 'unary' || inner.op !== 'trunc') return node;
-  const outerBits = integer(node.bits);
-  const innerBits = integer(inner.bits);
-  const sourceBits = integer(inner.arg?.bits);
-  if (outerBits == null || innerBits == null || sourceBits == null) return node;
-  if (!(outerBits <= innerBits && innerBits <= sourceBits)) return node;
-  const source = mergeSource(node.source, inner.source, inner.arg?.source);
+function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, source, kind = 'exact-view-collapse' }) {
   records.push(Object.freeze({
-    kind:'exact-view-collapse',
-    proof:'trunc_N(trunc_M(x)) == trunc_N(x) for N <= M <= width(x)',
+    kind,
+    proof,
     outerBits,
     innerBits,
     sourceBits,
@@ -35,10 +26,108 @@ function collapseExactNestedTruncation(node, records) {
       ssaUses:Object.freeze([...(source.ssaUses || [])]),
     }),
   }));
+}
+
+function collapseExactNestedTruncation(node, records) {
+  if (node?.kind !== 'unary' || node.op !== 'trunc') return node;
+  const inner = node.arg;
+  if (inner?.kind !== 'unary' || inner.op !== 'trunc') return node;
+  const outerBits = integer(node.bits);
+  const innerBits = integer(inner.bits);
+  const sourceBits = integer(inner.arg?.bits);
+  if (outerBits == null || innerBits == null || sourceBits == null) return node;
+  if (!(outerBits <= innerBits && innerBits <= sourceBits)) return node;
+  const source = mergeSource(node.source, inner.source, inner.arg?.source);
+  recordViewCollapse(records, {
+    proof:'trunc_N(trunc_M(x)) == trunc_N(x) for N <= M <= width(x)',
+    outerBits,
+    innerBits,
+    sourceBits,
+    source,
+  });
   return expr.unary('trunc', inner.arg, outerBits, node.signed ?? false,
     evidenceSource(source, 'Phase 8 exact nested-truncation proof'), {
       fromBits:sourceBits,
       phase8Proof:'nested-truncation',
+    });
+}
+
+/**
+ * Collapse an extension that is provably hidden by an outer unsigned truncation.
+ *
+ * These are bit-vector identities, not pretty-printer elision:
+ *
+ *   trunc_N(zext_M(x:S)) == zext_N(x)   when S < N <= M
+ *   trunc_N(ext_M(x:S))  == trunc_N(x)  when N <= S <= M
+ *
+ * The first identity is deliberately restricted to zext because the C projection
+ * represents `trunc` as an unsigned view. Replacing `trunc_N(sext_M(x))` with
+ * `sext_N(x)` when S < N would change the recovered signed view even though the
+ * low N bits agree. The second identity is safe for zext and sext because the
+ * extension contributes only bits that the outer truncation discards.
+ */
+function collapseExactExtensionUnderTruncation(node, records) {
+  if (node?.kind !== 'unary' || node.op !== 'trunc') return node;
+  const inner = node.arg;
+  if (inner?.kind !== 'unary' || !['zext', 'sext'].includes(inner.op)) return node;
+  const outerBits = integer(node.bits);
+  const innerBits = integer(inner.bits);
+  const sourceBits = integer(inner.arg?.bits);
+  if (outerBits == null || innerBits == null || sourceBits == null) return node;
+  if (!(sourceBits <= innerBits && outerBits <= innerBits)) return node;
+
+  const source = mergeSource(node.source, inner.source, inner.arg?.source);
+  if (outerBits <= sourceBits) {
+    recordViewCollapse(records, {
+      proof:'trunc_N(ext_M(x:S)) == trunc_N(x) for N <= S <= M',
+      outerBits,
+      innerBits,
+      sourceBits,
+      source,
+    });
+    return expr.unary('trunc', inner.arg, outerBits, node.signed ?? false,
+      evidenceSource(source, 'Phase 8 exact extension-hidden-by-truncation proof'), {
+        fromBits:sourceBits,
+        phase8Proof:'extension-hidden-by-truncation',
+      });
+  }
+
+  if (inner.op !== 'zext') return node;
+  recordViewCollapse(records, {
+    proof:'trunc_N(zext_M(x:S)) == zext_N(x) for S < N <= M',
+    outerBits,
+    innerBits,
+    sourceBits,
+    source,
+  });
+  return expr.unary('zext', inner.arg, outerBits, node.signed ?? false,
+    evidenceSource(source, 'Phase 8 exact zero-extension narrowing proof'), {
+      fromBits:sourceBits,
+      phase8Proof:'narrowed-zero-extension',
+    });
+}
+
+function collapseExactRepeatedExtension(node, records) {
+  if (node?.kind !== 'unary' || !['zext', 'sext'].includes(node.op)) return node;
+  const inner = node.arg;
+  if (inner?.kind !== 'unary' || inner.op !== node.op) return node;
+  const outerBits = integer(node.bits);
+  const innerBits = integer(inner.bits);
+  const sourceBits = integer(inner.arg?.bits);
+  if (outerBits == null || innerBits == null || sourceBits == null) return node;
+  if (!(sourceBits <= innerBits && innerBits <= outerBits)) return node;
+  const source = mergeSource(node.source, inner.source, inner.arg?.source);
+  recordViewCollapse(records, {
+    proof:`${node.op}_N(${node.op}_M(x)) == ${node.op}_N(x) for width(x) <= M <= N`,
+    outerBits,
+    innerBits,
+    sourceBits,
+    source,
+  });
+  return expr.unary(node.op, inner.arg, outerBits, node.signed ?? inner.signed ?? null,
+    evidenceSource(source, `Phase 8 exact repeated-${node.op} proof`), {
+      fromBits:sourceBits,
+      phase8Proof:`repeated-${node.op}`,
     });
 }
 
@@ -74,6 +163,8 @@ function transformExpression(root, names, records, memo = new Map()) {
   if (!root || memo.has(root)) return memo.get(root) ?? root;
   let mapped = mapChildren(root, (child) => transformExpression(child, names, records, memo));
   mapped = collapseExactNestedTruncation(mapped, records);
+  mapped = collapseExactExtensionUnderTruncation(mapped, records);
+  mapped = collapseExactRepeatedExtension(mapped, records);
   const valueId = provenValueId(mapped, names);
   if (valueId != null) {
     const name = names.get(valueId);
