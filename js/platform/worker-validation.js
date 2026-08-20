@@ -1,5 +1,7 @@
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
+// Number()/BigInt() both coerce some malformed protocol scalars (null, false,
+// blank strings) to zero, so reject those shapes before numeric conversion.
 function rejectMalformedIntegerScalar(value, message) {
   if (value == null || typeof value === 'boolean' || (typeof value === 'string' && !value.trim())) {
     throw new RangeError(message);
