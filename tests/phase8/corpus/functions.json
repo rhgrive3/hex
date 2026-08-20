@@ -610,7 +610,7 @@
       "architectureId": "riscv64",
       "targetTriple": "riscv64-unknown-linux-gnu",
       "representation": "machine-bytes",
-      "bytes": "130101fe233c110023388100130401022334a4fe033584fe032505002322a4feef000000032544fe833584fe83a505003b05b50083308101033401011301010267800000"
+      "bytes": "130101fe233c110023388100130401022334a4fe033584fe032505002322a4feef000047032544fe833584fe83a505003b05b50083308101033401011301010267800000"
     },
     {
       "id": "riscv64.quality.gvn_call_barrier.O1",
@@ -620,7 +620,7 @@
       "architectureId": "riscv64",
       "targetTriple": "riscv64-unknown-linux-gnu",
       "representation": "machine-bytes",
-      "bytes": "130101fe233c110023388100233491001304050083240500ef000000032504003b0595008330810103340101833481001301010267800000"
+      "bytes": "130101fe233c110023388100233491001304050083240500ef00801c032504003b0595008330810103340101833481001301010267800000"
     },
     {
       "id": "riscv64.quality.gvn_call_barrier.O2",
@@ -630,7 +630,7 @@
       "architectureId": "riscv64",
       "targetTriple": "riscv64-unknown-linux-gnu",
       "representation": "machine-bytes",
-      "bytes": "130101fe233c110023388100233491001304050083240500ef000000032504003b0595008330810103340101833481001301010267800000"
+      "bytes": "130101fe233c110023388100233491001304050083240500ef00801c032504003b0595008330810103340101833481001301010267800000"
     },
     {
       "id": "riscv64.quality.gvn_load_reuse.O0",
@@ -1060,7 +1060,7 @@
       "architectureId": "x86_64",
       "targetTriple": "x86_64-unknown-linux-gnu",
       "representation": "machine-bytes",
-      "bytes": "554889e54883ec1048897df8488b45f88b008945f4e866eddfff8b45f4488b4df803014883c4105dc3"
+      "bytes": "554889e54883ec1048897df8488b45f88b008945f4e8960200008b45f4488b4df803014883c4105dc3"
     },
     {
       "id": "x86_64.quality.gvn_call_barrier.O1",
@@ -1070,7 +1070,7 @@
       "architectureId": "x86_64",
       "targetTriple": "x86_64-unknown-linux-gnu",
       "representation": "machine-bytes",
-      "bytes": "5553504889fb8b2fe823eedfff032b89e84883c4085b5dc3"
+      "bytes": "5553504889fb8b2fe893010000032b89e84883c4085b5dc3"
     },
     {
       "id": "x86_64.quality.gvn_call_barrier.O2",
@@ -1080,7 +1080,7 @@
       "architectureId": "x86_64",
       "targetTriple": "x86_64-unknown-linux-gnu",
       "representation": "machine-bytes",
-      "bytes": "5553504889fb8b2fe823eedfff032b89e84883c4085b5dc3"
+      "bytes": "5553504889fb8b2fe813030000032b89e84883c4085b5dc3"
     },
     {
       "id": "x86_64.quality.gvn_load_reuse.O0",
@@ -1383,5 +1383,5 @@
       "bytes": "83ff048d04bf8d4c000ab8ffffffff0f42c1c3"
     }
   ],
-  "corpusDigest": "98123c1d66f83dc9331608f186711694"
+  "corpusDigest": "94094f7e9487f640e871e46b19c86c69"
 }
