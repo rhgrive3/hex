@@ -28,6 +28,7 @@ const TASK_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
 const GRAPH_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
 const MAX_TASKS = 128;
 const MIN_TIMEOUT_MS = 10;
+const MAX_ATTEMPTS = 5;
 const MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 5000;
 const DEFAULT_POLL_MS = 50;
@@ -237,27 +238,39 @@ export class DynamicTaskGraph {
           return;
         }
         task.attempts += 1;
+        const trace = this.beginAttemptTrace(task);
         let lease = null;
         let outcome = null;
         let attemptError = null;
         try {
           lease = await this.workerPool.claim({ taskId: task.id, wait: true, signal: this.abortController.signal });
+          trace.leaseClaimedAt = this.now();
+          trace.leaseId = lease.leaseId;
+          trace.slot = lease.slot ?? null;
+          trace.workerId = lease.workerId || null;
           task.owner = Object.freeze({ leaseId: lease.leaseId, slot: lease.slot, workerId: lease.workerId || null });
           await this.workerPool.createChat({ leaseId: lease.leaseId });
           await this.workerPool.start({ leaseId: lease.leaseId, instruction: buildDevWorkerInstruction(task.instruction) });
+          trace.promptSubmitAt = this.now();
           outcome = await this.waitForWorkerResult(task, lease.leaseId);
-          if (!workerSucceeded(outcome)) throw workerResultError(outcome);
+          trace.completionDetectedAt = this.now();
+          const succeeded = workerSucceeded(outcome);
+          trace.resultParsedAt = this.now();
+          if (!succeeded) throw workerResultError(outcome);
         } catch (error) {
           attemptError = normalizeError(error, 'task-failed');
         }
 
         const cleanupError = lease ? await this.cleanupLease(task, lease.leaseId) : null;
+        if (lease) trace.leaseReleasedAt = this.now();
         task.owner = null;
         if (cleanupError) {
+          closeAttemptTrace(trace, 'failed', cleanupError);
           this.finishTaskFailure(task, cleanupError);
           return;
         }
         if (outcome && !attemptError) {
+          closeAttemptTrace(trace, 'succeeded', null);
           task.result = safeClone(outcome);
           task.error = null;
           task.state = DEV_TASK_STATE.SUCCEEDED;
@@ -265,9 +278,11 @@ export class DynamicTaskGraph {
           return;
         }
         if (this.abortController.signal.aborted || attemptError?.code === 'cancelled') {
+          closeAttemptTrace(trace, 'cancelled', attemptError);
           this.finishTaskCancelled(task, this.cancelReason || attemptError?.message || 'cancelled');
           return;
         }
+        closeAttemptTrace(trace, 'failed', attemptError);
         task.error = attemptError;
         if (task.attempts < task.maxAttempts) {
           task.state = DEV_TASK_STATE.READY;
@@ -287,6 +302,35 @@ export class DynamicTaskGraph {
      that either simply aborts the wait; the Worker it may still be running stays
      owned by this lease until cleanupLease() completes the existing stop ->
      release -> discard transaction. */
+  /* One record per attempt on the task that owns it, capped by maxAttempts. No
+     global log, no ring-buffer service, no observer: every field below is a
+     timestamp taken at a point the attempt already passes through, so the trace
+     costs nothing on the hot path and cannot change scheduling. Prompts,
+     responses and DOM are deliberately absent -- this answers "where did the
+     time go", not "what did the Worker say". */
+  beginAttemptTrace(task) {
+    const trace = {
+      graphId: this.graphId,
+      taskId: task.id,
+      attempt: task.attempts,
+      leaseId: null,
+      workerId: null,
+      slot: null,
+      readyAt: this.now(),
+      leaseClaimedAt: null,
+      promptSubmitAt: null,
+      completionDetectedAt: null,
+      resultParsedAt: null,
+      leaseReleasedAt: null,
+      outcome: null,
+      error: null,
+    };
+    // Bounded by construction: one record per attempt, and maxAttempts is
+    // already clamped to MAX_ATTEMPTS when the task is normalized.
+    task.trace.push(trace);
+    return trace;
+  }
+
   async waitForWorkerResult(task, leaseId) {
     if (this.abortController.signal.aborted) throw graphError('cancelled', this.cancelReason || 'cancelled');
     const controller = new AbortController();
@@ -417,7 +461,7 @@ function normalizeTasks(input, now) {
       id,
       dependencies: Object.freeze(normalizedDependencies),
       instruction,
-      maxAttempts: boundedInt(source.maxAttempts, 1, 5, 1),
+      maxAttempts: boundedInt(source.maxAttempts, 1, MAX_ATTEMPTS, 1),
       timeoutMs: normalizeDeadline(source.timeoutMs),
       state: DEV_TASK_STATE.PENDING,
       owner: null,
@@ -427,6 +471,7 @@ function normalizeTasks(input, now) {
       startedAt: null,
       finishedAt: null,
       executionActive: false,
+      trace: [],
       createdAt: now(),
     });
   }
@@ -474,6 +519,7 @@ function publicTask(task, includeResult) {
     timeoutMs: task.timeoutMs,
     error: task.error,
     result: includeResult ? safeClone(task.result) : undefined,
+    trace: includeResult ? Object.freeze(task.trace.map((entry) => Object.freeze({ ...entry }))) : undefined,
     startedAt: task.startedAt,
     finishedAt: task.finishedAt,
   });
@@ -497,6 +543,32 @@ function workerResultError(result) {
   const message = String(result?.error?.message || `Worker task ended with status ${state}.`).slice(0, 512);
   return graphError(code, message);
 }
+function closeAttemptTrace(trace, outcome, error) {
+  if (!trace || trace.outcome) return;
+  trace.outcome = outcome;
+  trace.error = error ? Object.freeze({ code: String(error.code || outcome).slice(0, 64), message: String(error.message || outcome).slice(0, 256) }) : null;
+}
+
+/* Derived on demand from the timestamps above, so no clock exists purely for
+   metrics. An endpoint that was never reached stays null: an attempt that timed
+   out really has no completion cost, and reporting 0 there would be a lie. */
+export function devAttemptTraceDurations(trace) {
+  return Object.freeze({
+    readyToLeaseMs: spanMs(trace?.readyAt, trace?.leaseClaimedAt),
+    leaseToSubmitMs: spanMs(trace?.leaseClaimedAt, trace?.promptSubmitAt),
+    submitToCompletionDetectedMs: spanMs(trace?.promptSubmitAt, trace?.completionDetectedAt),
+    completionToParseMs: spanMs(trace?.completionDetectedAt, trace?.resultParsedAt),
+    parseToReleaseMs: spanMs(trace?.resultParsedAt, trace?.leaseReleasedAt),
+  });
+}
+function spanMs(from, to) {
+  if (from == null || to == null) return null;
+  const start = Date.parse(from);
+  const end = Date.parse(to);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return end - start;
+}
+
 function normalizeError(error, fallbackCode) {
   if (error && typeof error === 'object' && error.code && error.message) {
     return Object.freeze({ code: String(error.code).slice(0, 64), message: String(error.message).slice(0, 512) });
