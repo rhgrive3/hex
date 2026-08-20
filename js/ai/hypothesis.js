@@ -18,6 +18,7 @@ export class HypothesisStore {
     if (input.id) {
       id = String(input.id);
     } else {
+      // Explicit IDs restored from persistence may occupy generated sequence slots.
       do id = `hyp_${sequence++}`;
       while (this.records.has(id));
     }
