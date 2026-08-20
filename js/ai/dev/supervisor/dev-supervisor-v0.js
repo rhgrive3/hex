@@ -3,9 +3,14 @@ import { createDevAnalysisScopeRequest } from '../run/analysis-scope.js';
 import { bindDevRunIdentity, createDevRun, DEV_RUN_STATUS, transitionDevRun } from '../run/dev-run.js';
 import { validateDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js';
 import { createDevWorkerToolSurface, DEV_WORKER_TOOL } from '../workers/tool-surface.js';
-import { createDevAdminToolSurface } from '../admin/tool-surface.js';
+import { createDevAdminToolSurface, DEV_ADMIN_TOOL } from '../admin/tool-surface.js';
 
 let fallbackSequence = 0;
+const RUN_SCOPED_POOL_TOOLS = new Set([
+  DEV_ADMIN_TOOL.POOL_CLAIM,
+  DEV_ADMIN_TOOL.POOL_START,
+  DEV_ADMIN_TOOL.POOL_RELEASE,
+]);
 
 export class DevSupervisorV0 {
   constructor({ availableTools = [], workerTools = null, adminTools = null, workerClient = null, idFactory = defaultIdFactory, now = () => new Date().toISOString() } = {}) {
@@ -67,7 +72,8 @@ export class DevSupervisorV0 {
     const applied = this.applyDecision(run, input);
     if (applied.decision.type !== 'tool') throw new TypeError('executeToolDecision requires a Dev tool decision.');
     if (this.adminTools?.has(applied.decision.tool)) {
-      const result = await this.adminTools.execute(applied.decision.tool, applied.decision.arguments);
+      const argumentsForTool = runtimeOwnedAdminArguments(applied.run, applied.decision);
+      const result = await this.adminTools.execute(applied.decision.tool, argumentsForTool);
       return Object.freeze({ run: applied.run, decision: applied.decision, result });
     }
     if (!this.workerTools?.has(applied.decision.tool)) {
@@ -94,6 +100,19 @@ export class DevSupervisorV0 {
     if (result.chatgptConversationId != null) patch.chatgptConversationId = result.chatgptConversationId;
     return Object.keys(patch).length ? bindDevRunIdentity(run, patch, { now: this.now() }) : run;
   }
+}
+
+function runtimeOwnedAdminArguments(run, decision) {
+  const supplied = decision?.arguments && typeof decision.arguments === 'object' && !Array.isArray(decision.arguments)
+    ? decision.arguments
+    : {};
+  const args = { ...supplied };
+  if (!RUN_SCOPED_POOL_TOOLS.has(decision?.tool)) return args;
+
+  const runId = requiredRuntimeIdentity(run?.runId, 'runId');
+  rejectIdentityOverride(args.runId, runId, 'runId');
+  args.runId = runId;
+  return args;
 }
 
 function runtimeOwnedWorkerArguments(run, decision) {
