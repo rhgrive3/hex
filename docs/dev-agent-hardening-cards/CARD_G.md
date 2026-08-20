@@ -43,6 +43,7 @@ DO NOT
 - change decision JSON shapes
 - change tool names or permissions
 - change runtime activation behavior
+- add cryptographic dependencies solely for the signature
 
 BOOTSTRAP MODE MUST INCLUDE
 - full hex-dev-supervisor-v1 decision contract
@@ -59,7 +60,14 @@ CONTINUATION MODE MUST INCLUDE
 - fresh history delta / unresolved blockers / required evidence
 - no redundant replay of the full fixed bootstrap prose
 
-For this first implementation, do NOT build contract-delta diffing. Store a deterministic signature of the available tool inventory for the bootstrapped session. If that signature changes, use a full BOOTSTRAP again so the complete current contracts are resent safely.
+BOOTSTRAP CONTRACT SIGNATURE
+Do not key continuation safety only to the list of tool names. Store one deterministic bootstrap-contract signature for the bootstrapped session. It must cover the stable inputs whose change requires the model to receive a full bootstrap again, including at minimum:
+- protocol/decision-contract version or equivalent stable representation;
+- stable trust/safety bootstrap rules or their explicit version/representation;
+- complete available tool contract signature, including argument contracts, not names only;
+- any other stable bootstrap section whose semantic change would make a continuation unsafe.
+
+The signature may be a deterministic serialized string; a cryptographic hash is not required. Do NOT build contract-delta patching in this card. If the signature changes or cannot be reproduced with confidence, use a full BOOTSTRAP.
 
 CONTINUITY AUTHORITY
 Use the existing supervisorSessionKey and runtime ownership, but do not assume continuity merely because a string matches.
@@ -68,6 +76,7 @@ Mark a session bootstrapped only after a successful full BOOTSTRAP request/respo
 Fallback to BOOTSTRAP when:
 - runtime reload/reinitialize occurs or in-memory state is absent;
 - session key changes;
+- bootstrap-contract signature changes;
 - bridge reports/indicates continuity loss;
 - recovery cannot prove the prior session context remains valid.
 Uncertainty must cost tokens, not correctness.
@@ -78,10 +87,12 @@ TESTS
 3. new session key => BOOTSTRAP;
 4. new engine/runtime instance => BOOTSTRAP;
 5. failed/invalid first response must not falsely mark bootstrap complete;
-6. unchanged available-tool inventory signature allows CONTINUATION;
-7. available-tool inventory signature change => BOOTSTRAP safe fallback;
-8. CONTINUATION still produces a prompt that enforces exact decision shape and untrusted Worker/DOM data boundaries;
-9. existing human/tool/wait/final engine behavior remains green.
+6. unchanged bootstrap-contract signature allows CONTINUATION;
+7. tool argument-contract change with the same tool names => BOOTSTRAP;
+8. stable safety/protocol representation change => BOOTSTRAP;
+9. unavailable/uncertain signature => BOOTSTRAP safe fallback;
+10. CONTINUATION still produces a prompt that enforces exact decision shape and untrusted Worker/DOM data boundaries;
+11. existing human/tool/wait/final engine behavior remains green.
 
 MEASUREMENT
 Add a deterministic test assertion that a representative CONTINUATION prompt is materially smaller than the equivalent BOOTSTRAP prompt. Do not use tokenizers; character/byte length is sufficient.
@@ -95,6 +106,7 @@ RUN
 
 STOP CONDITIONS
 If bridge continuity cannot be safely distinguished, use BOOTSTRAP fallback. Do not weaken protocol to force CONTINUATION.
+If computing the signature would require a second mutable source of tool/protocol truth, stop and use the existing canonical/parity source instead.
 
 DELIVERY
 Ready-to-merge PR, no merge. NEXT_CARD=H1.

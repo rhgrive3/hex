@@ -59,6 +59,7 @@ Algorithm:
 8. If pending was already null because the turn completed before waitResult registration, validate identity and return retained lastResult immediately.
 9. If neither an active captured pending nor a retained terminal result exists, fail with a typed Pool error instead of returning a fabricated terminal state.
 10. Aborting waitResult aborts only the wait. It MUST NOT release, stop, discard, or reassign the Worker.
+11. Pool close/runtime reinitialization invalidates the old ownership domain. A captured Promise that settles after close/reinitialize MUST NOT become authority for a new pool, lease, slot owner, or task.
 
 IMPORTANT IDENTITY LIMIT
 For this card, waitResult is internal and supports the Graph's existing one-start-per-lease/attempt path. Do not claim leaseId/runId/workerId is a universal multi-turn token. Do not add a public wait tool or a new identity subsystem.
@@ -71,7 +72,8 @@ Add new API regressions for:
 4. aborted wait rejects/cancels the wait but leaves lease ownership intact;
 5. release/reclaim invalidates an old lease; an old wait/result cannot become authority for the new lease;
 6. repeated read-only wait/result after completion is idempotent until release;
-7. no polling/sleep loop is introduced.
+7. no polling/sleep loop is introduced;
+8. close/reinitialize while an old wait is pending cannot let the old settlement satisfy a later pool/lease/task.
 
 RUN
 - node tests/dev-agent/iframe-worker-pool.mjs

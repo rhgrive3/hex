@@ -3,7 +3,8 @@
 **Status:** execution derivative of `docs/dev-agent-hardening-preflight.md`; subordinate to `docs/ENGINEERING_PROCESS_GUARDRAILS.md` and `docs/improving-agent.md`  
 **Repository:** `rhgrive3/hex`  
 **Target:** make the hardening executable by a weaker coding model with minimal architectural judgment while preserving or improving the final v2.3 outcome  
-**Baseline used to prepare these cards:** live `main` observed at `bd03d1a860863814dbdcc00559709794d460189d`  
+**Original baseline used to prepare these cards:** `bd03d1a860863814dbdcc00559709794d460189d`  
+**Harness-alignment review revalidated against current main:** `0ba89b8f08bd821dcf55cb73fc21b926a43581f0`
 
 ---
 
@@ -16,20 +17,27 @@ Default sequence:
 ```text
 CARD 0  baseline/drift check        (no code change)
 CARD A  characterization + test gate
-CARD B  Pool waitResult()
+CARD B  Pool waitResult() + lifecycle fencing
 CARD C  Graph polling removal
-CARD E  timeout semantics
+CARD E  timeout semantics + quiescent cleanup
 CARD F  bounded critical-path trace
 CARD H0 prompt/tool compatibility + parity
 CARD G  prompt BOOTSTRAP/CONTINUATION transport
 CARD H1 canonical tool metadata registry
+CARD H2 bounded deterministic observation batch
 CARD I1 ContextPacket/WorkerResult representation
 CARD I2 deterministic context selection
 ```
 
 `CARD D` is **not** part of the default sequence. Run it only if, after CARD C, there is measured evidence that the Supervisor still polls graph/pool status in a way a host-side wait API would remove.
 
+`CARD F1` is **not** part of the default sequence. It is an evidence-only target-device benchmark. Run it only after CARD F is active in the real iOS/iPadOS runtime and a measured effective-concurrency decision is actually needed. F1 does not change code or production defaults.
+
 Every implementation card targets a **small ready-to-merge PR**. Unless the human explicitly overrides this rule, do not merge `main`, enable auto-merge, or combine cards in one PR.
+
+### Why H2 is narrow
+
+CARD H2 adopts only the useful round-trip reduction pattern from larger agent harnesses. It is deliberately **not** Code Mode and not a generic workflow engine. It adds one bounded read-only batch over tools already authorized and classified by H1, executes them sequentially through the existing direct-call path, and keeps all mutation/control/wait/full-turn operations out. This preserves Hex's one scheduler, one tool-contract truth, and browser/iPad-first constraints while reducing unnecessary Supervisor model turns.
 
 ---
 
@@ -55,6 +63,9 @@ These rules are repeated conceptually in every card and are non-optional.
 12. If running inside GitHub Codespaces, follow the Graft rules in root `AGENTS.md`. Outside Codespaces, do not install/emulate/require Graft.
 13. A Worker report is not proof. The final PR report must list actual changed files and actual observed test commands/results.
 14. If a required assertion cannot be proved, report the exact blocker instead of approximating success.
+15. Cancellation/deadline is not proof of quiescence. Started owned work must settle/be confirmed stopped before safe reuse, or fail closed through the existing discard path.
+16. Tool batching never grants authority. Only tools explicitly marked by the canonical H1 registry as read-only observation-batch eligible may participate, and batching must use the same direct execution path.
+17. Context compaction must preserve provenance and coverage lineage; never invent `coveredEvidenceRefs` merely to reduce bytes.
 
 ### Required final report format for every implementation card
 
@@ -94,9 +105,11 @@ CARD_C.md
 CARD_D_OPTIONAL.md
 CARD_E.md
 CARD_F.md
+CARD_F1_OPTIONAL.md
 CARD_H0.md
 CARD_G.md
 CARD_H1.md
+CARD_H2.md
 CARD_I1.md
 CARD_I2.md
 ```
@@ -111,13 +124,18 @@ Before Phase 4, run a separate evidence-only readiness check:
 - current main exact SHA
 - current docs/improving-agent.md contract still authoritative
 - Pool completion long-turn polling removed
+- stale wait/result cannot cross pool close/reinitialize ownership
 - explicit/no-default timeout semantics verified
-- bounded trace present
+- cancellation/deadline cleanup preserves quiescent ownership or fails closed through discard
+- bounded trace present and distinguishes queue/submit/completion/parse/release costs
 - prompt/tool parity green
 - BOOTSTRAP/CONTINUATION continuity tests green
-- canonical tool registry parity green
-- ContextPacket/WorkerResult representation green
-- deterministic context-selection regression green
+- bootstrap-contract signature safely forces BOOTSTRAP on protocol/safety/tool-contract change
+- canonical tool registry parity green, including owner and batchPolicy metadata
+- bounded observation batch rejects every non-opted-in/non-observation target before execution
+- direct vs batched eligible observations preserve equivalent result semantics
+- ContextPacket/WorkerResult representation green, including terminalReason and coveredEvidenceRefs
+- deterministic context-selection regression green and covered evidence is not double-injected
 - active runtime identity updated before any live proof
 - Standard Agent unchanged
 ```
@@ -135,9 +153,12 @@ If the implementation model proposes any of the following, stop that card and re
 - “Let's introduce Redis/IndexedDB/vector DB for completion or memory.”
 - “I'll rewrite DynamicTaskGraph while I am here.”
 - “I'll combine timeout and completion changes.”
+- “Abort fired, so the old Worker is reusable now.”
 - “I'll make six Workers the default because six is supported.”
 - “I'll summarize context with another LLM call every turn.”
 - “I'll add a generic plugin framework for tool metadata.”
+- “I'll add arbitrary JS/eval/Code Mode so batching is easier.”
+- “Any observation-looking tool can go in the batch even if the registry did not opt it in.”
 - “The PR is linked/CI was green earlier, so it is proven.”
 - “This test is expensive, so I skipped it but the code looks correct.”
 - “The Worker said it passed, so I marked it done.”
