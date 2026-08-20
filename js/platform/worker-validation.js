@@ -1,12 +1,20 @@
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
+function rejectMalformedIntegerScalar(value, message) {
+  if (value == null || typeof value === 'boolean' || (typeof value === 'string' && !value.trim())) {
+    throw new RangeError(message);
+  }
+}
+
 export function checkedChunkIndex(value) {
+  rejectMalformedIntegerScalar(value, 'Chunk index must be a non-negative safe integer.');
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n < 0) throw new RangeError('Chunk index must be a non-negative safe integer.');
   return n;
 }
 
 export function regionSize(value, label = 'region size') {
+  rejectMalformedIntegerScalar(value, `${label} is invalid.`);
   let n;
   try { n = typeof value === 'bigint' ? value : BigInt(value); }
   catch { throw new RangeError(`${label} is invalid.`); }
