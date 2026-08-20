@@ -12,6 +12,7 @@
       "tools/validation/phase-ownership/phase8.json",
       "reports/phase8/**",
       "docs/PHASE8_CHECKPOINT.md",
+      "docs/PHASE8_HANDOFF.md",
       ".github/workflows/phase8-ownership.yml",
       ".github/workflows/phase8-release-validation.yml",
       "package.json",
@@ -42,6 +43,7 @@
   ],
   "releaseOnlyPaths": [
     "docs/PHASE8_CHECKPOINT.md",
+    "docs/PHASE8_HANDOFF.md",
     ".github/workflows/phase8-release-validation.yml"
   ],
   "forbiddenPaths": [
@@ -87,7 +89,8 @@
     "package.json": "May add Phase 8 scripts and wire them into existing aggregates. Must not remove or weaken an existing gate.",
     "userscript/hex.user.template.js": "Generated output. It MUST be produced by the canonical builder (npm run userscript:build) and committed by the integration owner after each accepted checkpoint. It must never be hand-edited or copied from another branch.",
     "userscript/release-version.json": "Generated release identity. It advances deterministically from protected runtime content and must never be edited by hand.",
-    "docs/PHASE8_CHECKPOINT.md": "The living checkpoint record. It records what was accepted with which evidence; it may not relax an exit gate."
+    "docs/PHASE8_CHECKPOINT.md": "The living checkpoint record. It records what was accepted with which evidence; it may not relax an exit gate.",
+    "docs/PHASE8_HANDOFF.md": "The handoff record: current state, open work and the traps that cost time. It may not relax an exit gate."
   },
   "generatedWriteOwners": [
     "p8"

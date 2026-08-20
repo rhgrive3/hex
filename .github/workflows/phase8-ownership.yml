@@ -13,6 +13,7 @@ on:
       - 'tools/validation/phase-ownership/phase8.json'
       - 'reports/phase8/**'
       - 'docs/PHASE8_CHECKPOINT.md'
+      - 'docs/PHASE8_HANDOFF.md'
       - '.github/workflows/phase8-ownership.yml'
       - '.github/workflows/phase8-release-validation.yml'
   workflow_dispatch:

@@ -5,6 +5,7 @@
 > **Phase 8 base commit:** `bd03d1a860863814dbdcc00559709794d460189d`
 > **Ownership:** single owner, lane `p8`, manifest `tools/validation/phase-ownership/phase8.json`
 > **Verifier:** `node tools/validation/phase8/verify.mjs` (`npm run phase8:verify`)
+> **Handoff:** [`PHASE8_HANDOFF.md`](PHASE8_HANDOFF.md) — state, open work and traps for whoever takes P8-I
 
 This file records what was accepted and what proved it. It never relaxes an exit
 gate. Where it disagrees with `PHASE8_CHECKPOINT_CONTRACTS.md`, the contract wins.
