@@ -102,17 +102,20 @@ export class InstrumentationProvider {
         for (let i = 0; i < (Array.isArray(modules) ? modules.length : 0); i++) {
           const module = modules[i] || {};
           if ((module.runtimeBase ?? module.base) == null || (module.runtimeSize ?? module.size) == null) continue;
+          const identityEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
+          const hasProvenStaticIdentity = module.binaryId != null && (module.identityState === 'exact' || module.identityState === 'resolved' || identityEvidenceIds.length > 0);
           session.modules.load({
             bindingKey: moduleKey(module, i),
             runtimeBase: module.runtimeBase ?? module.base,
             runtimeSize: module.runtimeSize ?? module.size,
             staticBase: module.staticBase ?? module.imageBase ?? null,
             pathHint: module.pathHint ?? module.path ?? module.name ?? null,
-            binaryId: module.binaryId ?? (i === 0 ? request.binaryId ?? request.binaryHash : null),
-            sliceId: module.sliceId ?? (i === 0 ? request.sliceId : null),
-            imageId: module.imageId ?? null,
+            binaryId: hasProvenStaticIdentity ? module.binaryId : null,
+            sliceId: hasProvenStaticIdentity ? (module.sliceId ?? null) : null,
+            imageId: hasProvenStaticIdentity ? (module.imageId ?? null) : null,
             buildIdentity: module.buildIdentity ?? module.uuid ?? null,
-            identityState: module.identityState ?? (module.binaryId || (i === 0 && (request.binaryId || request.binaryHash)) ? 'exact' : 'unresolved'),
+            identityState: hasProvenStaticIdentity ? (module.identityState ?? 'resolved') : 'unresolved',
+            identityEvidenceIds,
           });
         }
       }
