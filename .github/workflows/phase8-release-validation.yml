@@ -1,9 +1,9 @@
 name: Phase 8 release validation
 
-# The permanent exact-SHA verification route. It exists from P8-0 so proof never
-# depends on opening a throwaway PR to trigger a workflow (EP-012), and it runs
-# in shadow mode from the first checkpoint so final verification is a re-run of a
-# mature verifier rather than its first meeting with the product (EP-011).
+# Permanent exact-product verifier plus the one-shot P8-I expanded-baseline
+# capture. The latter checks out the recorded Phase 8 base and overlays only
+# measurement/corpus tooling; it never copies candidate production code into the
+# baseline worktree.
 on:
   pull_request:
     paths:
@@ -36,9 +36,106 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
+  capture-expanded-baseline:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Detect one-shot baseline request
+        id: request
+        run: |
+          if [ -f tools/validation/phase8/p8i-baseline-request.json ]; then
+            echo 'requested=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'requested=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.request.outputs.requested == 'true'
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+        if: steps.request.outputs.requested == 'true'
+      - name: Build the expanded frozen corpus
+        if: steps.request.outputs.requested == 'true'
+        run: node tools/validation/phase8/build-corpus.mjs
+      - name: Capture baseline from exact pre-Phase-8 product
+        if: steps.request.outputs.requested == 'true'
+        env:
+          BASE_SHA: bd03d1a860863814dbdcc00559709794d460189d
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/phase8-base"
+          git worktree add --detach "$BASE" "$BASE_SHA"
+          overlay=(
+            tools/validation/phase8/build-corpus.mjs
+            tools/validation/phase8/decompile-corpus.mjs
+            tools/validation/phase8/decoded-function-adapter.mjs
+            tools/validation/phase8/baseline.mjs
+          )
+          for file in "${overlay[@]}"; do
+            mkdir -p "$BASE/$(dirname "$file")"
+            cp "$file" "$BASE/$file"
+          done
+          cp tests/phase8/corpus/functions.json "$BASE/tests/phase8/corpus/functions.json"
+          (
+            cd "$BASE"
+            node tools/validation/phase8/baseline.mjs --force
+          )
+          cp "$BASE/tests/phase8/corpus/pre-phase8-observations.json" tests/phase8/corpus/pre-phase8-observations.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { stableDigest } from './js/core/identity/index.js';
+          const base = 'bd03d1a860863814dbdcc00559709794d460189d';
+          const overlayFiles = [
+            'tools/validation/phase8/build-corpus.mjs',
+            'tools/validation/phase8/decompile-corpus.mjs',
+            'tools/validation/phase8/decoded-function-adapter.mjs',
+            'tools/validation/phase8/baseline.mjs',
+            'tests/phase8/corpus/functions.json',
+          ];
+          const corpus = JSON.parse(fs.readFileSync('tests/phase8/corpus/functions.json', 'utf8'));
+          const baseline = JSON.parse(fs.readFileSync('tests/phase8/corpus/pre-phase8-observations.json', 'utf8'));
+          const metadata = {
+            schemaVersion:1,
+            baseProductSha:base,
+            overlayFiles,
+            overlayDigest:stableDigest(overlayFiles.map((file) => ({ file, text:fs.readFileSync(file, 'utf8') }))),
+            corpusDigest:corpus.corpusDigest,
+            toolchain:corpus.toolchain,
+            observationCount:baseline.observations.length,
+            denominator:corpus.functions.map((entry) => entry.id),
+            baselineObservationsDigest:baseline.observationsDigest,
+            note:'Only measurement/corpus tooling and the exact expanded frozen corpus were overlaid onto the pre-Phase-8 product. No Phase 8 production implementation was backported.',
+          };
+          fs.writeFileSync('tests/phase8/corpus/pre-phase8-baseline-identity.json', `${JSON.stringify(metadata, null, 2)}\n`);
+          NODE
+          test "$(git -C "$BASE" rev-parse HEAD)" = "$BASE_SHA"
+      - name: Commit frozen corpus and base-product baseline
+        if: steps.request.outputs.requested == 'true'
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          rm tools/validation/phase8/p8i-baseline-request.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/phase8/corpus/functions.json \
+                  tests/phase8/corpus/pre-phase8-observations.json \
+                  tests/phase8/corpus/pre-phase8-baseline-identity.json \
+                  tools/validation/phase8/p8i-baseline-request.json
+          git commit -m 'Phase 8: freeze expanded base-product baseline'
+          git push origin "HEAD:${HEAD_REF}"
+
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,20 +150,36 @@ jobs:
         run: npm run phase8:test
       - name: Verify the exact head
         env:
-          EXPECT_SHA: ${{ github.event.inputs.sha }}
-          SHADOW: ${{ github.event.inputs.shadow || 'true' }}
-          GATES: ${{ github.event.inputs.gates || 'false' }}
+          DISPATCH_EXPECT_SHA: ${{ github.event.inputs.sha }}
+          DISPATCH_SHADOW: ${{ github.event.inputs.shadow || 'true' }}
+          DISPATCH_GATES: ${{ github.event.inputs.gates || 'false' }}
+          PR_EXPECT_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          args=()
-          if [ -n "${EXPECT_SHA}" ]; then args+=(--expect-sha "${EXPECT_SHA}"); fi
-          if [ "${SHADOW}" = "true" ]; then args+=(--shadow); fi
-          if [ "${GATES}" = "true" ]; then args+=(--gates); fi
+          expect_sha="${DISPATCH_EXPECT_SHA}"
+          shadow="${DISPATCH_SHADOW}"
+          gates="${DISPATCH_GATES}"
+          if [ "${{ github.event_name }}" = 'pull_request' ]; then
+            expect_sha="${PR_EXPECT_SHA}"
+            if node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const ledger = JSON.parse(fs.readFileSync('reports/phase8/checkpoints.json', 'utf8'));
+          const entries = Array.isArray(ledger) ? ledger : (ledger.checkpoints || ledger.entries || []);
+          process.exit(entries.some((entry) => entry?.id === 'P8-I' && entry?.status === 'accepted') ? 0 : 1);
+          NODE
+            then
+              shadow=false
+              gates=true
+            else
+              shadow=true
+              gates=false
+            fi
+          fi
+          args=(--expect-sha "$expect_sha")
+          if [ "$shadow" = true ]; then args+=(--shadow); fi
+          if [ "$gates" = true ]; then args+=(--gates); fi
           node tools/validation/phase8/verify.mjs "${args[@]}"
       - name: Publish the evidence artifact
-        # Producers that failed must not publish; the verifier writes atomically
-        # and refuses empty output, so a missing artifact here is a hard failure
-        # rather than a silently absent one (EP-015).
         if: success()
         uses: actions/upload-artifact@v4
         with:
