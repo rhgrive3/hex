@@ -57,6 +57,7 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null } = {}) 
     },
     step(cost = 1, stage = 'dynamic symbol decode') {
       if (stopped) return false;
+      if (!Number.isSafeInteger(cost) || cost < 0) return stop(`${stage} operation cost is invalid`);
       operations += cost;
       if (!Number.isSafeInteger(operations) || operations > resolved.maxOperations) return stop(`${stage} exceeds ${resolved.maxOperations} operations`);
       return operations === 1 || (operations & 0xfff) === 0 ? wallOkay(stage) : true;
