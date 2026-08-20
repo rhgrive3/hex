@@ -18,6 +18,7 @@ export class HypothesisStore {
     if (input.id) {
       id = String(input.id);
     } else {
+      // Persisted explicit IDs may already occupy early generated sequence values.
       do id = `hyp_${sequence++}`;
       while (this.records.has(id));
     }
