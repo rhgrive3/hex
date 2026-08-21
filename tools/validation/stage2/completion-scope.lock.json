@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "hex-completion-scope-lock/v1",
+  "scopeVersion": "phase1-12-stage2-2026-08-22",
+  "baselineCommit": "3f3778e5f2bef638456da19609d616d71a3daedc",
+  "baselineTree": "d2e2a7e346504c4623508cfb9fcb49e25990e041",
+  "growthOnly": true,
+  "architectureProfiles": ["arm64:a64", "arm64e:a64+pac", "x86_64:long-64", "riscv64:rv64imc"],
+  "architectureInstructionProfiles": [
+    "arm64:declared-decoder-contract",
+    "arm64e:declared-arm64-plus-pac-contract",
+    "x86_64:declared-long64-contract",
+    "riscv64:rv64imc-frozen-profile"
+  ],
+  "formatProfiles": ["macho:64", "elf:64", "pe:pe32", "pe:pe32+"],
+  "formatVersionFamilies": ["macho-current", "elf-current", "pe-current"],
+  "managedFrontendProfiles": ["wasm:m0-m6", "dex:m0-m6", "cil:m0-m6", "jvm:m0-m6"],
+  "runtimeProviderProfiles": [
+    "native:remote-debug-v1",
+    "native:lldb-compatible-v1",
+    "native:frida-compatible-v1",
+    "native:replay-v1",
+    "managed:provider-bound-runtime-v1"
+  ],
+  "phase12CapabilityProfiles": [
+    "knowledge-packages:v1",
+    "capability-rules:v1",
+    "patterns:read-only-v1",
+    "collaboration:local-v1",
+    "collaboration:remote-security-v1",
+    "rebuild:transaction-v2"
+  ],
+  "requiredTargetPlatforms": ["node22-ci", "browser-webkit-ci", "physical-ipad-ipados-webkit"],
+  "requiredRealFixtureClasses": ["heavyweight-macho", "elf", "pe", "wasm", "dex", "cil", "jvm"],
+  "requiredIndependentOracleClasses": ["decoder-structured", "decompiler-differential", "rebuild-independent-parser"],
+  "performanceBudgetVersion": "benchmark-baseline-v1"
+}
