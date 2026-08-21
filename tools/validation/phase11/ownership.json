@@ -10,6 +10,12 @@
   ],
   "allowedExact": [
     ".github/workflows/phase11-release-validation.yml",
+    ".github/workflows/generated-sync.yml",
+    ".github/workflows/generated-userscript-autofix.yml",
+    ".github/workflows/userscript-host.yml",
+    "tests/dev-agent/generated-output-policy.mjs",
+    "tools/validation/generated-output-policy.mjs",
+    "tools/validation/phase10/ownership.json",
     "js/platform/capability-maturity.js",
     "tests/capability-maturity.mjs",
     "docs/SUPPORT_MATRIX.md",
