@@ -68,7 +68,7 @@ export class ResourceBudget {
 
   checkCancelled() {
     if (!this.signal?.aborted) return;
-    throw this.signal.reason || new DOMException('Aborted', 'AbortError');
+    throw this.signal.reason ?? new DOMException('Aborted', 'AbortError');
   }
 
   scope(name, limits = {}, options = {}) {
