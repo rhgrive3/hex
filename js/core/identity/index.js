@@ -41,7 +41,14 @@ export function jsonSafe(value, seen = new WeakSet()) {
     out = {};
     for (const key of Object.keys(value).sort()) {
       const normalized = jsonSafe(value[key], seen);
-      if (normalized !== null || value[key] === null) out[key] = normalized;
+      if (normalized !== null || value[key] === null) {
+        Object.defineProperty(out, key, {
+          value: normalized,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      }
     }
   }
   seen.delete(value);

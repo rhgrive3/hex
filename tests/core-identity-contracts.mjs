@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {
   createBinaryId, createSliceId, createImageId, createArtifactId, createEntityId,
   createFunctionId, createInstructionId, createVmOperationId, createEvidenceId,
-  createRuntimeSessionId,
+  createRuntimeSessionId, jsonSafe,
 } from '../js/core/identity/index.js';
 import { createOriginSet, mergeOriginSets, createTransformRecord } from '../js/core/identity/origin.js';
 import { createAnalysisSnapshot, createDeterminismMetadata } from '../js/core/identity/snapshot.js';
@@ -14,6 +14,18 @@ assert.equal(binaryA, binaryB, 'binary identity must depend on content, not file
 const padded = new Uint8Array(bytes.length + 2);
 padded.set(bytes, 1);
 assert.equal(binaryA, await createBinaryId(padded.subarray(1, 1 + bytes.length)), 'binary identity must hash only the selected view bytes');
+
+const hostile = {};
+Object.defineProperty(hostile, '__proto__', {
+  value: 7n,
+  enumerable: true,
+  configurable: true,
+  writable: true,
+});
+const safeHostile = jsonSafe(hostile);
+assert.equal(Object.getPrototypeOf(safeHostile), Object.prototype, 'jsonSafe must not allow __proto__ to mutate output prototype');
+assert.equal(Object.hasOwn(safeHostile, '__proto__'), true, 'jsonSafe must preserve __proto__ as an own data property');
+assert.equal(safeHostile.__proto__, '7');
 
 const slice = createSliceId({ binaryId: binaryA, index: 0, architecture: 'arm64' });
 assert.equal(slice, createSliceId({ architecture: 'arm64', index: 0, binaryId: binaryA }), 'slice id must be deterministic');
