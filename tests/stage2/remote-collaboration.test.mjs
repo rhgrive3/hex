@@ -57,6 +57,14 @@ remoteGate.revoke('alice');
 const revoked = envelope({ messageId: 'msg:revoked', sequence: 3, operations: [{ targetEntityId: 'fn:1', factKind: 'name', action: 'set', payload: 'x' }] });
 assert.equal(applyRemoteEnvelopeQueued(remoteLog, remoteGate, revoked).reason, 'remote-actor-revoked');
 
+const bigintGate = gate();
+const bigintLog = log();
+const bigintEnvelope = envelope({
+  messageId: 'msg:bigint', sequence: 1,
+  operations: [{ operationId: 'op:bigint', targetEntityId: 'fn:3', factKind: 'address', action: 'set', payload: 0x123456789abcdefn }],
+});
+assert.notEqual(applyRemoteEnvelopeQueued(bigintLog, bigintGate, bigintEnvelope).status, 'rejected');
+
 const envA = envelope({ messageId: 'msg:a', sequence: 1, operations: [{ operationId: 'op:a', targetEntityId: 'fn:2', factKind: 'name', action: 'set', payload: 'A' }] });
 const envB = envelope({ actor: 'bob', device: 'device:b', messageId: 'msg:b', sequence: 1, operations: [{ operationId: 'op:b', targetEntityId: 'fn:2', factKind: 'name', action: 'set', payload: 'B' }] });
 const logAB = log(), logBA = log(), gateAB = gate(), gateBA = gate();
