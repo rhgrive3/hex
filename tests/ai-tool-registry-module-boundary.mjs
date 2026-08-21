@@ -178,7 +178,7 @@ console.log("  ok 6 schema builder exactness");
 
 // 13. Static dependency guard
 {
-  const coreSrc = fs.readFileSync("/workspaces/hex/js/ai/tools/registry-core.js", "utf8");
+  const coreSrc = fs.readFileSync(new URL("../js/ai/tools/registry-core.js", import.meta.url), "utf8");
   const forbidden = [
     "../../agent/",
     "../../ir.js",

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   discoverPhaseTests,
   parsePhaseGroup,
@@ -175,9 +176,9 @@ withTempDir((temp) => {
 
 // 14. wrapper execution parity
 {
-  const src8 = fs.readFileSync("/workspaces/hex/tests/phase8/run.mjs", "utf8");
-  const src9 = fs.readFileSync("/workspaces/hex/tests/phase9/run.mjs", "utf8");
-  const src10 = fs.readFileSync("/workspaces/hex/tests/phase10/run.mjs", "utf8");
+  const src8 = fs.readFileSync(new URL("./phase8/run.mjs", import.meta.url), "utf8");
+  const src9 = fs.readFileSync(new URL("./phase9/run.mjs", import.meta.url), "utf8");
+  const src10 = fs.readFileSync(new URL("./phase10/run.mjs", import.meta.url), "utf8");
   assert.ok(src8.includes('phase: "phase8"'));
   assert.ok(src9.includes('phase: "phase9"'));
   assert.ok(src10.includes('phase: "phase10"'));
@@ -201,7 +202,8 @@ withTempDir((temp) => {
 // 16. Phase 8 recursive-discovery invariant
 {
   const p8 = discoverPhase8Tests();
-  const nested = p8.some((f) => path.dirname(f) !== path.resolve("/workspaces/hex/tests/phase8"));
+  const phase8Root = fileURLToPath(new URL("./phase8", import.meta.url));
+  const nested = p8.some((f) => path.dirname(f) !== phase8Root);
   assert.ok(nested, "Phase 8 must discover tests in subdirectories");
   console.log("  ok 16 Phase 8 recursive-discovery invariant");
 }

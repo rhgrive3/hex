@@ -62,14 +62,14 @@ jobs:
     uses: ./.github/workflows/_phase-release-validation.yml
     with:
       phase_name: "Phase 10"
-      checkout_ref: ${{ github.event_name == "workflow_dispatch" && inputs.sha || github.event.pull_request.head.sha || github.sha }}
-      expected_sha: ${{ github.event_name == "workflow_dispatch" && inputs.sha || "" }}
-      shadow: ${{ github.event_name == "workflow_dispatch" && inputs.shadow || false }}
-      run_broad_regression: ${{ github.event_name == "workflow_dispatch" || github.ref == "refs/heads/main" || (github.event_name == "pull_request" && github.event.pull_request.draft == false) }}
+      checkout_ref: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.event.pull_request.head.sha || github.sha }}
+      expected_sha: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || '' }}
+      shadow: ${{ github.event_name == 'workflow_dispatch' && inputs.shadow || false }}
+      run_broad_regression: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) }}
       ownership_script: "tools/validation/phase10/ownership-check.mjs"
       verify_script: "tools/validation/phase10/verify.mjs"
       artifact_prefix: "phase10-release-evidence"
-      artifact_suffix: ${{ github.event_name == "workflow_dispatch" && inputs.sha || github.event.pull_request.head.sha || github.sha }}
+      artifact_suffix: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.event.pull_request.head.sha || github.sha }}
       evidence_paths: |
         reports/phase10/phase10-release-evidence.json
         reports/phase10/checkpoints.json
