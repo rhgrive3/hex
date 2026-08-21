@@ -583,18 +583,86 @@ export class CodeViewer {
   }
 
   _bindPointer() {
-    let downRow=-1,downX=0,downY=0,timer=0,longFired=false,pid=-1;const rowFrom=(target)=>{const el=target?.closest?target.closest('.row'):null;return !el||el._row==null?-1:el._row;};const cancel=()=>{clearTimeout(timer);timer=0;};const touch=(row)=>{if(this.rangeMode)this.extendTo(row);else this.select(row);};
-    this.vp.addEventListener('pointerdown',(e)=>{if(e.pointerType==='mouse'&&e.button!==0)return;pid=e.pointerId;downRow=rowFrom(e.target);downX=e.clientX;downY=e.clientY;longFired=false;if(downRow<0)return;cancel();timer=setTimeout(()=>{timer=0;longFired=true;touch(downRow);this.onLongPress(downRow,downX,downY);},500);},{passive:true});
-    this.vp.addEventListener('pointermove',(e)=>{if(e.pointerId!==pid||!timer)return;if(Math.abs(e.clientX-downX)>10||Math.abs(e.clientY-downY)>10)cancel();},{passive:true});
-    this.vp.addEventListener('pointerup',(e)=>{if(e.pointerId!==pid)return;cancel();if(longFired){longFired=false;return;}const row=rowFrom(e.target);if(row>=0&&row===downRow&&Math.abs(e.clientX-downX)<10&&Math.abs(e.clientY-downY)<10)touch(row);downRow=-1;},{passive:true});
-    this.vp.addEventListener('pointercancel',()=>{cancel();longFired=false;downRow=-1;});this.vp.addEventListener('contextmenu',(e)=>{const row=rowFrom(e.target);if(row<0)return;e.preventDefault();touch(row);this.onLongPress(row,e.clientX,e.clientY);});
-  }
+    const LONG_PRESS_MS = 500;
+    const MOVE_TOLERANCE = 10;
+    const CONTEXT_SUPPRESS_MS = 800;
+    let gesture = null;
+    let suppressContextUntil = 0;
 
-  chunkArrived(regionId,chunk) {
-    if(!this.region||regionId!==this.region.id||this.isVariableAsm())return;const first=Math.floor(this.topRow()/CHUNK_ROWS)-1,last=Math.floor((this.topRow()+this.visibleRows())/CHUNK_ROWS)+1;if(chunk>=first&&chunk<=last)this.invalidate();
-  }
+    const rowFrom = (target) => {
+      const el = target?.closest ? target.closest('.row') : null;
+      return !el || el._row == null ? -1 : el._row;
+    };
+    const clearTimer = () => {
+      if (!gesture?.timer) return;
+      clearTimeout(gesture.timer);
+      gesture.timer = 0;
+    };
+    const reset = () => {
+      clearTimer();
+      gesture = null;
+    };
+    const focus = (row) => {
+      if (this.rangeMode) this.extendTo(row);
+      else this.select(row, false);
+    };
+    const activate = (row) => {
+      if (this.rangeMode) this.extendTo(row);
+      else this.select(row, true);
+    };
+    const openContext = (row, x, y) => {
+      focus(row);
+      this.onLongPress(row, x, y);
+    };
 
-  dispose() {
-    if(this.disposed)return;this.disposed=true;this.variableNavigation++;this.variableIndex.dispose();clearTimeout(this.idleTimer);if(this.frame)cancelAnimationFrame(this.frame);this.frame=0;this.vp.removeEventListener('scroll',this._onScroll);
+    this.vp.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      const row = rowFrom(e.target);
+      if (row < 0) return;
+      reset();
+      gesture = {
+        pointerId: e.pointerId,
+        row,
+        x: e.clientX,
+        y: e.clientY,
+        longFired: false,
+        timer: 0,
+      };
+      gesture.timer = setTimeout(() => {
+        if (!gesture || gesture.pointerId !== e.pointerId) return;
+        gesture.timer = 0;
+        gesture.longFired = true;
+        suppressContextUntil = Date.now() + CONTEXT_SUPPRESS_MS;
+        openContext(gesture.row, gesture.x, gesture.y);
+      }, LONG_PRESS_MS);
+    }, { passive: true });
+
+    this.vp.addEventListener('pointermove', (e) => {
+      if (!gesture || e.pointerId !== gesture.pointerId || !gesture.timer) return;
+      if (Math.abs(e.clientX - gesture.x) > MOVE_TOLERANCE ||
+          Math.abs(e.clientY - gesture.y) > MOVE_TOLERANCE) clearTimer();
+    }, { passive: true });
+
+    this.vp.addEventListener('pointerup', (e) => {
+      if (!gesture || e.pointerId !== gesture.pointerId) return;
+      const active = gesture;
+      clearTimer();
+      gesture = null;
+      if (active.longFired) return;
+      const row = rowFrom(e.target);
+      if (row >= 0 && row === active.row &&
+          Math.abs(e.clientX - active.x) < MOVE_TOLERANCE &&
+          Math.abs(e.clientY - active.y) < MOVE_TOLERANCE) activate(row);
+    }, { passive: true });
+
+    this.vp.addEventListener('pointercancel', reset);
+    this.vp.addEventListener('contextmenu', (e) => {
+      const row = rowFrom(e.target);
+      if (row < 0) return;
+      e.preventDefault();
+      if (Date.now() < suppressContextUntil) return;
+      reset();
+      openContext(row, e.clientX, e.clientY);
+    });
   }
 }

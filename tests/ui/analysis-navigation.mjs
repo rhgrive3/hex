@@ -145,11 +145,10 @@ await run(async ({ browser }) => {
     await new Promise((resolve) => setTimeout(resolve, 400));
     const sheet = document.querySelector('#overlays .sheet:not(.parked)');
     if (!sheet) return { error: 'no sheet' };
-    const rows = [...sheet.querySelectorAll('.blk .list li')].map((node) => node.textContent);
     return {
+      primaryRoute: sheet.querySelectorAll('.answer-primary-route').length,
       views: [...sheet.querySelectorAll('.next-views .action-btn .action-label')].map((n) => n.textContent),
-      tappableNext: [...sheet.querySelectorAll('.blk .list li')].filter((n) => n.matches('.tappable, [role="button"]') || n.querySelector('button')).length,
-      nextRows: rows.length,
+      duplicateNext: /次に見るなら|What to look at next/.test(sheet.textContent || ''),
       inSheet: sheet.querySelectorAll('.in-sheet-actions .chip').length,
     };
   }, address);
@@ -157,9 +156,50 @@ await run(async ({ browser }) => {
   check('a settled answer offers pseudo-C and the diagram for its routine',
     !!pinned.views && pinned.views.some((label) => /疑似C/.test(label)) && pinned.views.some((label) => /図/.test(label)),
     JSON.stringify(pinned.views));
-  check('"what to look at next" is a set of rows you can press, not a paragraph',
-    pinned.nextRows >= 2 && pinned.tappableNext === pinned.nextRows, JSON.stringify({ rows: pinned.nextRows, tappable: pinned.tappableNext }));
+  check('a settled answer has one direct route to the exact function', pinned.primaryRoute === 1, String(pinned.primaryRoute));
+  check('alternate views do not duplicate the primary overview route',
+    !pinned.views.some((label) => /関数の概要|Function overview/.test(label)), JSON.stringify(pinned.views));
+  check('duplicate "what to look at next" wiring is removed', pinned.duplicateNext === false, String(pinned.duplicateNext));
   check('moving inside the result stays separate from leaving it', pinned.inSheet >= 2, String(pinned.inSheet));
+
+  await page.click('#overlays .sheet:not(.parked) .answer-primary-route');
+  await page.waitForTimeout(500);
+  const settledDirect = await page.evaluate(() => ({
+    hash: location.hash,
+    sheets: document.querySelectorAll('#overlays .sheet:not(.parked)').length,
+  }));
+  check('one tap from a settled answer opens that exact function workspace',
+    settledDirect.hash === '#/function/' + address + '/overview', settledDirect.hash);
+  check('the settled result sheet closes only after navigation succeeds', settledDirect.sheets === 0, String(settledDirect.sheets));
+
+  await page.evaluate((addr) => window.__hexUi.router.navigate('/code/' + addr), address);
+  await page.waitForTimeout(700);
+  await closeSheets(page);
+  const point = await page.evaluate((addr) => {
+    const target = BigInt(addr);
+    const row = [...document.querySelectorAll('#rows .row')].find((node) =>
+      node._row != null && window.__app.viewer.rowAddress(node._row) === target);
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    return { x: r.left + Math.min(80, r.width / 2), y: r.top + r.height / 2 };
+  }, address);
+  check('the function-start row is visible for the long-press regression', !!point, JSON.stringify(point));
+  if (point) {
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    await page.waitForTimeout(620);
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+    const held = await page.evaluate(() => ({
+      menus: document.querySelectorAll('#overlays .menu').length,
+      sheets: document.querySelectorAll('#overlays .sheet:not(.parked)').length,
+      text: document.querySelector('#overlays .menu')?.textContent || '',
+    }));
+    check('long press opens only the shortcut menu, never the normal detail sheet',
+      held.menus === 1 && held.sheets === 0, JSON.stringify(held));
+    check('the long-press menu exposes the canonical function overview route',
+      /関数の概要を開く|Open function overview/.test(held.text), held.text.slice(0, 120));
+  }
 
   /* ── the same bar on the quick function summary ──────────── */
   await closeSheets(page);

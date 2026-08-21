@@ -756,12 +756,16 @@ export function showXrefs(app, target) {
           (fn ? pick('\nタップすると、この関数が何をしているかまで解析します',
             '\nTap to jump here and analyse the surrounding function') : ''),
         onTap: () => {
+          if (fn && openFunctionSurface(app, fn.start, 'report')) {
+            sheet.close();
+            return;
+          }
           sheet.close();
           if (codeRegion !== region) app.selectRegion(codeRegion, { silent: true });
           app.viewer.goToRow(r.row, 'third');
           app.viewer.mark(r.row);
           app.viewer.select(r.row, false);
-          // その場所を含む関数まで解析して、処理の区切りを出す（機能 → 関数 → 処理）
+          // 関数境界が不明な参照だけ、従来どおり現在地から解析する。
           app.analyzeFunctionAt(app.viewer.rowAddress(r.row));
         },
       }));
@@ -1065,12 +1069,13 @@ export function instructionMenu(app, row, x, y) {
     ...(assistant ? [askAiMenuItem(assistant, instructionAiItems(assistant, { address: d.address, text: asm }), { x, y })] : []),
     { label: t('detail.title') + '…', action: () => showDetail(app, row) },
     { label: pick('逆コンパイルして読む（C 風）', 'Decompile to C'),
-      action: () => showDecompiler(app, functionStartOf(app, d.address)) },
+      action: () => openFunctionSurfaceOrToast(app, d.address, 'pseudocode') },
     ...(sb ? [{
       label: pick('この処理を見る', 'Show this step') + '（' + blockTitle(sb) + '）',
       action: () => showBlockDetail(app, app.semantic.model, sb, app.store.get('currentRegion')),
     }] : []),
-    { label: t('detail.showFunction'), action: () => showFunctionSummary(app, row) },
+    { label: pick('関数の概要を開く', 'Open function overview'),
+      action: () => openFunctionSurfaceOrToast(app, d.address, 'report') },
     { label: pick('この関数を調べる（事実と推測）', 'Investigate this function'),
       action: () => showFunctionReport(app, d.address, app.lastGoal) },
     ...(sb ? [{
@@ -1079,9 +1084,9 @@ export function instructionMenu(app, row, x, y) {
     }] : []),
     { label: t('detail.findRefs'), action: () => showXrefs(app, d.address) },
     { label: pick('制御フロー図を見る', 'Show control-flow graph'),
-      action: () => showCfg(app, functionStartOf(app, d.address)) },
+      action: () => openFunctionSurfaceOrToast(app, d.address, 'flow') },
     { label: pick('呼び出し図を見る', 'Show call graph'),
-      action: () => showCallGraphPanel(app, functionStartOf(app, d.address)) },
+      action: () => openFunctionSurfaceOrToast(app, d.address, 'calls') },
     { label: pick('引数と戻り値を調べる', 'Show arguments and return value'),
       action: () => showTypes(app, functionStartOf(app, d.address)) },
     { label: pick('アドレスの対応を見る', 'Show address mapping'), action: () => showAddressInfo(app, d.address) },
@@ -1155,6 +1160,22 @@ function legacyViewOpeners(app, goal) {
     callGraph: (addr) => showCallGraphPanel(app, big(addr)),
     code: (addr) => app.goToFunction(big(addr)),
   };
+}
+
+function openFunctionSurface(app, address, view = 'report', goal = app.lastGoal) {
+  if (address == null) return false;
+  const start = functionStartOf(app, BigInt(address));
+  const [target] = functionViews({ address: start, include: [view], ja: isJa() });
+  return !!target && openFunctionView(target, {
+    router: productRouter(),
+    legacy: legacyViewOpeners(app, goal),
+  });
+}
+
+function openFunctionSurfaceOrToast(app, address, view = 'report', goal = app.lastGoal) {
+  const opened = openFunctionSurface(app, address, view, goal);
+  if (!opened) toast(pick('この形では開けませんでした。', 'That view could not be opened.'));
+  return opened;
 }
 
 /**
@@ -2289,6 +2310,15 @@ export function showPinned(app, pin) {
   const process = c.kind === 'function' ? c.addr
     : (sites || []).find((s) => s.stores && s.addr != null)?.addr
       || (c.functions && c.functions[0] ? c.functions[0].addr : null);
+  if (process != null) {
+    const primaryRoute = el('div', 'detail-actions answer-primary-route-actions');
+    primaryRoute.append(button(pick('この関数を開く', 'Open this function'),
+      'chip strong answer-primary-route', () => {
+        if (openFunctionSurface(app, process, 'report', goal)) sheet.close();
+        else toast(pick('この関数を開けませんでした。', 'This function could not be opened.'));
+      }));
+    body.append(primaryRoute);
+  }
   const update = c.updates && c.updates[0];
   let flow = null;
   let flowHost = null;
@@ -2314,7 +2344,7 @@ export function showPinned(app, pin) {
    *   ・この画面の中で下へ動く（数の流れ・根拠）
    * 先に別画面への一段を置き、そのあとに画面内の移動を小さく置く。
    */
-  const views = nextViewsRow(app, process, { sheet, goal, primary: 'report' });
+  const views = nextViewsRow(app, process, { sheet, goal, exclude: ['report'], primary: 'pseudocode' });
   if (views) body.append(views);
   const inSheet = el('section', 'in-sheet-actions');
   inSheet.append(el('h4', 'sec-title', pick('この画面の中で確かめる', 'Check inside this result')));
@@ -2331,39 +2361,6 @@ export function showPinned(app, pin) {
   if (update) flow = valueFlowView(update);
   flowHost = appendNumberFlow(app, body, process,
     c.kind === 'field' || c.kind === 'location' ? c.offset : null, flow);
-
-  /*
-   * 「次に見るなら」は、以前はただの箇条書きだった。読んだ人はそこに
-   * 書いてある画面を、自分でもう一度探しに行くことになる。書いてある
-   * ものは、そのまま押せる行にする。
-   */
-  const next = block(pick('次に見るなら', 'What to look at next'));
-  const nextList = list();
-  const jump = (view) => () => {
-    const [target] = functionViews({ address: process, include: [view], ja: isJa() });
-    const opened = !!target && openFunctionView(target, { router: productRouter(), legacy: legacyViewOpeners(app, goal) });
-    if (opened) sheet.close();
-    else toast(pick('この形では開けませんでした。', 'That view could not be opened.'));
-  };
-  if (process != null) {
-    nextList.append(tapRow(pick('この値を書き換えている処理を読む', 'Read the routine that changes this value'), {
-      sub: pick('関数の概要へ', 'Opens the function overview'), onTap: jump('report'),
-    }));
-    nextList.append(tapRow(pick('この処理を呼んでいる場所を見る', 'See where this routine is called'), {
-      sub: pick('呼び出しの図へ', 'Opens the call diagram'), onTap: jump('calls'),
-    }));
-  }
-  nextList.append(tapRow(pick('値の流れを確認する', 'Check the value flow'), {
-    sub: pick('この画面の下にあります', 'Further down in this result'),
-    onTap: () => {
-      const target = flow || flowHost;
-      if (!target) return;
-      target.scrollIntoView({ block: 'center' });
-      if (typeof target.focus === 'function') target.focus({ preventScroll: true });
-    },
-  }));
-  next.append(nextList);
-  body.append(next);
 
   const expert = disclosure(pick('専門家向け詳細', 'Expert details'), {
     build: (into) => {
@@ -3324,7 +3321,10 @@ export function showCandidates(app, goal) {
           sub: pick('何をしている処理か、値の変更、呼び出し元を見る',
             'See what it does, what it changes, and who calls it'),
           right: '›',
-          onTap: () => { sheet.close(); showFunctionReport(app, pin.top.addr, goal); },
+          onTap: () => {
+            if (openFunctionSurface(app, pin.top.addr, 'report', goal)) sheet.close();
+            else toast(pick('この関数を開けませんでした。', 'This function could not be opened.'));
+          },
         }));
       }
       const write = (pin.changeSites || []).find((s) => s.stores);
