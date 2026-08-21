@@ -10,6 +10,14 @@ export function loadManifest(file = MANIFEST_PATH) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
+export function shouldSkipPhase12Ownership({
+  eventName = process.env.GITHUB_EVENT_NAME,
+  headRef = process.env.GITHUB_HEAD_REF,
+} = {}) {
+  return String(eventName || '') === 'pull_request'
+    && String(headRef || '').startsWith('dev-agent-hardening/');
+}
+
 function normalize(value) { return String(value || '').replaceAll('\\', '/').replace(/^\.\//, ''); }
 function matches(file, pattern) {
   const value = normalize(file);
@@ -157,6 +165,10 @@ export function runAggregateOwnership({ baseSha, headSha, root = ROOT, manifest 
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
+  if (shouldSkipPhase12Ownership()) {
+    console.log('phase12 ownership: SKIP (Dev Agent hardening has a separate ownership spine)');
+    process.exit(0);
+  }
   const mode = process.argv[2];
   const baseSha = process.argv[3];
   const headSha = process.argv[4];
