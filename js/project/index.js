@@ -1,4 +1,9 @@
 import { artifactIndexFromProject, isArtifactRef } from './artifact-index.js';
+import {
+  migrateHexProject,
+  ProjectMigrationError,
+  PROJECT_MIGRATIONS,
+} from './migrations.js';
 
 export const HEX_PROJECT_VERSION = 1;
 export const HEX_PROJECT_MIME = 'application/vnd.hex.project+json';
@@ -18,7 +23,7 @@ const list = (value, name) => {
   if (value == null) return [];
   if (!Array.isArray(value)) throw new ProjectFormatError(`${name} must be an array`);
   if (value.length > MAX_COLLECTION_ITEMS) throw new ProjectFormatError(`${name} is unreasonably large`);
-  return value;
+  return [...value];
 };
 
 function encodedByteLength(text) { return new TextEncoder().encode(text).byteLength; }
@@ -99,7 +104,16 @@ export function parseHexProject(input) {
     if (error instanceof ProjectFormatError) throw error;
     throw new ProjectFormatError(`project JSON is malformed: ${error.message}`);
   }
-  return validateHexProject(migrateProject(raw));
+  let migrated;
+  try {
+    migrated = migrateHexProject(raw, { currentVersion: HEX_PROJECT_VERSION });
+  } catch (error) {
+    if (error instanceof ProjectMigrationError) {
+      throw new ProjectFormatError(error.message, error.code);
+    }
+    throw error;
+  }
+  return normalizeHexProjectV1(migrated);
 }
 
 export function tryParseHexProject(input) { try { return { ok: true, project: parseHexProject(input) }; } catch (error) { return { ok: false, error: error?.message || String(error), code: error?.code || 'HEX_PROJECT_INVALID' }; } }
@@ -112,7 +126,7 @@ export async function importHexProject(input) {
   return parseHexProject(input);
 }
 
-export function validateHexProject(project) {
+export function normalizeHexProjectV1(project) {
   if (!project || typeof project !== 'object' || Array.isArray(project)) throw new ProjectFormatError('project root must be an object');
   if (project.format !== 'hexproj') throw new ProjectFormatError('not a .hexproj document');
   if (!Number.isInteger(project.version) || project.version < 1) throw new ProjectFormatError('invalid project version');
@@ -120,30 +134,49 @@ export function validateHexProject(project) {
   if (!project.binary || typeof project.binary !== 'object' || Array.isArray(project.binary)) throw new ProjectFormatError('project binary metadata is missing');
   if (project.binary.embedded) throw new ProjectFormatError('embedded binaries are not accepted by this project version');
 
-  project.binary.hash ??= null;
-  project.binary.metadata ??= null;
-  project.binary.embedded = false;
-  project.user = project.user && typeof project.user === 'object' && !Array.isArray(project.user) ? project.user : {};
-  project.findings = project.findings && typeof project.findings === 'object' && !Array.isArray(project.findings) ? project.findings : {};
-  project.analysis = project.analysis && typeof project.analysis === 'object' && !Array.isArray(project.analysis) ? project.analysis : {};
+  const createdAt = project.createdAt || new Date(0).toISOString();
+  const updatedAt = project.updatedAt || createdAt;
 
-  project.user.names = list(project.user.names, 'user.names');
-  project.user.comments = list(project.user.comments, 'user.comments');
-  project.user.types = list(project.user.types, 'user.types');
-  project.user.structs = list(project.user.structs, 'user.structs');
-  project.user.bookmarks = list(project.user.bookmarks, 'user.bookmarks');
-  project.user.patches = list(project.user.patches, 'user.patches');
-  project.findings.confirmed = list(project.findings.confirmed, 'findings.confirmed');
-  project.findings.agentAnswers = list(project.findings.agentAnswers, 'findings.agentAnswers');
-  project.findings.evidence = list(project.findings.evidence, 'findings.evidence');
-  project.findings.investigationSessions = list(project.findings.investigationSessions, 'findings.investigationSessions');
-  project.analysis.settings = project.analysis.settings && typeof project.analysis.settings === 'object' && !Array.isArray(project.analysis.settings) ? project.analysis.settings : {};
-  project.analysis.cacheReferences = list(project.analysis.cacheReferences, 'analysis.cacheReferences');
-  project.analysis.cacheReferences = sanitizeCacheReferences(project);
-  project.navigation = normalizeNavigation(project.navigation || {});
-  project.createdAt ||= new Date(0).toISOString();
-  project.updatedAt ||= project.createdAt;
-  return project;
+  const normalized = {
+    format: 'hexproj',
+    version: HEX_PROJECT_VERSION,
+    createdAt,
+    updatedAt,
+    binary: {
+      hash: project.binary.hash ?? null,
+      metadata: project.binary.metadata ?? null,
+      embedded: false,
+    },
+    user: {
+      names: list(project.user?.names, 'user.names'),
+      comments: list(project.user?.comments, 'user.comments'),
+      types: list(project.user?.types, 'user.types'),
+      structs: list(project.user?.structs, 'user.structs'),
+      bookmarks: list(project.user?.bookmarks, 'user.bookmarks'),
+      patches: list(project.user?.patches, 'user.patches'),
+    },
+    findings: {
+      confirmed: list(project.findings?.confirmed, 'findings.confirmed'),
+      agentAnswers: list(project.findings?.agentAnswers, 'findings.agentAnswers'),
+      evidence: list(project.findings?.evidence, 'findings.evidence'),
+      investigationSessions: list(project.findings?.investigationSessions, 'findings.investigationSessions'),
+    },
+    analysis: {
+      settings: project.analysis?.settings && typeof project.analysis.settings === 'object' && !Array.isArray(project.analysis.settings)
+        ? { ...project.analysis.settings }
+        : {},
+      cacheReferences: list(project.analysis?.cacheReferences, 'analysis.cacheReferences'),
+    },
+    navigation: normalizeNavigation(project.navigation || {}),
+  };
+
+  normalized.analysis.cacheReferences = sanitizeCacheReferences(normalized);
+  return normalized;
 }
 
-function migrateProject(raw) { if (!raw || typeof raw !== 'object') return raw; return raw; }
+export function validateHexProject(project) {
+  return normalizeHexProjectV1(project);
+}
+
+export { ProjectMigrationError, migrateHexProject, PROJECT_MIGRATIONS };
+

@@ -198,12 +198,22 @@ export function claimsConflict(left, right) {
   return true;
 }
 
+function toBigInt(val, fallback = 0n) {
+  if (val == null) return fallback;
+  if (typeof val === 'bigint') return val;
+  if (typeof val === 'number') {
+    if (!Number.isFinite(val)) return null;
+    return BigInt(Math.trunc(val));
+  }
+  try { return BigInt(val); } catch { return null; }
+}
+
 function intervalsOverlap(a, b) {
-  const aStart = Number(a.offset ?? 0);
-  const bStart = Number(b.offset ?? 0);
-  const aSize = Number(a.sizeBytes ?? 0);
-  const bSize = Number(b.sizeBytes ?? 0);
-  if (!Number.isFinite(aStart) || !Number.isFinite(bStart) || aSize <= 0 || bSize <= 0) return true;
+  const aStart = toBigInt(a.offset, 0n);
+  const bStart = toBigInt(b.offset, 0n);
+  const aSize = toBigInt(a.sizeBytes, 0n);
+  const bSize = toBigInt(b.sizeBytes, 0n);
+  if (aStart == null || bStart == null || aSize == null || bSize == null || aSize <= 0n || bSize <= 0n) return true;
   return aStart < bStart + bSize && bStart < aStart + aSize;
 }
 
