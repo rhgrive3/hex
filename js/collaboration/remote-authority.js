@@ -1,5 +1,6 @@
 import { deepFreeze, jsonSafe, stableDigest } from '../core/identity/index.js';
 import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation } from './index.js';
+import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
 export const REMOTE_GATE_SCHEMA = 'hex-remote-collaboration-gate/v1';
@@ -32,8 +33,11 @@ function normalizePermissions(value) {
 }
 
 function authorized(permissions, operation) {
-  const needed = [`fact:${operation.factKind}`, `action:${operation.action}`, `fact:${operation.factKind}:action:${operation.action}`];
-  return permissions.includes('*') || needed.some((item) => permissions.includes(item));
+  if (permissions.includes('*')) return true;
+  const fact = `fact:${operation.factKind}`;
+  const action = `action:${operation.action}`;
+  const combined = `${fact}:action:${operation.action}`;
+  return permissions.includes(combined) || (permissions.includes(fact) && permissions.includes(action));
 }
 
 export function createRemoteCollaborationEnvelope(input = {}) {
@@ -154,13 +158,7 @@ export class RemoteCollaborationGate {
 }
 
 export function applyRemoteEnvelope(log, gate, envelope) {
-  if (!(log instanceof ChangeLog)) throw new TypeError('ChangeLog required');
-  if (!(gate instanceof RemoteCollaborationGate)) throw new TypeError('RemoteCollaborationGate required');
-  const accepted = gate.accept(envelope);
-  if (accepted.status !== 'accepted') return accepted;
-  if (log.allowRemote !== true) return Object.freeze({ status: 'rejected', reason: 'changelog-remote-mode-disabled' });
-  const result = log.applyBatch(envelope.operations);
-  return Object.freeze({ ...result, envelopeId: envelope.envelopeId, remote: true });
+  return applyRemoteEnvelopeQueued(log, gate, envelope);
 }
 
 export class RemoteCollaborationChannel {
@@ -181,18 +179,25 @@ export class RemoteCollaborationChannel {
   }
 
   receive(envelope) {
-    return applyRemoteEnvelope(this.log, this.gate, envelope);
+    return applyRemoteEnvelopeQueued(this.log, this.gate, envelope);
   }
 }
 
-export function remoteCollaborationSupport({ gate, proof = {} } = {}) {
+export function remoteCollaborationSupport({ gate, securityProfileId = null, proof = {} } = {}) {
   const ready = gate instanceof RemoteCollaborationGate
+    && !!String(securityProfileId || '').trim()
     && proof.exactHead === true
     && proof.replayTests === true
     && proof.identityTests === true
     && proof.authorizationTests === true
     && proof.transportSecurityTests === true
     && proof.privacyTests === true
-    && proof.convergenceTests === true;
-  return Object.freeze({ status: ready ? 'supported-for-exact-security-profile' : 'unsupported', authority: ready ? 'remote-authorized-canonical-operations' : 'none' });
+    && proof.convergenceTests === true
+    && proof.revocationTests === true
+    && proof.outOfOrderTests === true;
+  return Object.freeze({
+    status: ready ? 'supported-for-exact-security-profile' : 'unsupported',
+    securityProfileId: securityProfileId == null ? null : String(securityProfileId),
+    authority: ready ? 'remote-authorized-canonical-operations' : 'none',
+  });
 }
