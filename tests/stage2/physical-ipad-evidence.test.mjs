@@ -21,7 +21,7 @@ const record = createPhysicalIPadEvidence({
   buildIdentity: 'build:test',
   runtimeIdentity: 'runtime:test',
   deviceModel: 'iPad mini 6',
-  iPadOSVersion: 'test',
+  iPadOSVersion: '27.0-test',
   webKitVersion: 'test',
   testedAt: '2026-08-22T00:00:00Z',
   attestedBy: 'test-harness-human-attestation-shape',
@@ -32,4 +32,11 @@ assert.equal(validatePhysicalIPadEvidence(record, { commitSha, treeSha, buildIde
 assert.equal(validatePhysicalIPadEvidence(record, { commitSha: '3'.repeat(40) }).reason, 'ipad-evidence-stale-commit');
 const missing = createPhysicalIPadEvidence({ ...record, checks: { ...checks, cancellation: false } });
 assert.equal(validatePhysicalIPadEvidence(missing, { commitSha, treeSha }).reason, 'ipad-evidence-required-check-missing');
+const tampered = JSON.parse(JSON.stringify(record));
+tampered.deviceModel = 'iPad Pro altered-after-attestation';
+assert.equal(validatePhysicalIPadEvidence(tampered, { commitSha, treeSha }).reason, 'ipad-evidence-tampered');
+const malformedTime = { ...record, testedAt: 'not-a-date' };
+assert.equal(validatePhysicalIPadEvidence(malformedTime, { commitSha, treeSha }).reason, 'ipad-evidence-tested-at-invalid');
+const missingDevice = { ...record, deviceModel: '' };
+assert.equal(validatePhysicalIPadEvidence(missingDevice, { commitSha, treeSha }).reason, 'ipad-evidence-deviceModel-invalid');
 console.log('[stage2] physical iPad evidence contract tests passed');
