@@ -26,6 +26,7 @@ for (const workflow of [
   '.github/workflows/generated-sync.yml',
   '.github/workflows/generated-userscript-autofix.yml',
   '.github/workflows/userscript-host.yml',
+  '.github/workflows/phase7-release-validation.yml',
   'tests/semantic-v2/integration-userscript-sync.test.mjs',
 ]) {
   const source = fs.readFileSync(path.join(ROOT, workflow), 'utf8');

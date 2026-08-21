@@ -65,7 +65,12 @@ jobs:
           npm run semantic-v2:test
           npm run semantic:test
           npm run decompiler:test
+      - name: Resolve generated-output ownership policy
+        id: generated-policy
+        shell: bash
+        run: echo "mode=$(node tools/validation/generated-output-policy.mjs)" >> "$GITHUB_OUTPUT"
       - name: Generated-output synchronization
+        if: steps.generated-policy.outputs.mode == 'enforce'
         # Phase 7 edits protected runtime source, so it owns the rebuild. A
         # non-zero diff after a canonical rebuild is a merge-blocking desync
         # (EP-003, EP-008, EP-009).
