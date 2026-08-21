@@ -45,7 +45,9 @@
     "tests/dev-agent/supervisor-prompt-modes.mjs",
     "js/ai/dev/admin/tool-surface.js",
     "js/ai/dev/protocol/dev-tool-contracts.js",
-    "tests/dev-agent/observation-batch.mjs"
+    "tests/dev-agent/observation-batch.mjs",
+    "js/ai/dev/protocol/context-packet.js",
+    "tests/dev-agent/context-contracts.mjs"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",
