@@ -45,6 +45,7 @@ const authorized = tracker.authorizeMutation({ bindingId: binding.bindingId, act
 assert.equal(authorized.status, 'authorized');
 assert.equal(authorized.token.authority, 'explicit-local-runtime-mutation');
 
+const targetProfileId = 'arm64:a64';
 const requiredCapabilities = [
   'connect', 'disconnect', 'attach', 'pause', 'resume', 'stepInto',
   'breakpointAddress', 'removeBreakpoint', 'readRegisters', 'readMemory', 'writeMemory',
@@ -63,14 +64,17 @@ const fullProof = {
 const support = runtimeProfileSupport({
   binding,
   providerProfileId: 'native:lldb-compatible-v1:test',
+  targetProfileId,
   providerCapabilities,
   requiredCapabilities,
   proof: fullProof,
 });
 assert.equal(support.status, 'supported-for-exact-provider-profile');
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', providerCapabilities, requiredCapabilities }).status, 'partial', 'capabilities without proof must not promote A7');
-assert.equal(runtimeProfileSupport({ binding, providerCapabilities, requiredCapabilities, proof: fullProof }).status, 'partial', 'anonymous provider profile must not promote A7');
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', providerCapabilities: { ...providerCapabilities, stepInto: false }, requiredCapabilities, proof: fullProof }).status, 'partial');
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', providerCapabilities, proof: fullProof }).status, 'partial', 'empty required capability denominator must not promote A7');
-assert.throws(() => runtimeProfileSupport({ binding, providerProfileId: 'x', requiredCapabilities: ['inventedCapability'] }), /runtime-capability-unknown/);
+assert.equal(support.targetProfileId, targetProfileId);
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, requiredCapabilities }).status, 'partial', 'capabilities without proof must not promote A7');
+assert.equal(runtimeProfileSupport({ binding, targetProfileId, providerCapabilities, requiredCapabilities, proof: fullProof }).status, 'partial', 'anonymous provider profile must not promote A7');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', providerCapabilities, requiredCapabilities, proof: fullProof }).status, 'partial', 'missing target profile must not promote A7');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities: { ...providerCapabilities, stepInto: false }, requiredCapabilities, proof: fullProof }).status, 'partial');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', targetProfileId, providerCapabilities, proof: fullProof }).status, 'partial', 'empty required capability denominator must not promote A7');
+assert.throws(() => runtimeProfileSupport({ binding, providerProfileId: 'x', targetProfileId, requiredCapabilities: ['inventedCapability'] }), /runtime-capability-unknown/);
 console.log('[stage2] runtime authority tests passed');
