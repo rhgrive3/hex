@@ -33,6 +33,7 @@
     "tests/semantic-v2/integration-userscript-sync.test.mjs",
     "tools/validation/generated-output-policy.mjs",
     "tools/validation/phase10/ownership.json",
+    "tools/validation/phase10/ownership-check.mjs",
     "js/platform/capability-maturity.js",
     "js/platform/stage2-capability-maturity.js",
     "js/platform/physical-ipad-evidence.js",
