@@ -1,5 +1,8 @@
 import { ChangeLog } from './index.js';
-import { RemoteCollaborationGate } from './remote-authority.js';
+
+function assertGate(gate) {
+  if (!gate || typeof gate.validate !== 'function' || typeof gate.accept !== 'function') throw new TypeError('RemoteCollaborationGate required');
+}
 
 function cloneWorking(log) {
   const working = new ChangeLog({
@@ -32,7 +35,7 @@ function drainReadyPending(log, results) {
 
 export function applyRemoteEnvelopeQueued(log, gate, envelope) {
   if (!(log instanceof ChangeLog)) throw new TypeError('ChangeLog required');
-  if (!(gate instanceof RemoteCollaborationGate)) throw new TypeError('RemoteCollaborationGate required');
+  assertGate(gate);
   if (log.allowRemote !== true) return Object.freeze({ status: 'rejected', reason: 'changelog-remote-mode-disabled' });
 
   const checked = gate.validate(envelope);
@@ -48,6 +51,9 @@ export function applyRemoteEnvelopeQueued(log, gate, envelope) {
   const drainFailure = drainReadyPending(working, results);
   if (drainFailure?.status === 'rejected') return Object.freeze({ status: 'rejected', reason: drainFailure.reason });
 
+  // Consume replay/sequence authority only after the batch can be represented
+  // by the working ChangeLog. This prevents rejected state mutations from
+  // burning an envelope identity.
   const accepted = gate.accept(envelope);
   if (accepted.status !== 'accepted') return accepted;
   log.state = working.state;
