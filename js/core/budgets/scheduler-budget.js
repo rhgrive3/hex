@@ -1,7 +1,7 @@
 import { ResourceBudget } from './index.js';
 
 function abortError(signal) {
-  return signal?.reason || new DOMException('Aborted', 'AbortError');
+  return signal?.reason ?? new DOMException('Aborted', 'AbortError');
 }
 
 export function createSchedulerBudget(candidate, defaultLimits = {}, signal = null) {
