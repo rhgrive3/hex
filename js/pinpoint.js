@@ -86,12 +86,34 @@ function analysisKey(args) {
   return args.slice(0, 2).map((value) => value == null ? 'null' : value.toString()).join(':');
 }
 
+function analyzeArgsWithSignal(args, signal) {
+  const out = args.slice();
+  const third = out[2];
+  if (third && typeof third === 'object' && !Array.isArray(third)) out[2] = { ...third, signal };
+  else out[2] = { signal };
+  return out;
+}
+
+function linkParentSignal(controller, parentSignal) {
+  if (!parentSignal) return () => {};
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort(parentSignal.reason || 'cancelled');
+  };
+  parentSignal.addEventListener('abort', abort, { once: true });
+  if (parentSignal.aborted) abort();
+  return () => parentSignal.removeEventListener('abort', abort);
+}
+
 /*
  * One stuck function analysis must not hold the whole automatic analysis open.
  * A short circuit breaker is shared by all pinpoint calls using the same
  * analyzer, so one orphaned backend request cannot spawn dozens more while the
  * remaining goals are being examined. Automatic analysis also has a shared
  * unique-function ceiling; repeated reads of the same function remain free.
+ *
+ * The timeout is not merely a UI race: it aborts the analysis signal and calls
+ * a cancellable operation's cancel hook when available, so backend work cannot
+ * survive as a detached orphan after the pinpoint phase has moved on.
  */
 function guardedAnalyze(analyze, opts) {
   if (typeof analyze !== 'function') return analyze;
@@ -109,12 +131,20 @@ function guardedAnalyze(analyze, opts) {
       if (state.uniqueKeys.size >= uniqueLimit) throw analysisBudgetError(uniqueLimit);
       state.uniqueKeys.add(key);
     }
+    const controller = new AbortController();
+    const unlinkParent = linkParentSignal(controller, opts?.signal || null);
     let timer = null;
+    let operation = null;
     const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(timeoutError(ms)), ms);
+      timer = setTimeout(() => {
+        if (!controller.signal.aborted) controller.abort('pinpoint-analysis-timeout');
+        try { operation?.cancel?.(); } catch { /* timeout remains authoritative */ }
+        reject(timeoutError(ms));
+      }, ms);
     });
     try {
-      return await Promise.race([Promise.resolve().then(() => analyze(...args)), timeout]);
+      operation = analyze(...analyzeArgsWithSignal(args, controller.signal));
+      return await Promise.race([Promise.resolve(operation), timeout]);
     } catch (error) {
       if (error?.code === 'pinpoint-analysis-timeout') {
         state.blockedUntil = Date.now() + Math.min(5000, ms);
@@ -122,6 +152,7 @@ function guardedAnalyze(analyze, opts) {
       throw error;
     } finally {
       if (timer != null) clearTimeout(timer);
+      unlinkParent();
     }
   };
 }
@@ -160,7 +191,8 @@ function sizeMatches(site, size) {
  * single executable-region pass. Build that superset on the first pinpoint
  * request and reuse it for every later goal. A failed/timed-out scan is cached
  * as empty for this analysis burst so an unhealthy worker is not hammered by
- * N identical full-region retries.
+ * N identical full-region retries. Timeout also cancels the underlying worker
+ * request when the adapter exposes a cancel hook.
  */
 function batchedScanAccess(scanAccess, opts) {
   if (typeof scanAccess !== 'function') return scanAccess;
@@ -173,11 +205,24 @@ function batchedScanAccess(scanAccess, opts) {
     if (!state.groups && !state.promise) {
       const all = automaticOffsets(opts, requested);
       const ms = accessTimeoutMs(opts);
+      const controller = new AbortController();
+      const unlinkParent = linkParentSignal(controller, opts?.signal || null);
       let timer = null;
+      let operation = null;
       const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(accessTimeoutError(ms)), ms);
+        timer = setTimeout(() => {
+          if (!controller.signal.aborted) controller.abort('pinpoint-access-timeout');
+          try { operation?.cancel?.(); } catch { /* timeout remains authoritative */ }
+          reject(accessTimeoutError(ms));
+        }, ms);
       });
-      state.promise = Promise.race([Promise.resolve().then(() => scanAccess(all)), timeout])
+      try {
+        operation = scanAccess(all, { signal: controller.signal });
+      } catch (error) {
+        unlinkParent();
+        throw error;
+      }
+      state.promise = Promise.race([Promise.resolve(operation), timeout])
         .then((groups) => {
           state.groups = groups || emptyGroups();
           return state.groups;
@@ -187,6 +232,7 @@ function batchedScanAccess(scanAccess, opts) {
         })
         .finally(() => {
           if (timer != null) clearTimeout(timer);
+          unlinkParent();
           state.promise = null;
         });
     }

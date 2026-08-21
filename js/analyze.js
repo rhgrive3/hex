@@ -26,6 +26,50 @@ function rowBudget(opts = {}) {
   return Math.max(1, Math.min(MAX_INSTRUCTIONS, Math.floor(raw)));
 }
 
+function abortError(signal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error) return reason;
+  const error = new Error(reason == null ? 'Analysis cancelled.' : String(reason));
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function isAbort(error, signal) {
+  return !!(signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR');
+}
+
+async function awaitAbortable(operation, signal) {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    try { operation?.cancel?.(); } catch { /* cancellation reason is authoritative */ }
+    throw abortError(signal);
+  }
+  let settled = false;
+  let onAbort = null;
+  return new Promise((resolve, reject) => {
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      fn(value);
+    };
+    onAbort = () => {
+      try { operation?.cancel?.(); } catch { /* cancellation reason is authoritative */ }
+      finish(reject, abortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(operation).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+  });
+}
+
 function destIndex(mn) {
   const b = mn.toLowerCase();
   if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|st1|st2|st3|st4|stlr)/.test(b)) return -1;
@@ -44,6 +88,8 @@ function readRegs(op, into) {
 }
 
 export async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
+  const signal = opts?.signal || null;
+  throwIfAborted(signal);
   const requestedRows = Math.max(0, endRow - startRow + 1);
   const rows = Math.min(requestedRows, rowBudget(opts));
   if (rows <= 0) throw new Error('analysis-range-empty');
@@ -72,13 +118,16 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const pageOf = new Map();
 
   for (let c = first; c <= last; c++) {
-    const entry = await backend.fetchChunk(region.id, c, true);
+    throwIfAborted(signal);
+    const entry = await awaitAbortable(backend.fetchChunk(region.id, c, true, { signal }), signal);
+    throwIfAborted(signal);
     const base = c * CHUNK_ROWS;
     const from = Math.max(startRow, base);
     const to = Math.min(end, base + CHUNK_ROWS - 1);
     if (onProgress) onProgress((c - first + 1) / (last - first + 1));
 
     for (let row = from; row <= to; row++) {
+      if ((row & 127) === 0) throwIfAborted(signal);
       const idx = row - base;
       const mn = entry.mn ? (entry.mn[idx] || '') : '';
       const opsStr = entry.ops ? (entry.ops[idx] || '') : '';
@@ -175,6 +224,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
     }
   }
 
+  throwIfAborted(signal);
   res.argRegs = Array.from(argsRead).sort((a, b) => a - b);
   res.savesCallee = Array.from(calleeSaved).sort((a, b) => a - b);
   res.setsReturnValue = lastX0Write >= 0;
@@ -216,6 +266,8 @@ function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS)
 export function clearAnalysisCache() { cache.clear(); }
 
 export async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
+  const signal = opts?.signal || null;
+  throwIfAborted(signal);
   const budget = rowBudget(opts);
   const key = cacheKey(region, startRow, endRow, symbols, budget);
   const wantTexts = opts.texts !== false;
@@ -223,20 +275,36 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   if (hit) {
     if (onProgress) onProgress(1);
     if (wantTexts && !hit.textsResolved) {
-      try { await resolveModelTexts(backend, hit.model); hit.textsResolved = true; } catch { /* keep analysis */ }
+      try {
+        await resolveModelTexts(backend, hit.model, MODEL_TEXTS, { signal });
+        hit.textsResolved = true;
+      } catch (error) {
+        if (isAbort(error, signal)) throw error;
+        /* keep analysis */
+      }
     }
+    throwIfAborted(signal);
     return hit;
   }
-  const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, { ...opts, maxRows: budget });
+  const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, { ...opts, maxRows: budget, signal });
   res.textsResolved = false;
   if (wantTexts) {
-    try { await resolveModelTexts(backend, res.model); res.textsResolved = true; } catch { /* keep analysis */ }
+    try {
+      await resolveModelTexts(backend, res.model, MODEL_TEXTS, { signal });
+      res.textsResolved = true;
+    } catch (error) {
+      if (isAbort(error, signal)) throw error;
+      /* keep analysis */
+    }
   }
+  throwIfAborted(signal);
   cache.set(key, res);
   return res;
 }
 
-export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
+export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opts = {}) {
+  const signal = opts?.signal || null;
+  throwIfAborted(signal);
   if (!model || !backend || !model.addressRefs.length) return model;
   const wanted = [];
   const seen = new Set();
@@ -247,9 +315,18 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
     wanted.push(r.addr);
     if (wanted.length >= limit) break;
   }
+  const read = async (addr) => {
+    try {
+      return await awaitAbortable(backend.readAt(addr, 120, true, { signal }), signal);
+    } catch (error) {
+      if (isAbort(error, signal)) throw error;
+      return null;
+    }
+  };
   const texts = new Map();
   const indirect = new Set();
-  const got = await Promise.all(wanted.map((a) => backend.readAt(a, 120, true).catch(() => null)));
+  const got = await Promise.all(wanted.map(read));
+  throwIfAborted(signal);
   const deref = [];
   got.forEach((g, i) => {
     if (looksLikeText(g)) { texts.set(wanted[i].toString(), g.text); return; }
@@ -257,7 +334,8 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
   });
   if (deref.length) {
     const ptrs = deref.map((d) => pointerAt(d.bytes));
-    const got2 = await Promise.all(ptrs.map((ptr) => ptr == null ? Promise.resolve(null) : backend.readAt(ptr, 120, true).catch(() => null)));
+    const got2 = await Promise.all(ptrs.map((ptr) => ptr == null ? Promise.resolve(null) : read(ptr)));
+    throwIfAborted(signal);
     got2.forEach((g, k) => {
       if (!looksLikeText(g)) return;
       const key = wanted[deref[k].i].toString();
@@ -265,6 +343,7 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
       indirect.add(key);
     });
   }
+  throwIfAborted(signal);
   return attachTexts(model, texts, indirect);
 }
 

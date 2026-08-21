@@ -77,12 +77,16 @@ export async function analyzeModelAt(app, address, end = null, options = {}) {
   const maxRows = Number.isFinite(rawMax) ? Math.max(1, Math.floor(rawMax)) : undefined;
   const coversProvenEnd = provenEnd != null && provenEnd <= regionEnd && boundedEnd >= provenEnd;
   try {
-    const res = await analyzeFunctionCached(app.backend, region, startRow, endRow, sym, null, { maxRows });
+    const res = await analyzeFunctionCached(app.backend, region, startRow, endRow, sym, null, {
+      maxRows,
+      signal: options?.signal || null,
+    });
     const model = res?.model;
     if (!model) return null;
     const incomplete = !coversProvenEnd || res.truncated === true || model.truncated === true;
     return incomplete && model.truncated !== true ? { ...model, truncated: true } : model;
-  } catch {
+  } catch (error) {
+    if (options?.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') throw error;
     return null;
   }
 }
