@@ -4,6 +4,7 @@ import { ObservationStore } from "./storage/observation-store.js";
 import { completenessOf, projectBounded } from "./projections/index.js";
 
 export const COST_WEIGHT = Object.freeze({ cheap: 1, medium: 4, expensive: 12 });
+export const TOOL_TIMEOUT_MS = Object.freeze({ cheap: 20_000, medium: 45_000, expensive: 60_000 });
 export const ADDRESS_KEYS = new Set(["address", "functionAddress", "from", "to", "start", "end", "target"]);
 
 export class ToolRegistry {
@@ -60,7 +61,9 @@ export class ToolRegistry {
     const started = Date.now();
     this.activity({ type: "tool-start", tool: name, label: `${name} を実行中` });
     const previousSignal = this.executionSignal;
-    this.executionSignal = options.signal || null;
+    const timeoutMs = resolveToolTimeout(tool, options);
+    const execution = createExecutionSignal(options.signal, timeoutMs);
+    this.executionSignal = execution.signal;
     try {
       let record = null;
       let raw;
@@ -70,7 +73,7 @@ export class ToolRegistry {
         if (record) { raw = record.fullResult; cached = true; this.accounting.cacheHits++; }
       }
       if (!record) {
-        raw = await raceAbort(tool.execute(args, { ...options, context: this.context }), options.signal);
+        raw = await raceAbort(tool.execute(args, { ...options, signal: execution.signal, context: this.context }), execution.signal);
         if (tool.outputSchema) assertSchema(raw, tool.outputSchema, "tool_failed");
         const lifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
         const publishable = lifecycle.publishable !== false && lifecycle.late !== true;
@@ -111,6 +114,7 @@ export class ToolRegistry {
       };
     } catch (error) {
       this.accounting.failures++;
+      if (execution.timedOut()) throw new AIError("tool_failed", `${name} timed out.`, { timeoutMs });
       if (error instanceof AIError) throw error;
       const message = error?.message || String(error);
       if (message === "cancelled" || options.signal?.aborted) throw new AIError("cancelled", "AI investigation was cancelled.");
@@ -120,6 +124,7 @@ export class ToolRegistry {
       }
       throw new AIError("tool_failed", `${name} failed: ${message}`);
     } finally {
+      execution.dispose();
       this.executionSignal = previousSignal;
     }
   }
@@ -163,6 +168,37 @@ export function resultCount(result) {
   if (Number.isFinite(result?.returned)) return result.returned;
   for (const key of ["results", "sites", "functions", "updates", "nodes", "paths", "blocks"]) if (Array.isArray(result?.[key])) return result[key].length;
   return null;
+}
+
+function resolveToolTimeout(tool, options) {
+  const requested = Number(options?.toolTimeoutMs);
+  if (Number.isFinite(requested) && requested > 0) return Math.max(1, Math.min(120_000, Math.floor(requested)));
+  return TOOL_TIMEOUT_MS[tool?.cost] || TOOL_TIMEOUT_MS.cheap;
+}
+
+function createExecutionSignal(parentSignal, timeoutMs) {
+  const controller = new AbortController();
+  let didTimeout = false;
+  let timer = null;
+  let onParentAbort = null;
+  if (parentSignal) {
+    onParentAbort = () => controller.abort(parentSignal.reason || "cancelled");
+    parentSignal.addEventListener("abort", onParentAbort, { once: true });
+    if (parentSignal.aborted) onParentAbort();
+  }
+  timer = setTimeout(() => {
+    if (controller.signal.aborted) return;
+    didTimeout = true;
+    controller.abort("tool-timeout");
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    timedOut: () => didTimeout,
+    dispose() {
+      if (timer != null) clearTimeout(timer);
+      if (parentSignal && onParentAbort) parentSignal.removeEventListener("abort", onParentAbort);
+    },
+  };
 }
 
 export async function raceAbort(promise, signal) {
