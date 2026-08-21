@@ -36,7 +36,7 @@ function required(value, code) {
 }
 
 function abortError(signal) {
-  return signal?.reason || new DOMException('Aborted', 'AbortError');
+  return signal?.reason ?? new DOMException('Aborted', 'AbortError');
 }
 
 export function requireCanonicalBinaryId(value) {
@@ -140,7 +140,7 @@ export function decodeWorkerAnalysisPayload(payload) {
       case 'array': return (node.v || []).map(decode);
       case 'object': {
         const out = node.n ? Object.create(null) : {};
-        for (const [key, entry] of node.v || []) out[key] = decode(entry);
+        for (const [key, entry] of node.v || []) Object.defineProperty(out, key, { value:decode(entry), enumerable:true, configurable:true, writable:true });
         return out;
       }
       default: throw new TypeError(`analysis-artifact-payload-node-unsupported:${String(node.t)}`);

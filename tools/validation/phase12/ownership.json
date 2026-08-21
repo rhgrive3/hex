@@ -39,6 +39,9 @@
       "userscript/hex.user.template.js",
       "userscript/release-version.json",
       "js/userscript/deployment-identity.generated.js",
+      "js/userscript/dev/task-graph/dynamic-task-graph.js",
+      "js/cache/analysis-cache.js",
+      "js/cache/artifact-orchestration.js",
       "js/ai/dev/**",
       "tests/dev-agent/**"
     ]
