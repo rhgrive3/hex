@@ -65,37 +65,57 @@ ok(c.compares && c.compares.some((x) => x.value === 100n && x.engine === 'ir-ssa
   'SSA-propagated guard reaches pinpoint');
 
 // Automatic analysis has already paid for the whole-program value-shape pass.
-// With that index present, pinpoint must not rescan the whole executable region
-// through fieldAccessMany for every goal. The observed shape mutation is still
-// surfaced as a grouped change site.
+// The first pinpoint access request must expand to a superset and perform one
+// whole-region fieldAccessMany scan; later goals using the same scanner must be
+// served from that cache. The requested size contract is restored on readback.
 {
   const shapes = foldShapes({
-    count: 1, capped: false,
-    disp: Int32Array.of(0x20),
-    size: Uint8Array.of(4),
-    flags: Uint8Array.of(SHAPE.DECREASE | SHAPE.CLAMP | SHAPE.CROSS),
-    amtKind: Uint8Array.of(AMOUNT.FIELD),
-    amtDisp: Int32Array.of(0x30),
-    addr: BigUint64Array.of(BASE + 32n),
-    span: Int32Array.of(0x100),
-    amtSize: Uint8Array.of(4),
-    amtSpan: Int32Array.of(0x100),
+    count: 2, capped: false,
+    disp: Int32Array.of(0x20, 0x40),
+    size: Uint8Array.of(4, 8),
+    flags: Uint8Array.of(
+      SHAPE.DECREASE | SHAPE.CLAMP | SHAPE.CROSS,
+      SHAPE.INCREASE,
+    ),
+    amtKind: Uint8Array.of(AMOUNT.FIELD, AMOUNT.IMM),
+    amtDisp: Int32Array.of(0x30, 0),
+    addr: BigUint64Array.of(BASE + 32n, BASE + 36n),
+    span: Int32Array.of(0x100, 0x100),
+    amtSize: Uint8Array.of(4, 0),
+    amtSpan: Int32Array.of(0x100, 0),
   });
   let scans = 0;
-  const fast = await pinpointLocation({
+  let batchedOffsets = 0;
+  const scanAccess = async (requested) => {
+    scans++;
+    batchedOffsets = requested.length;
+    const groups = new Map();
+    for (const item of requested) {
+      const key = BigInt(item.offset).toString();
+      const at = BigInt(item.offset) === 0x20n ? BASE + 32n : BASE + 36n;
+      groups.set(key, [{ addr: at, kind: 'store', size: BigInt(item.offset) === 0x20n ? 4 : 8 }]);
+    }
+    return groups;
+  };
+  const common = {
     goal,
     ranked: [{ addr: BASE, name: 'applyDamage', strings: ['damage', 'hp'] }],
     program,
     analyze: async () => model,
     shapes,
-    scanAccess: async () => { scans++; throw new Error('redundant whole-region scan'); },
+    scanAccess,
     budget: { left: 12 },
     limit: 10,
-  });
-  eq(scans, 0, 'shape-backed pinpoint must not repeat fieldAccess whole-region scans');
-  ok(fast.changeSites.some((site) => site.first === BASE + 32n && site.stores > 0),
-    'shape mutation must remain available as a grouped change site');
+  };
+  const first = await pinpointLocation(common);
+  const second = await pinpointLocation({ ...common, budget: { left: 12 } });
+  eq(scans, 1, 'all pinpoint goals sharing a scanner must reuse one whole-region access pass');
+  ok(batchedOffsets >= 2, 'first access pass must include the shape-index superset, not only the current top value');
+  ok(first.changeSites.some((site) => site.first === BASE + 32n && site.stores > 0),
+    'batched access evidence must remain available as a grouped change site');
+  ok(second.changeSites.some((site) => site.first === BASE + 32n && site.stores > 0),
+    'cached access evidence must remain available to later goals');
 }
 
 process.stdout.write('  ok  pinpointLocation consumes SSA RMW + threshold\n');
-process.stdout.write('  ok  shape-backed pinpoint avoids redundant whole-region scans\n');
+process.stdout.write('  ok  pinpoint access scanning batches once across goals\n');
