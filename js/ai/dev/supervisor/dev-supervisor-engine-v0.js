@@ -1,6 +1,6 @@
 import { DEV_RUN_STATUS, transitionDevRun } from '../run/dev-run.js';
 import { parseDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js';
-import { buildDevSupervisorPrompt } from '../protocol/dev-supervisor-prompt.js';
+import { DEV_PROMPT_MODE, buildDevSupervisorPrompt, devBootstrapContractSignature } from '../protocol/dev-supervisor-prompt.js';
 import { DevRunEventHost } from '../events/dev-events.js';
 import { DEV_WORKER_TOOL } from '../workers/tool-surface.js';
 import {
@@ -53,6 +53,11 @@ export class DevSupervisorEngineV0 {
     this.runtimeIdentityProvider = typeof runtimeIdentityProvider === 'function' ? runtimeIdentityProvider : null;
     this.bootstrapStage = null;
     this.supervisorSessions = new Map();
+    /* In-runtime only. A new engine instance -- which is what a reload or
+       reinitialize produces -- has no bootstrapped sessions, so the next request
+       is a full BOOTSTRAP. Continuity is never inferred from a matching string
+       alone. */
+    this.supervisorPromptState = new Map();
   }
 
   requireRuntimeActivation(options) {
@@ -255,21 +260,36 @@ export class DevSupervisorEngineV0 {
         const promptTools = requiredBootstrapCapability
           ? Object.freeze([requiredBootstrapCapability])
           : this.availableTools();
-        const response = await this.bridge.request(buildDevSupervisorPrompt({
-          run,
-          availableTools: promptTools,
-          history,
-        }), {
-          signal: input.signal,
-          sessionKey: run.supervisorSessionKey,
-          model: input.model || null,
-          reasoning: input.reasoning || null,
-        });
+        const transport = this.promptTransportFor(run.supervisorSessionKey, promptTools, history);
+        let response;
+        try {
+          response = await this.bridge.request(buildDevSupervisorPrompt({
+            run,
+            availableTools: promptTools,
+            history: transport.history,
+            mode: transport.mode,
+          }), {
+            signal: input.signal,
+            sessionKey: run.supervisorSessionKey,
+            model: input.model || null,
+            reasoning: input.reasoning || null,
+          });
+        } catch (bridgeError) {
+          /* A transport/conversation failure means the model may no longer
+             possess the contract this runtime recorded. The next request on
+             this session must pay for a fresh BOOTSTRAP, even when the bridge
+             error is later recovered by the caller. */
+          this.invalidatePromptTransport(run.supervisorSessionKey);
+          throw bridgeError;
+        }
         const text = response && typeof response === 'object' ? response.text : response;
         let decision;
         try {
           decision = parseDevSupervisorDecision(text);
         } catch (decisionError) {
+          // A BOOTSTRAP that was never answered with a valid decision is not a
+          // completed BOOTSTRAP. Leaving the session unbootstrapped re-sends the
+          // full contract instead of continuing on an unproven one.
           history.push({
             kind: 'decision-invalid',
             message: '直前のSupervisor decisionは有効なhex-dev-supervisor-v1 JSONではありません。同じdecision shape契約に従ってJSONオブジェクトを1つだけ再出力してください。',
@@ -277,6 +297,7 @@ export class DevSupervisorEngineV0 {
           });
           continue;
         }
+        this.markPromptTransportDelivered(run.supervisorSessionKey, transport, history.length);
         const availableTools = requiredBootstrapCapability
           ? Object.freeze([requiredBootstrapCapability])
           : this.availableTools();
@@ -416,6 +437,41 @@ export class DevSupervisorEngineV0 {
     const currentHexConversationId = normalizeConversationId(input.conversationId);
     const waitingHexConversationId = normalizeConversationId(run.hexConversationId);
     return currentHexConversationId === waitingHexConversationId ? run : null;
+  }
+
+  /* CONTINUATION is allowed only when this runtime can prove the session was
+     bootstrapped under exactly the contract still in force. Anything else --
+     a new runtime, a new session key, a changed tool/protocol contract, or a
+     signature that cannot be reproduced -- costs a full BOOTSTRAP. Uncertainty
+     must cost tokens, not correctness. */
+  promptTransportFor(sessionKey, availableTools, history) {
+    const signature = devBootstrapContractSignature({ availableTools });
+    const key = String(sessionKey || '');
+    // An unreproducible signature is null, and markPromptTransportDelivered never
+    // stores null, so a null signature can never match a stored one: it always
+    // falls through to BOOTSTRAP below.
+    const state = key ? this.supervisorPromptState.get(key) : null;
+    if (!state || state.signature !== signature) {
+      return { mode: DEV_PROMPT_MODE.BOOTSTRAP, signature, history };
+    }
+    const delivered = Math.min(state.deliveredHistory, history.length);
+    return { mode: DEV_PROMPT_MODE.CONTINUATION, signature, history: history.slice(delivered) };
+  }
+
+  markPromptTransportDelivered(sessionKey, transport, deliveredHistory) {
+    const key = String(sessionKey || '');
+    if (!key) return;
+    if (!transport?.signature) {
+      // No reproducible signature: never record a bootstrapped session.
+      this.supervisorPromptState.delete(key);
+      return;
+    }
+    this.supervisorPromptState.set(key, { signature: transport.signature, deliveredHistory });
+  }
+
+  invalidatePromptTransport(sessionKey) {
+    const key = String(sessionKey || '');
+    if (key) this.supervisorPromptState.delete(key);
   }
 
   supervisorSessionKeyFor(hexConversationId) {
