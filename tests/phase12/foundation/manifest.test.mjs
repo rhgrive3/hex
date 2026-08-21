@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadManifest, validateFiles, validateManifest } from '../../../tools/validation/phase12/ownership.mjs';
+import { loadManifest, validateAggregateFiles, validateFiles, validateManifest } from '../../../tools/validation/phase12/ownership.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const manifest = loadManifest();
@@ -24,5 +24,15 @@ assert.equal(integrationPass.ok, true);
 const generatedViolation = validateFiles(['reports/phase12/phase12-release-evidence.json'], 'p12-c', manifest);
 assert.equal(generatedViolation.ok, false);
 assert.ok(generatedViolation.violations.some((item) => item.category === 'generated' || item.category === 'release'));
+const aggregatePass = validateAggregateFiles([
+  'js/collaboration/index.js',
+  'js/knowledge/phase12-rules.js',
+  'tests/phase12/adversarial/trust-boundaries.test.mjs',
+  'tools/validation/phase12/verify.mjs',
+], manifest);
+assert.equal(aggregatePass.ok, true);
+const aggregateViolation = validateAggregateFiles(['js/unknown-phase12-file.js'], manifest);
+assert.equal(aggregateViolation.ok, false);
+assert.ok(aggregateViolation.violations.some((item) => item.category === 'unowned'));
 
 console.log('[phase12] foundation manifest and ownership tests passed');

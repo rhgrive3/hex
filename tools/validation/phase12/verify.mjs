@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { currentSupportMatrix } from '../../../js/platform/capability-maturity.js';
 import { verifyPhase11 } from '../phase11/verify.mjs';
 import { runPhase12Tests } from '../../../tests/phase12/run.mjs';
-import { loadManifest as loadOwnershipManifest, validateManifest } from './ownership.mjs';
+import { loadManifest as loadOwnershipManifest, runAggregateOwnership, validateManifest } from './ownership.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_DIR = path.join(ROOT, 'reports/phase12');
@@ -77,6 +77,9 @@ export async function verifyPhase12(argv = process.argv.slice(2)) {
   if (!isSha(foundation.commitSha) || !isSha(foundation.treeSha)) throw new Error('phase12 foundation identity is not exact');
   const ancestor = spawnSync('git', ['merge-base', '--is-ancestor', foundation.commitSha, product.commitSha], { cwd: ROOT });
   if (ancestor.status !== 0) throw new Error('phase12 candidate is not descended from the recorded foundation');
+  const currentMainSha = git(['rev-parse', 'origin/main']);
+  if (!currentMainSha) throw new Error('phase12 current main exact head is unavailable');
+  const ownershipResult = runAggregateOwnership({ baseSha: currentMainSha, headSha: product.commitSha });
 
   console.log(`[phase12-verifier] commit=${product.commitSha} tree=${product.treeSha}`);
   try {
@@ -85,6 +88,7 @@ export async function verifyPhase12(argv = process.argv.slice(2)) {
     const supportMatrix = currentSupportMatrix();
     const gates = [
       { id: 'P12.0-foundation', status: 'PASSED' },
+      { id: 'P12.0-aggregate-ownership', status: 'PASSED' },
       { id: 'P12.0-phase11-current-head', status: phase11?.verdict === 'READY' ? 'PASSED' : 'BLOCKING' },
       { id: 'P12.V0-negative-oracles', status: 'PASSED' },
     ];
@@ -95,6 +99,7 @@ export async function verifyPhase12(argv = process.argv.slice(2)) {
       verifier: { id: VERIFIER_ID, version: VERIFIER_VERSION },
       product,
       foundation: { ...foundation },
+      ownership: { baseSha: ownershipResult.baseSha, headSha: ownershipResult.headSha, inventoryDigest: ownershipResult.inventoryDigest, fileCount: ownershipResult.files.length },
       phase11: { product: phase11.product, evidenceDigest: phase11.evidenceDigest, verifier: phase11.verifier },
       gates,
       supportTruth: { nativeRebuild: 'operation-profile-only', remoteCollaboration: 'local-only', patternMutation: 'read-only', capabilityAuthority: 'evidence-only' },

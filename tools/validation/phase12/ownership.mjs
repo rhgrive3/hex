@@ -69,6 +69,34 @@ export function validateFiles(files, lane, manifest = loadManifest()) {
   return { ok: errors.length === 0 && violations.length === 0, lane, files: [...files].map(normalize).filter(Boolean).sort(), violations, manifestErrors: errors };
 }
 
+function declaredOwners(file, manifest) {
+  return Object.entries(manifest.lanes || {})
+    .filter(([, patterns]) => patterns.some((pattern) => matches(file, pattern)))
+    .map(([lane]) => lane);
+}
+
+export function validateAggregateFiles(files, manifest = loadManifest()) {
+  const errors = validateManifest(manifest);
+  const violations = [];
+  const normalizedFiles = [...new Set([...files].map(normalize).filter(Boolean))].sort();
+  for (const file of normalizedFiles) {
+    const forbidden = (manifest.forbiddenPaths || []).some((pattern) => matches(file, pattern));
+    const generated = (manifest.generatedPaths || []).some((pattern) => matches(file, pattern));
+    const releaseOnly = (manifest.releaseOnlyPaths || []).some((pattern) => matches(file, pattern));
+    const owners = declaredOwners(file, manifest);
+    if (forbidden) {
+      violations.push({ file, category: 'forbidden', detail: 'path is globally forbidden to Phase 12 lanes' });
+    } else if (generated && !manifest.generatedWriteOwners.some((lane) => owners.includes(lane))) {
+      violations.push({ file, category: 'generated', detail: 'no declared generated-output owner covers this path' });
+    } else if (releaseOnly && !manifest.releaseWriteOwners.some((lane) => owners.includes(lane))) {
+      violations.push({ file, category: 'release', detail: 'no declared release-evidence owner covers this path' });
+    } else if (owners.length === 0) {
+      violations.push({ file, category: 'unowned', detail: 'no declared Phase 12 lane owns this path' });
+    }
+  }
+  return { ok: errors.length === 0 && violations.length === 0, lane: 'aggregate', files: normalizedFiles, violations, manifestErrors: errors };
+}
+
 function git(args, root = ROOT) {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(result.stderr?.trim() || `git ${args.join(' ')} failed`);
@@ -115,15 +143,29 @@ export function runOwnership({ baseSha, headSha, lane, root = ROOT, manifest = l
   return Object.freeze({ ...result, baseSha, headSha, inventoryDigest: inventoryDigest(files) });
 }
 
+export function runAggregateOwnership({ baseSha, headSha, root = ROOT, manifest = loadManifest() }) {
+  const files = inventoryFromGit(baseSha, headSha, root);
+  const result = validateAggregateFiles(files, manifest);
+  if (!result.ok) {
+    const error = new Error(`phase12 aggregate ownership violations: ${result.violations.map((item) => `${item.category}:${item.file}`).join(', ') || result.manifestErrors.join('; ')}`);
+    error.ownershipViolation = true;
+    error.result = result;
+    throw error;
+  }
+  return Object.freeze({ ...result, baseSha, headSha, inventoryDigest: inventoryDigest(files) });
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  const lane = process.argv[2];
+  const mode = process.argv[2];
   const baseSha = process.argv[3];
   const headSha = process.argv[4];
   try {
-    if (!lane || !baseSha || !headSha) throw new TypeError('usage: node ownership.mjs <lane> <base-sha> <head-sha>');
-    const result = runOwnership({ lane, baseSha, headSha });
-    console.log(`phase12 ownership: PASS (${result.files.length} files, base ${result.baseSha}, head ${result.headSha})`);
+    if (!mode || !baseSha || !headSha) throw new TypeError('usage: node ownership.mjs <lane|aggregate> <base-sha> <head-sha>');
+    const result = mode === 'aggregate'
+      ? runAggregateOwnership({ baseSha, headSha })
+      : runOwnership({ lane: mode, baseSha, headSha });
+    console.log(`phase12 ownership${mode === 'aggregate' ? ' aggregate' : ''}: PASS (${result.files.length} files, base ${result.baseSha}, head ${result.headSha})`);
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;
