@@ -1,6 +1,8 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { DEBUG_CAPABILITIES } from '../debug/adapter.js';
 
 export const RUNTIME_AUTHORITY_SCHEMA = 'hex-runtime-authority/v1';
+const DEBUG_CAPABILITY_SET = new Set(DEBUG_CAPABILITIES);
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -14,11 +16,24 @@ function uint(value, code) {
   return n;
 }
 
+function boundedCount(value, fallback, max, code) {
+  const n = value == null ? fallback : Number(value);
+  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
+  return n;
+}
+
 function clone(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
   if (value == null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(clone);
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)]));
+}
+
+function capabilityList(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [...new Set(value.map(String).filter(Boolean))].sort();
+  for (const capability of out) if (!DEBUG_CAPABILITY_SET.has(capability)) throw new TypeError(`runtime-capability-unknown:${capability}`);
+  return out;
 }
 
 export function createRuntimeAuthorityBinding(input = {}) {
@@ -85,7 +100,7 @@ export class RuntimeAuthorityTracker {
       : createRuntimeAuthorityBinding(bindingInput || {});
     this.lastSequence = -1;
     this.closed = false;
-    this.maxObservations = Math.max(1, Math.min(4096, Number(options.maxObservations || 1024)));
+    this.maxObservations = boundedCount(options.maxObservations, 1024, 4096, 'runtime-max-observations-invalid');
     this.observations = [];
   }
 
@@ -129,15 +144,25 @@ export class RuntimeAuthorityTracker {
   }
 }
 
-export function runtimeProfileSupport({ binding, providerCapabilities = {}, proof = {} } = {}) {
+export function runtimeProfileSupport({ binding, providerProfileId = null, providerCapabilities = {}, requiredCapabilities = [], proof = {} } = {}) {
   const hasBinding = binding?.schemaVersion === RUNTIME_AUTHORITY_SCHEMA;
-  const required = ['readMemory', 'readRegisters', 'disconnect'];
-  const missing = required.filter((key) => providerCapabilities[key] !== true);
-  const proven = hasBinding && missing.length === 0 && proof.exactHead === true && proof.identityNegativeTests === true && proof.staleEventTests === true;
+  const declared = capabilityList(requiredCapabilities);
+  const missing = declared.filter((key) => providerCapabilities[key] !== true);
+  const proofComplete = proof.exactHead === true
+    && proof.identityNegativeTests === true
+    && proof.staleEventTests === true
+    && proof.lifecycleTests === true
+    && proof.capabilityTests === true
+    && proof.moduleMappingTests === true
+    && proof.mutationAuthorityTests === true;
+  const proven = hasBinding && !!providerProfileId && declared.length > 0 && missing.length === 0 && proofComplete;
   return Object.freeze({
     status: proven ? 'supported-for-exact-provider-profile' : hasBinding ? 'partial' : 'unavailable',
     bindingId: hasBinding ? binding.bindingId : null,
+    providerProfileId: providerProfileId == null ? null : String(providerProfileId),
+    requiredCapabilities: Object.freeze(declared),
     missingCapabilities: Object.freeze(missing),
+    proofComplete,
     authority: proven ? 'runtime-evidence-bound' : 'none',
   });
 }
