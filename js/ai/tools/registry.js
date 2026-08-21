@@ -99,7 +99,7 @@ export class ToolRegistry {
       }
       const result = jsonSafe(raw);
       const sourceRef = record ? { detailRef: record.id, path: '$', bindingKey: record.binding.key } : null;
-      let evidence = record?.evidence || [];
+      let evidence = record?.evidence ?? null;
       const resultLifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
       const resultPublishable = resultLifecycle.publishable !== false && resultLifecycle.late !== true;
       if (resultPublishable && !evidence) {

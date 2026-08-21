@@ -36,7 +36,8 @@
     "userscript/release-version.json",
     "package.json",
     "js/ai/dev/protocol/dev-supervisor-prompt.js",
-    "tests/dev-agent/tool-contract-parity.mjs"
+    "tests/dev-agent/tool-contract-parity.mjs",
+    "js/ai/tools/registry.js"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",
