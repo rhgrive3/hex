@@ -1,6 +1,11 @@
 import { DEV_RUN_STATUS, transitionDevRun } from '../run/dev-run.js';
 import { parseDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js';
-import { DEV_PROMPT_MODE, buildDevSupervisorPrompt, devBootstrapContractSignature } from '../protocol/dev-supervisor-prompt.js';
+import {
+  DEV_PROMPT_MODE,
+  buildDevSupervisorPrompt,
+  devBootstrapContractSignature,
+  devSupervisorContextPacket,
+} from '../protocol/dev-supervisor-prompt.js';
 import { DevRunEventHost } from '../events/dev-events.js';
 import { DEV_WORKER_TOOL } from '../workers/tool-surface.js';
 import {
@@ -268,6 +273,7 @@ export class DevSupervisorEngineV0 {
             availableTools: promptTools,
             history: transport.history,
             mode: transport.mode,
+            contextPacket: devSupervisorContextPacket(run),
           }), {
             signal: input.signal,
             sessionKey: run.supervisorSessionKey,
