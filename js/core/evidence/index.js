@@ -60,6 +60,11 @@ function safeArray(value, code) {
   if (!Array.isArray(value)) fail(code);
   return value;
 }
+function graphLimit(value, code) {
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < 0) fail(code);
+  return n;
+}
 function confidence(value) {
   if (value == null) return null;
   const n = Number(value);
@@ -156,8 +161,8 @@ export class EvidenceGraph {
 
   constructor(initial = {}, { maxNodes = 500_000, maxEdges = 1_000_000, signal = null } = {}) {
     if (!initial || typeof initial !== 'object' || Array.isArray(initial)) fail('evidence-invalid-graph');
-    this.#maxNodes = maxNodes;
-    this.#maxEdges = maxEdges;
+    this.#maxNodes = graphLimit(maxNodes, 'evidence-graph-node-budget-invalid');
+    this.#maxEdges = graphLimit(maxEdges, 'evidence-graph-edge-budget-invalid');
     const nodes = safeArray(initial.nodes, 'evidence-invalid-nodes');
     const edges = safeArray(initial.edges, 'evidence-invalid-edges');
     if (nodes.length > this.#maxNodes) fail('evidence-graph-node-budget-exceeded');
