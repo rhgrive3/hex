@@ -1,0 +1,220 @@
+name: One-shot analysis view abort propagation
+
+on:
+  push:
+    branches:
+      - fix/analysis-cancellation-settlement
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/analysis-cancellation-settlement
+          fetch-depth: 0
+      - name: Apply exact abort propagation patch and remove this workflow
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+            p = Path(path)
+            src = p.read_text()
+            count = src.count(old)
+            if count != 1:
+              raise SystemExit(f'{label}: expected exactly one source match, got {count}')
+            p.write_text(src.replace(old, new))
+
+          replace_once('js/panels.js',
+          """    const box = progressBox(later, pick('中身を調べています…', 'Looking inside…'));
+              let cancelled = false;
+              sheet.onClose = () => { cancelled = true; app.backend.cancelSearch(); app.backend.onScanProgress = null; };""",
+          """    const box = progressBox(later, pick('中身を調べています…', 'Looking inside…'));
+              let cancelled = false;
+              const controller = new AbortController();
+              sheet.onClose = () => {
+                cancelled = true;
+                if (!controller.signal.aborted) controller.abort('auto-analysis-view-closed');
+                app.backend.cancelSearch();
+                app.backend.onScanProgress = null;
+              };""",
+          'overview abort controller')
+
+          replace_once('js/panels.js',
+          """        shapes, recognition,
+                analyze: makeAnalyzer(app, region),""",
+          """        shapes, recognition,
+                signal: controller.signal,
+                analyze: makeAnalyzer(app, region),""",
+          'overview signal forwarding')
+
+          replace_once('js/panels.js',
+          """export function showCandidates(app, goal) {
+            if (!goal) return;
+            app.lastGoal = goal;
+            const sheet = new Sheet(goalLabel(goal), {
+              onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+            });""",
+          """export function showCandidates(app, goal) {
+            if (!goal) return;
+            app.lastGoal = goal;
+            const controller = new AbortController();
+            const sheet = new Sheet(goalLabel(goal), {
+              onClose: () => {
+                if (!controller.signal.aborted) controller.abort('candidate-analysis-view-closed');
+                app.backend.cancelSearch();
+                app.backend.onScanProgress = null;
+              },
+            });""",
+          'candidate abort controller')
+
+          replace_once('js/panels.js',
+          """    const pin = await pinnedFor(app, goal, {
+                  strings, program, shapes, region, box, ranked: ranked.candidates,
+                });""",
+          """    const pin = await pinnedFor(app, goal, {
+                  strings, program, shapes, region, box, ranked: ranked.candidates,
+                  signal: controller.signal,
+                });""",
+          'candidate signal forwarding')
+
+          replace_once('js/panels.js',
+          """    region,
+              map: report ? report.map : null,
+              // 形から立てた候補を開いて確かめるとき、参照している文言もそこで読む""",
+          """    region,
+              map: report ? report.map : null,
+              signal: ctx.signal || null,
+              // 形から立てた候補を開いて確かめるとき、参照している文言もそこで読む""",
+          'pinnedFor signal forwarding')
+
+          replace_once('js/auto.js',
+          """  const progress = o.onProgress || (() => {});
+            const cancelled = o.isCancelled || (() => false);
+            const deepLimit = o.deepLimit != null ? o.deepLimit : 12;""",
+          """  const progress = o.onProgress || (() => {});
+            const cancelled = () => !!o.signal?.aborted || !!o.isCancelled?.();
+            const deepLimit = o.deepLimit != null ? o.deepLimit : 12;""",
+          'auto cancellation predicate')
+
+          replace_once('js/auto.js',
+          """        shapes: o.shapes || null, analyze: memo, scanAccess: o.scanAccess || null,
+                isCancelled: cancelled, limit: 12,""",
+          """        shapes: o.shapes || null, analyze: memo, scanAccess: o.scanAccess || null,
+                signal: o.signal || null, isCancelled: cancelled, limit: 12,""",
+          'auto pinpoint signal forwarding')
+
+          replace_once('js/auto.js',
+          """        model = await (memo || o.analyze)(t.addr, range ? range.end : null);""",
+          """        model = await (memo || o.analyze)(t.addr, range ? range.end : null, { signal: o.signal || null });""",
+          'auto deep signal forwarding')
+
+          replace_once('js/pinpoint.js',
+          """    let timer = null;
+                let operation = null;
+                const timeout = new Promise((_, reject) => {
+                  timer = setTimeout(() => {
+                    if (!controller.signal.aborted) controller.abort('pinpoint-analysis-timeout');
+                    try { operation?.cancel?.(); } catch { /* timeout remains authoritative */ }
+                    reject(timeoutError(ms));
+                  }, ms);
+                });
+                try {
+                  operation = analyze(...analyzeArgsWithSignal(args, controller.signal));
+                  return await Promise.race([Promise.resolve(operation), timeout]);
+                } catch (error) {""",
+          """    let timer = null;
+                let operation = null;
+                const cancelOperation = () => {
+                  try { operation?.cancel?.(); } catch { /* abort remains authoritative */ }
+                };
+                controller.signal.addEventListener('abort', cancelOperation, { once: true });
+                const timeout = new Promise((_, reject) => {
+                  timer = setTimeout(() => {
+                    if (!controller.signal.aborted) controller.abort('pinpoint-analysis-timeout');
+                    else cancelOperation();
+                    reject(timeoutError(ms));
+                  }, ms);
+                });
+                try {
+                  operation = analyze(...analyzeArgsWithSignal(args, controller.signal));
+                  if (controller.signal.aborted) cancelOperation();
+                  return await Promise.race([Promise.resolve(operation), timeout]);
+                } catch (error) {""",
+          'analysis parent abort cancellation')
+
+          replace_once('js/pinpoint.js',
+          """      if (timer != null) clearTimeout(timer);
+                  unlinkParent();
+                }
+              };
+            }""",
+          """      if (timer != null) clearTimeout(timer);
+                  controller.signal.removeEventListener('abort', cancelOperation);
+                  unlinkParent();
+                }
+              };
+            }""",
+          'analysis abort listener cleanup')
+
+          replace_once('js/pinpoint.js',
+          """      let timer = null;
+                  let operation = null;
+                  const timeout = new Promise((_, reject) => {
+                    timer = setTimeout(() => {
+                      if (!controller.signal.aborted) controller.abort('pinpoint-access-timeout');
+                      try { operation?.cancel?.(); } catch { /* timeout remains authoritative */ }
+                      reject(accessTimeoutError(ms));
+                    }, ms);
+                  });
+                  try {
+                    operation = scanAccess(all, { signal: controller.signal });
+                  } catch (error) {""",
+          """      let timer = null;
+                  let operation = null;
+                  const cancelOperation = () => {
+                    try { operation?.cancel?.(); } catch { /* abort remains authoritative */ }
+                  };
+                  controller.signal.addEventListener('abort', cancelOperation, { once: true });
+                  const timeout = new Promise((_, reject) => {
+                    timer = setTimeout(() => {
+                      if (!controller.signal.aborted) controller.abort('pinpoint-access-timeout');
+                      else cancelOperation();
+                      reject(accessTimeoutError(ms));
+                    }, ms);
+                  });
+                  try {
+                    operation = scanAccess(all, { signal: controller.signal });
+                    if (controller.signal.aborted) cancelOperation();
+                  } catch (error) {""",
+          'access parent abort cancellation')
+
+          replace_once('js/pinpoint.js',
+          """        .finally(() => {
+                      if (timer != null) clearTimeout(timer);
+                      unlinkParent();
+                      state.promise = null;
+                    });""",
+          """        .finally(() => {
+                      if (timer != null) clearTimeout(timer);
+                      controller.signal.removeEventListener('abort', cancelOperation);
+                      unlinkParent();
+                      state.promise = null;
+                    });""",
+          'access abort listener cleanup')
+
+          Path('.github/workflows/one-shot-analysis-view-abort.yml').unlink()
+      - name: Commit exact source patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/panels.js js/auto.js js/pinpoint.js .github/workflows/one-shot-analysis-view-abort.yml
+          git diff --cached --check
+          git diff --cached --exit-code && exit 1 || true
+          git commit -m "fix(auto): abort analysis work when result views close"
+          git push origin HEAD:fix/analysis-cancellation-settlement
