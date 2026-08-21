@@ -55,12 +55,12 @@ function immutableSafetyLines() {
   ];
 }
 
-export function buildDevSupervisorPrompt({ run, availableTools = [], history = [], mode = DEV_PROMPT_MODE.BOOTSTRAP, contextPacket = null } = {}) {
+export function buildDevSupervisorPrompt({ run, availableTools = [], history = [], mode = DEV_PROMPT_MODE.BOOTSTRAP, contextPacket = null, contextSelection = null } = {}) {
   if (!run?.runId) throw new TypeError('Dev Supervisor prompt requires a DevRun.');
   const available = new Set((availableTools || []).map(String));
   return mode === DEV_PROMPT_MODE.CONTINUATION
-    ? continuationPrompt({ run, availableTools, history })
-    : bootstrapPrompt({ run, availableTools, available, history, contextPacket });
+    ? continuationPrompt({ run, availableTools, history, contextPacket, contextSelection })
+    : bootstrapPrompt({ run, availableTools, available, history, contextPacket, contextSelection });
 }
 
 /* The same objective/scope/policy the run already carries, in the typed
@@ -85,12 +85,14 @@ export function devSupervisorContextPacket(run) {
 
 /* Only the fresh delta and the current position: the fixed contract above was
    already delivered and accepted in this same session. */
-function continuationPrompt({ run, availableTools, history }) {
+function continuationPrompt({ run, availableTools, history, contextPacket, contextSelection }) {
   const payload = {
     mode: DEV_PROMPT_MODE.CONTINUATION,
     run: { runId: run.runId, workerId: run.workerId, goal: run.goal, decisionPolicy: run.decisionPolicy, analysisScope: run.analysisScope, status: run.status },
     availableTools: [...availableTools],
     history: [...history],
+    ...(contextPacket ? { context: contextPacket } : {}),
+    ...(contextSelection ? { contextSelection } : {}),
   };
   return [
     `HEX DEV SUPERVISOR CONTINUATION ${DEV_SUPERVISOR_PROTOCOL}`,
@@ -135,7 +137,7 @@ function bootstrapContractLines(available, toolContracts) {
   ];
 }
 
-function bootstrapPrompt({ run, availableTools, available, history, contextPacket }) {
+function bootstrapPrompt({ run, availableTools, available, history, contextPacket, contextSelection }) {
   // When the typed packet carries objective/scope/policy, the loose run fields
   // are not repeated: one representation, not two.
   const payload = {
@@ -153,6 +155,7 @@ function bootstrapPrompt({ run, availableTools, available, history, contextPacke
         status: run.status,
       },
     ...(contextPacket ? { context: contextPacket } : {}),
+    ...(contextSelection ? { contextSelection } : {}),
     availableTools: [...availableTools],
     history: history.slice(-12),
   };

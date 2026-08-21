@@ -45,6 +45,8 @@
     "tests/dev-agent/observation-batch.mjs",
     "js/ai/dev/protocol/context-packet.js",
     "tests/dev-agent/context-contracts.mjs",
+    "js/ai/dev/protocol/context-selection.js",
+    "tests/dev-agent/context-selection.mjs",
     "js/ai/dev/workers/contracts.js"
   ],
   "forbiddenPrefixes": [
