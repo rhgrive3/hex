@@ -246,3 +246,70 @@ The blockers recorded at capture are now resolved as follows:
 
 Accordingly, there is no remaining hardening-campaign source blocker that
 requires another repair before starting Phase 4 at its read-only P4.0 boundary.
+
+## Repository closeout completion after #1212/#1213 — 2026-08-22
+
+This section resolves the only prospective repository-validation statements left
+in the closeout above and reconciles the source change merged immediately after
+the documentation closeout. It supersedes the earlier sentence that #1212
+"MUST itself be green" as a pending condition; that condition is now observed.
+
+### Actual closure evidence
+
+| item | observed result |
+| --- | --- |
+| #1212 exact head | `81d30bbb32209dfb9560fd6e6abc72ee34d7c9e8` |
+| #1212 exact-head CI | `Invariant Gates` completed successfully |
+| #1212 merge | `0527f8ab47a64a7c42e174122a43e408aa6eb77b` |
+| #1213 exact head | `bacbaa06f4db468d6c1201996e69c84cf7cb6f02` |
+| #1213 merge | `9150509c37ec5328fb29e297d344a4db12e7ed16` |
+| final observed source `main` | `9150509c37ec5328fb29e297d344a4db12e7ed16` |
+| software handoff verdict | `READY_FOR_PHASE_4_P4.0` |
+| active runtime verdict | `NOT_CLAIMED_BY_SOURCE_CLOSEOUT` |
+
+#1212 was documentation-only and therefore did not change the reviewed runtime
+behavior. Its exact head passed the repository invariant gate before merge, and
+its merge commit closed the previously prospective documentation-CI condition.
+
+#1213 then reconciled one unique identity-safety defect that had survived on a
+stale predecessor branch: `jsonSafe()` now preserves an enumerable `__proto__`
+key as an own data property without mutating the output object's prototype. The
+fix is covered by `tests/core-identity-contracts.mjs`; Phase 10 ownership was
+widened only by an exact-file allowance plus a regression that prevents broad
+`tests/` or `js/` ownership expansion. Canonical generated userscript/release
+identity output was refreshed from the reconciled tree.
+
+### #1213 exact-head validation
+
+The exact head `bacbaa06f4db468d6c1201996e69c84cf7cb6f02` completed all observed
+pull-request workflows successfully:
+
+- Invariant Gates;
+- Generated userscript sync;
+- Generated userscript autofix;
+- Cross-binary accuracy;
+- ChatGPT userscript host;
+- Phase 10 release validation.
+
+The merge commit `9150509c37ec5328fb29e297d344a4db12e7ed16` is the observed `main`
+source baseline after #1212 and #1213. GitHub exposes no separate combined-status
+contexts on that merge commit through the repository status surface used for
+this closeout, so this report does not invent an exact-main CI claim. The
+accepted evidence is the exact-head PR validation above plus the observed merge
+result and resulting source tree.
+
+### Final disposition
+
+The post-closeout #1213 repair strengthens, rather than invalidates, the Phase 4
+source-readiness decision: it fixes a concrete identity serialization edge case,
+adds a deterministic regression, keeps Phase 10 ownership narrow, and is green
+at its exact PR head. Therefore the source handoff remains
+`READY_FOR_PHASE_4_P4.0`.
+
+No active userscript/runtime identity or target iPad/WebKit execution was
+observed as part of this repository closeout. That remains deliberately outside
+this source report and is still the first mandatory live gate when P4.0 begins.
+
+There is no remaining prospective repository-validation item in this handoff:
+#1212's own CI/merge condition is resolved, #1213 is reconciled and green at its
+exact head, and the current source baseline is recorded explicitly.
