@@ -43,12 +43,14 @@ export const DEV_TOOL_OWNER = Object.freeze({
 });
 
 /* Whether a tool may ever join the bounded read-only observation batch of
-   CARD H2. This card adds no batch tool; it only makes eligibility explicit.
+   CARD H2. The batch dispatcher is itself explicitly `never`; this metadata
+   only opts normal read-only observations into the existing direct path.
    `observation` is opt-in and is granted only to a read-only, idempotent
    observation whose normal handler runs without touching repository, runtime or
    DOM ownership state. Everything else -- including anything lease-scoped, and
    anything at all uncertain -- is `never`. */
 export const DEV_BATCH_POLICY = Object.freeze({ NEVER: 'never', OBSERVATION: 'observation' });
+export const DEV_BATCH_MAX_CALLS = 6;
 
 const { CONTROL, OBSERVATION, FULL_TURN, MUTATION } = DEV_OPERATION_CLASS;
 const { NEVER, OBSERVATION: BATCHABLE } = DEV_BATCH_POLICY;
@@ -103,6 +105,11 @@ const ENTRIES = [
   entry('worker.graph.status', DEV_TOOL_SURFACE.ADMIN, 'graphStatus', OBSERVATION, DEV_TOOL_OWNER.TASK_GRAPH, '{"graphId":"<returned graph id>"}', { rpcName: 'dev.task_graph.status', batchPolicy: BATCHABLE }),
   entry('worker.graph.task_result', DEV_TOOL_SURFACE.ADMIN, 'graphTaskResult', OBSERVATION, DEV_TOOL_OWNER.TASK_GRAPH, '{"graphId":"<returned graph id>","taskId":"<task id>"}', { rpcName: 'dev.task_graph.task_result', batchPolicy: BATCHABLE }),
   entry('worker.graph.cancel', DEV_TOOL_SURFACE.ADMIN, 'graphCancel', CONTROL, DEV_TOOL_OWNER.TASK_GRAPH, '{"graphId":"<returned graph id>","reason":"<why the graph is being cancelled>"}', { rpcName: 'dev.task_graph.cancel' }),
+
+  /* This is a host-side dispatcher, not an observation target. It is exposed
+     through the Admin surface but has no client/RPC mapping and can never
+     participate in another batch. */
+  entry('dev.batch.observe', DEV_TOOL_SURFACE.ADMIN, null, OBSERVATION, DEV_TOOL_OWNER.DEV_RUNTIME, '{"calls":[{"tool":"<batch-eligible observation tool>","arguments":{}}]}', { batchPolicy: NEVER }),
 ];
 
 /* The fail-closed rule itself, exported so it is a tested contract rather than
