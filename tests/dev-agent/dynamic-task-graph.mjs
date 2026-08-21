@@ -461,7 +461,7 @@ async function testCancelledAttemptTraceAndBounds() {
   const pool = harness.pool();
   const host = graphHost(pool);
   await host.start({ graphId: 'trace-cancel', maxConcurrency: 1, tasks: [task('hanging'), task('waiting', ['hanging'])] });
-  await waitFor(() => host.status({ graphId: 'trace-cancel' }).tasks.some((item) => item.id === 'hanging' && item.state === 'RUNNING'));
+  await waitFor(() => host.status({ graphId: 'trace-cancel' }).tasks.some((item) => item.id === 'hanging' && item.state === 'RUNNING' && item.owner));
   host.cancel({ graphId: 'trace-cancel', reason: 'test-trace-cancel' });
   await waitTerminal(host, 'trace-cancel');
 

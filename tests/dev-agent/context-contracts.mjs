@@ -29,6 +29,16 @@ function packetIsNormalizedJsonSafeAndValidated() {
   }
   assert.throws(() => createDevContextPacket({ objective: 'no task id' }), /taskId/);
   assert.throws(() => createDevContextPacket({ taskId: 't1' }), /objective/);
+  assert.throws(
+    () => createDevContextPacket({ taskId: 't1', objective: 'reject malformed unknowns', unknowns: [null] }),
+    /malformed|empty/,
+    'malformed correctness context must fail closed instead of disappearing',
+  );
+  assert.throws(
+    () => createDevContextPacket({ taskId: 't1', objective: 'reject unbounded unknowns', unknowns: Array.from({ length: 65 }, () => 'unknown') }),
+    /maximum/,
+    'an over-bound correctness list must fail closed instead of truncating silently',
+  );
 
   const packet = createDevContextPacket({
     orchestrationRunId: 'run-1', graphId: 'graph-1', taskId: 't1', attempt: 2, leaseId: 'lease-1',

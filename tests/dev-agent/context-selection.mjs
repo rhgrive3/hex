@@ -151,6 +151,16 @@ function fresherOwningSystemFactWinsWithoutErasingTheConflict() {
     }),
   });
   assert.equal(reversed.packet.authoritativeFacts[0].source, 'worker.pool.status');
+
+  const concreteOwner = selectDevContext({
+    packet: packet({
+      authoritativeFacts: [
+        { statement: 'the pool is ready', source: 'cached-status', authority: 'cache', observedAt: '2099-01-01T00:00:00.000Z' },
+        { statement: 'the pool is ready', source: 'worker.pool.status', authority: 'worker-pool', observedAt: '2026-08-20T10:00:00.000Z' },
+      ],
+    }),
+  });
+  assert.equal(concreteOwner.packet.authoritativeFacts[0].source, 'worker.pool.status', 'the canonical H1 owner outranks a newer cache snapshot');
 }
 
 function untrustedFactsCannotReplaceOrSupersedeOwningSystemFacts() {

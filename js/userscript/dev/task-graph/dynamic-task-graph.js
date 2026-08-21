@@ -355,46 +355,60 @@ export class DynamicTaskGraph {
   }
 
   async cleanupLease(task, leaseId) {
-    let releaseError = null;
     try {
+      const deadline = Date.now() + this.cleanupTimeoutMs;
+      const remaining = () => Math.max(0, deadline - Date.now());
       let current = null;
-      try { current = await this.workerPool.result({ leaseId }); } catch (error) {
-        if (String(error?.code || '') === 'lease-missing') return null;
+      const initial = await settleWithin(() => this.workerPool.result({ leaseId }), remaining());
+      if (!initial.settled) return this.discardAfterCleanupTimeout(task, leaseId, 'result-timeout');
+      if (initial.error) {
+        if (String(initial.error?.code || '') === 'lease-missing') return null;
+      } else {
+        current = initial.value;
       }
       if (String(current?.status || '').toLowerCase() === 'working') {
-        try { await this.workerPool.stop({ leaseId }); } catch {}
+        const stopped = await settleWithin(() => this.workerPool.stop({ leaseId }), remaining());
+        if (!stopped.settled) return this.discardAfterCleanupTimeout(task, leaseId, 'stop-timeout');
       }
-      const deadline = Date.now() + this.cleanupTimeoutMs;
       while (Date.now() < deadline) {
-        try {
-          current = await this.workerPool.result({ leaseId });
-          if (String(current?.status || '').toLowerCase() !== 'working') break;
-        } catch (error) {
-          if (String(error?.code || '') === 'lease-missing') return null;
+        const observed = await settleWithin(() => this.workerPool.result({ leaseId }), remaining());
+        if (!observed.settled) return this.discardAfterCleanupTimeout(task, leaseId, 'result-timeout');
+        if (observed.error) {
+          if (String(observed.error?.code || '') === 'lease-missing') return null;
           break;
         }
-        await this.sleep(this.pollMs);
+        current = observed.value;
+        if (String(current?.status || '').toLowerCase() !== 'working') break;
+        const waitMs = Math.min(this.pollMs, remaining());
+        if (waitMs <= 0) break;
+        await this.sleep(waitMs);
       }
-      try {
-        await this.workerPool.release({ leaseId });
+      const released = await settleWithin(() => this.workerPool.release({ leaseId }), remaining());
+      if (released.settled && !released.error) {
         return null;
-      } catch (error) {
-        if (String(error?.code || '') === 'lease-missing') return null;
-        releaseError = error;
       }
-      if (typeof this.workerPool.discard === 'function') {
-        try {
-          await this.workerPool.discard({ leaseId, reason: `task-graph-cleanup:${this.graphId}:${task.id}` });
-          return null;
-        } catch (error) {
-          if (String(error?.code || '') === 'lease-missing') return null;
-          releaseError = error;
-        }
-      }
-      return graphError('lease-cleanup-failed', `Task ${task.id} could not release Worker lease: ${String(releaseError?.message || releaseError).slice(0, 256)}`);
+      if (released.error && String(released.error?.code || '') === 'lease-missing') return null;
+      return this.discardAfterCleanupTimeout(task, leaseId, released.settled ? 'release-failed' : 'release-timeout', released.error);
     } catch (error) {
       return graphError('lease-cleanup-failed', `Task ${task.id} Worker lease cleanup failed: ${String(error?.message || error).slice(0, 256)}`);
     }
+  }
+
+  async discardAfterCleanupTimeout(task, leaseId, reason, releaseError = null) {
+    if (typeof this.workerPool.discard === 'function') {
+      try {
+        await this.workerPool.discard({
+          leaseId,
+          reason: `task-graph-cleanup:${this.graphId}:${task.id}:${reason}`,
+          timeoutMs: 0,
+        });
+        return null;
+      } catch (error) {
+        if (String(error?.code || '') === 'lease-missing') return null;
+        releaseError ||= error;
+      }
+    }
+    return graphError('lease-cleanup-failed', `Task ${task.id} could not release Worker lease: ${String(releaseError?.message || releaseError || reason).slice(0, 256)}`);
   }
 
   finishTaskFailure(task, error) {
@@ -583,6 +597,28 @@ function normalizeTaskId(value) { const id = String(value || '').trim(); if (!TA
 function normalizeGraphId(value) { const id = String(value || '').trim(); if (!GRAPH_ID.test(id)) throw new TypeError(`Invalid graph id: ${value}`); return id; }
 function plainRecord(value) { if (!value || typeof value !== 'object' || Array.isArray(value)) return false; const proto = Object.getPrototypeOf(value); return proto === Object.prototype || proto === null; }
 function boundedInt(value, min, max, fallback) { if (value == null) return fallback; const number = Number(value); if (!Number.isFinite(number)) throw new TypeError('Expected finite numeric bound.'); return Math.min(max, Math.max(min, Math.floor(number))); }
+function settleWithin(operation, timeoutMs) {
+  const limit = Math.max(0, Number(timeoutMs) || 0);
+  if (limit === 0) {
+    void Promise.resolve().then(operation).catch(() => {});
+    return Promise.resolve({ settled: false, value: undefined, error: null });
+  }
+  return new Promise((resolve) => {
+    let finished = false;
+    let timer = null;
+    const finish = (result) => {
+      if (finished) return;
+      finished = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+    timer = setTimeout(() => finish({ settled: false, value: undefined, error: null }), limit);
+    Promise.resolve().then(operation).then(
+      (value) => finish({ settled: true, value, error: null }),
+      (error) => finish({ settled: true, value: undefined, error }),
+    );
+  });
+}
 function graphError(code, message) { const error = new Error(message); error.code = code; return error; }
 function randomGraphId(cryptoRef) { if (!cryptoRef?.getRandomValues) throw new TypeError('WebCrypto is required for task graph identity.'); const bytes = cryptoRef.getRandomValues(new Uint8Array(12)); return `graph-${[...bytes].map((value) => value.toString(16).padStart(2, '0')).join('')}`; }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }

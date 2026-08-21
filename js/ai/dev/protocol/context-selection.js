@@ -12,6 +12,8 @@
    needs semantic judgement is not done at all -- the context is kept instead.
 */
 
+import { DEV_TOOL_OWNER } from './dev-tool-contracts.js';
+
 export const DEV_CONTEXT_SELECTION_SCHEMA = 'hex-dev-context-selection/v1';
 
 /* Why an item was left out, so an omission is always inspectable. */
@@ -34,6 +36,7 @@ export const DEV_DEFAULT_CONTEXT_BUDGET_BYTES = 32 * 1024;
 
 /* Priority order. Lower number is selected first and dropped last. */
 const OPTIONAL_TIERS = ['dependencyResults', 'artifactRefs', 'contextDelta'];
+const OWNING_AUTHORITIES = new Set(['owning-system', ...Object.values(DEV_TOOL_OWNER)]);
 const UTF8_ENCODER = typeof TextEncoder === 'function' ? new TextEncoder() : null;
 
 export function selectDevContext({ packet, budgetBytes = null, expandEvidenceRefs = [] } = {}) {
@@ -204,7 +207,7 @@ function fresher(a, b) {
 }
 
 function isOwningSystemFact(fact) {
-  return fact?.authority === 'owning-system';
+  return OWNING_AUTHORITIES.has(fact?.authority);
 }
 
 /* Only coverage that a compact item actually declared. If nothing states that a

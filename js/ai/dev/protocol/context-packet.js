@@ -236,11 +236,11 @@ function text(value, max) {
 function list(value, normalize) {
   if (value == null) return [];
   const items = Array.isArray(value) ? value : [value];
+  if (items.length > MAX_LIST) throw new TypeError(`Context list exceeds the maximum of ${MAX_LIST} items.`);
   const out = [];
   for (const item of items) {
-    if (out.length >= MAX_LIST) break;
     const normalized = normalize(item);
-    if (normalized === null || normalized === '') continue;
+    if (normalized === null || normalized === '') throw new TypeError('Context list contains a malformed or empty item.');
     out.push(normalized);
   }
   return out;

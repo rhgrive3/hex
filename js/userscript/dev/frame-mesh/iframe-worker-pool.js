@@ -43,12 +43,18 @@ export class IframeWorkerPool {
     this.resultWaiters = new Set();
     this.generation = 0;
     this.closed = false;
+    this.retirement = createRetirement();
   }
 
   async provision({ size = this.maxWorkers, projectUrl = null, timeoutMs = READY_TIMEOUT_MS } = {}) {
     /* close() retires one ownership generation; an explicit provision is the
        controlled reinitialization boundary for a fresh generation. */
+    if (this.closed) {
+      this.generation += 1;
+      this.retirement = createRetirement();
+    }
     this.closed = false;
+    const generation = this.generation;
     const wanted = boundedInt(size, 1, this.maxWorkers, this.maxWorkers);
     const limit = boundedInt(timeoutMs, 50, 120000, READY_TIMEOUT_MS);
     let href = null;
@@ -61,7 +67,7 @@ export class IframeWorkerPool {
     }
     // Worker frames load concurrently: six sequential ChatGPT boots would cost
     // minutes before the first task can start.
-    const created = (await Promise.all(pending.map((index) => this.provisionSlot(index, href, limit)))).filter(Boolean);
+    const created = (await Promise.all(pending.map((index) => this.provisionSlot(index, href, limit, generation)))).filter(Boolean);
     this.flushWaiters();
     return { maxWorkers: this.maxWorkers, requested: wanted, created, slots: this.status().slots, readyCount: this.readyCount() };
   }
@@ -196,12 +202,18 @@ export class IframeWorkerPool {
      slot is reprovisioned from its same-origin URL. This prevents a retry from
      either reusing an ambiguously owned Worker or waiting forever for the only
      slot. If replacement cannot be proven ready, discard fails deterministically. */
-  async discard({ leaseId, reason = 'worker-discarded' } = {}) {
+  async discard({ leaseId, reason = 'worker-discarded', timeoutMs = READY_TIMEOUT_MS } = {}) {
     const slot = this.requireLease(leaseId);
     const index = slot.index;
     const href = slot.href;
+    const generation = this.generation;
+    const stopLimit = boundedInt(timeoutMs, 0, 60000, READY_TIMEOUT_MS);
     this.invalidateResultWaiters(slot.leaseId);
-    try { await slot.client?.stop?.(this.identity(slot)); } catch { /* best-effort stop before retirement */ }
+    const stop = Promise.resolve().then(() => slot.client?.stop?.(this.identity(slot)));
+    await promiseSettlesWithin(stop, stopLimit);
+    if (!this.isCurrentGeneration(generation) || this.slots.get(index) !== slot) {
+      throw poolError('transport-failure', 'Worker pool closed while discarding a Worker slot.');
+    }
     closeSlot(slot);
     this.leases.delete(slot.leaseId);
     slot.ready = false;
@@ -215,7 +227,7 @@ export class IframeWorkerPool {
     slot.lastResult = null;
     slot.error = { code: 'worker-discarded', message: String(reason || 'worker-discarded').slice(0, 384) };
     this.flushWaiters();
-    const replacement = await this.provisionSlot(index, href, READY_TIMEOUT_MS);
+    const replacement = await this.provisionSlot(index, href, READY_TIMEOUT_MS, generation);
     this.flushWaiters();
     if (!replacement) throw poolError('worker-reprovision-failed', `Discarded Worker slot ${index} could not be reprovisioned.`);
     return replacement;
@@ -225,6 +237,7 @@ export class IframeWorkerPool {
     if (this.closed) return;
     this.closed = true;
     this.generation += 1;
+    this.retirement.resolve();
     this.invalidateResultWaiters();
     for (const slot of this.slots.values()) closeSlot(slot);
     for (const waiter of this.waiters) waiter.reject(poolError('transport-failure', 'Worker pool closed.'));
@@ -252,10 +265,17 @@ export class IframeWorkerPool {
     return url.href;
   }
 
-  async provisionSlot(index, href, timeoutMs) {
+  async provisionSlot(index, href, timeoutMs, generation = this.generation) {
     let handle = null;
     try { handle = await this.createFrame({ slot: index, documentRef: this.documentRef, href }); }
-    catch (error) { this.slots.set(index, failedSlot(index, error, 'worker-frame-unavailable')); return null; }
+    catch (error) {
+      if (this.isCurrentGeneration(generation)) this.slots.set(index, failedSlot(index, error, 'worker-frame-unavailable'));
+      return null;
+    }
+    if (!this.isCurrentGeneration(generation)) {
+      try { handle?.close?.(); } catch { /* the retired frame is already unusable */ }
+      return null;
+    }
     if (!handle?.frame) {
       this.slots.set(index, failedSlot(index, poolError('worker-frame-unavailable', 'The page could not host a Worker iframe.')));
       return null;
@@ -266,10 +286,22 @@ export class IframeWorkerPool {
       createdAt: this.now(),
     };
     this.slots.set(index, slot);
+    if (!this.isCurrentGeneration(generation)) {
+      this.retireProvisionedSlot(slot);
+      return null;
+    }
     try { await handle.navigate(href); }
-    catch (error) { slot.error = errorRecord(error, 'worker-frame-navigation'); closeSlot(slot); return null; }
-    const outcome = await this.awaitReady(slot, timeoutMs);
-    if (!outcome.ready) { slot.error = { code: outcome.code, message: outcome.message }; closeSlot(slot); return null; }
+    catch (error) {
+      if (this.slots.get(index) === slot) slot.error = errorRecord(error, 'worker-frame-navigation');
+      this.retireProvisionedSlot(slot);
+      return null;
+    }
+    const outcome = await this.awaitReady(slot, timeoutMs, generation);
+    if (!this.isCurrentGeneration(generation)) {
+      this.retireProvisionedSlot(slot);
+      return null;
+    }
+    if (!outcome.ready) { slot.error = { code: outcome.code, message: outcome.message }; this.retireProvisionedSlot(slot, false); return null; }
     slot.ready = true;
     return this.publicSlot(slot);
   }
@@ -277,11 +309,11 @@ export class IframeWorkerPool {
   /* Ready means the Worker document is same-origin reachable and ChatGPT has
      rendered a live composer in it. Anything else is reported as the concrete
      blocker instead of a generic timeout. */
-  async awaitReady(slot, timeoutMs) {
+  async awaitReady(slot, timeoutMs, generation = this.generation) {
     const started = Date.now();
     let sameOriginSeen = false;
     let lastError = null;
-    while (Date.now() - started < timeoutMs) {
+    while (this.isCurrentGeneration(generation) && Date.now() - started < timeoutMs) {
       let document = null;
       try { document = slot.handle.frame.contentDocument || slot.handle.frame.contentWindow?.document || null; }
       catch (error) { lastError = error; document = null; }
@@ -304,6 +336,9 @@ export class IframeWorkerPool {
       }
       await this.sleep(READY_POLL_MS);
     }
+    if (!this.isCurrentGeneration(generation)) {
+      return { ready: false, code: 'worker-pool-closed', message: 'Worker pool generation retired while the iframe was loading.' };
+    }
     if (!sameOriginSeen) {
       return { ready: false, code: 'worker-frame-blocked', message: `ChatGPT did not allow the Worker iframe to be embedded${lastError ? `: ${String(lastError.message || lastError).slice(0, 200)}` : '.'}` };
     }
@@ -322,16 +357,38 @@ export class IframeWorkerPool {
     const leaseId = randomId('lease', this.cryptoRef);
     const runId = randomId('poolrun', this.cryptoRef);
     const workerId = randomId('worker', this.cryptoRef);
+    const retirement = this.retirement;
     let claimRollbackCompleted = false;
     try {
-      await client.claim({ runId, workerId });
+      const remoteClaim = Promise.resolve().then(() => client.claim({ runId, workerId }));
+      const outcome = await Promise.race([
+        remoteClaim.then((value) => ({ kind: 'claimed', value }), (error) => ({ kind: 'rejected', error })),
+        retirement.promise.then(() => ({ kind: 'retired' })),
+      ]);
+      if (outcome.kind === 'retired') {
+        /* The public claim must settle when close retires the generation, but a
+           late remote acceptance still needs rollback on the captured client. */
+        claimRollbackCompleted = true;
+        void remoteClaim.then(
+          () => this.rollbackClaim(slot, { runId, workerId }, {
+            code: 'worker-claim-cleanup-failed',
+            label: 'Worker claim after pool close',
+            client,
+          }),
+          () => {},
+        ).catch(() => {});
+        throw poolError('transport-failure', 'Worker pool closed while a Worker claim was settling.');
+      }
+      if (outcome.kind === 'rejected') throw outcome.error;
       if (this.closed || generation !== this.generation || this.slots.get(slot.index) !== slot) {
-        await this.rollbackClaim(slot, { runId, workerId }, {
+        const rollback = this.rollbackClaim(slot, { runId, workerId }, {
           code: 'worker-claim-cleanup-failed',
           label: 'Worker claim after pool close',
           client,
         });
         claimRollbackCompleted = true;
+        if (this.closed) void rollback;
+        else await rollback;
         throw poolError('transport-failure', 'Worker pool closed while a Worker claim was settling.');
       }
       if (signal?.aborted) {
@@ -403,6 +460,15 @@ export class IframeWorkerPool {
       this.claimSlot(slot, waiter.taskId, waiter.signal).then(waiter.resolve, waiter.reject);
     }
   }
+
+  isCurrentGeneration(generation) {
+    return !this.closed && this.generation === generation;
+  }
+
+  retireProvisionedSlot(slot, remove = true) {
+    closeSlot(slot);
+    if (remove && this.slots.get(slot.index) === slot) this.slots.delete(slot.index);
+  }
 }
 
 /* The frame is kept off-screen instead of `display:none`: a non-rendered iframe
@@ -466,6 +532,32 @@ function closeRuntime(slot) {
 function closeSlot(slot) {
   closeRuntime(slot);
   try { slot.handle?.close?.(); } catch { /* already detached */ }
+}
+
+function createRetirement() {
+  let resolve;
+  const promise = new Promise((settle) => { resolve = settle; });
+  return { promise, resolve };
+}
+
+function promiseSettlesWithin(promise, timeoutMs) {
+  const safe = Promise.resolve(promise).then(() => true, () => true);
+  const limit = Math.max(0, Number(timeoutMs) || 0);
+  if (limit === 0) {
+    void safe;
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), limit);
+    safe.then(() => finish(true));
+  });
 }
 function normalizeBase(locationRef) {
   const href = String(locationRef?.href || '');

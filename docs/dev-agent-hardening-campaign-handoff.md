@@ -1,14 +1,14 @@
 # Dev Agent Hardening campaign — durable resume handoff
 
-> **Status:** `PAUSED_FOR_CODESPACE_HANDOFF` — this is a resume checkpoint, not
-> a completion declaration. The campaign is complete only after the accepted
-> result is green, reviewed, and verified on live `main`.
+> **Status:** `HISTORICAL_RESUME_CHECKPOINT` — captured while Codespaces was
+> expiring, before the checkpoint PR was integrated. This document is an audit
+> record, not the current campaign state; live `main` and GitHub are authoritative.
 
 This checkpoint is maintained under EP-030. It records the exact state at the
 Codespaces handoff so the next Supervisor can continue from the canonical lane
 rather than create replacement implementations.
 
-## Exact checkpoint
+## Exact checkpoint at capture (before #1207 merge)
 
 | item | value |
 | --- | --- |
@@ -16,15 +16,16 @@ rather than create replacement implementations.
 | canonical branch | `dev-agent-hardening/claim-quarantine` |
 | code checkpoint | `4e41bdf5` (`fix(dev-agent): fence closed Worker ownership and continuity`) |
 | base `main` used for checkpoint | `1dad48d49234e8f26e9a61e0fdc6b5a73a8d6be3` |
-| open canonical PR | #1207 |
+| canonical PR at capture | #1207 |
 | initial campaign `main` | `ccb472477322ff3447e78e637ec66a06636bd7e0` |
 | latest observed `main` before this checkpoint | `1dad48d49234e8f26e9a61e0fdc6b5a73a8d6be3` |
 | generated userscript version | `2.0.2322241785` |
 | generated release identity | `284db3fa68a807fa65b1c31523ef3340940f60bed9439b502b073389ca4949b1` |
 | protected runtime build ID | `58763b1643bd230ce4b11115` |
 
-The code checkpoint is committed locally. The handoff document is the next
-commit and must be pushed together with the code checkpoint.
+At capture, the code checkpoint and this handoff were the two commits that had
+to be pushed together. That handoff was completed before the checkpoint PR was
+integrated.
 
 ## Accepted campaign lineage already on `main`
 
@@ -99,7 +100,7 @@ GitHub evidence before this code checkpoint:
   stale-base failures before #1206 merged. Those results are invalid for the
   new head and must not be reused.
 
-## Resume procedure
+## Resume procedure at capture (historical)
 
 Run from `/tmp/hex-worker-claim-fix` (the dirty shared worktree at
 `/workspaces/hex` is not the integration worktree):
@@ -130,7 +131,7 @@ Run from `/tmp/hex-worker-claim-fix` (the dirty shared worktree at
    Phase 4. Report `READY` only with every required proof; otherwise report
    `NOT_READY` with the exact missing proof.
 
-## Remaining blockers / next allowed actions
+## Remaining blockers / next allowed actions at capture (historical)
 
 - #1207 has not been merged yet. Its new exact-head checks are required.
 - Final main validation and the three final review waves are still required.
@@ -139,5 +140,6 @@ Run from `/tmp/hex-worker-claim-fix` (the dirty shared worktree at
 - Do not close #1207 while it contains unique work. After merge, close only
   obsolete campaign PRs whose unique work is already in `main`.
 
-Until those items are complete, the correct campaign status is `PARTIAL`, not
-`PASS`.
+Those statements describe the state at capture only. Do not use them to infer
+the current campaign status; re-read live `main`, exact-head CI, and current
+review evidence before making an acceptance decision.
