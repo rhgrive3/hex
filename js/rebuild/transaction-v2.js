@@ -2,6 +2,7 @@ import { deepFreeze, stableDigest } from '../core/identity/index.js';
 
 export const REBUILD_TRANSACTION_SCHEMA = 'hex-rebuild-transaction-v2';
 export const REBUILD_VALIDATION_SCHEMA = 'hex-rebuild-validation-v2';
+const ATOMIC_PUBLICATION_PROTOCOLS = new Set(['temp-then-atomic-rename', 'transactional-store']);
 
 function required(value, code) {
   const text = String(value ?? '').trim();
@@ -32,8 +33,14 @@ function sorted(value) {
   return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort();
 }
 
+function positiveSafe(value, fallback, max, code) {
+  const n = value == null ? fallback : Number(value);
+  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
+  return n;
+}
+
 function requiredValidators(impact, additional = [], requireIndependentOracle = false) {
-  const set = new Set(['source-precondition', 'structure', 'unchanged-regions', 'evidence', 'loader-reparse']);
+  const set = new Set(['source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence']);
   if (impact.layoutMoving) set.add('layout');
   if (impact.relocations) set.add('relocations');
   if (impact.branchRanges) set.add('branch-ranges');
@@ -89,7 +96,6 @@ export function createRebuildTransaction(input = {}) {
     sourceHash: required(input.sourceHash, 'rebuild-v2-source-hash-required'),
     format: required(input.format, 'rebuild-v2-format-required').toLowerCase(),
     architecture: required(input.architecture, 'rebuild-v2-architecture-required').toLowerCase(),
-    loaderVersion: required(input.loaderVersion, 'rebuild-v2-loader-version-required'),
     operations,
     sizeDelta,
     impact,
@@ -116,7 +122,10 @@ export async function materializeRebuildTransaction(transaction, source, options
   if (observedHash !== transaction.sourceHash) return { status: 'rejected', reason: 'rebuild-v2-source-identity-mismatch', expected: transaction.sourceHash, observed: observedHash, transactionId: transaction.transactionId };
 
   const finalLength = original.length + transaction.sizeDelta;
-  const maxOutputBytes = Number(options.maxOutputBytes ?? Math.max(original.length * 4 + 1024 * 1024, 16 * 1024 * 1024));
+  const defaultBudget = Math.min(Math.max(original.length * 4 + 1024 * 1024, 16 * 1024 * 1024), 2_147_483_647);
+  let maxOutputBytes;
+  try { maxOutputBytes = positiveSafe(options.maxOutputBytes, defaultBudget, 2_147_483_647, 'rebuild-v2-max-output-budget-invalid'); }
+  catch { return { status: 'rejected', reason: 'rebuild-v2-max-output-budget-invalid' }; }
   if (!Number.isSafeInteger(finalLength) || finalLength < 0 || finalLength > maxOutputBytes) return { status: 'rejected', reason: 'rebuild-v2-output-budget-exceeded', finalLength, maxOutputBytes };
 
   const output = new Uint8Array(finalLength);
@@ -174,7 +183,7 @@ function verifyUnchangedMappings(original, output, mappings) {
 }
 
 function validatorResult(name, executed, ok, reason = null, detail = null) {
-  return deepFreeze({ validator: name, executed, status: ok ? 'passed' : 'failed', reason, detail: clone(detail) });
+  return deepFreeze({ validator: name, executed, status: ok ? 'passed' : 'failed', reason: ok ? null : reason, detail: clone(detail) });
 }
 
 async function executeExternal(name, fn, context) {
@@ -194,10 +203,14 @@ export async function validateRebuildTransaction(transaction, materialized, opti
   const original = await sourceBytes(options.original || new Uint8Array());
   const validators = [];
   const builtins = new Map();
-  builtins.set('source-precondition', () => validatorResult('source-precondition', true, hashBytes(original) === transaction.sourceHash, hashBytes(original) === transaction.sourceHash ? null : 'source-hash-mismatch'));
-  builtins.set('structure', () => validatorResult('structure', true, materialized.outputLength === materialized.sourceLength + transaction.sizeDelta, materialized.outputLength === materialized.sourceLength + transaction.sizeDelta ? null : 'output-length-inconsistent'));
-  builtins.set('unchanged-regions', () => validatorResult('unchanged-regions', true, verifyUnchangedMappings(original, materialized.bytes, materialized.mappings), verifyUnchangedMappings(original, materialized.bytes, materialized.mappings) ? null : 'unchanged-region-differed'));
-  builtins.set('evidence', () => validatorResult('evidence', true, transaction.operations.every((operation) => operation.provenance && Object.keys(operation.provenance).length > 0), 'operation-provenance-missing'));
+  const sourceMatches = hashBytes(original) === transaction.sourceHash;
+  const structureMatches = materialized.outputLength === materialized.sourceLength + transaction.sizeDelta;
+  const unchangedMatches = verifyUnchangedMappings(original, materialized.bytes, materialized.mappings);
+  const evidenceComplete = transaction.operations.every((operation) => operation.provenance && Object.keys(operation.provenance).length > 0);
+  builtins.set('source-precondition', () => validatorResult('source-precondition', true, sourceMatches, 'source-hash-mismatch'));
+  builtins.set('structure', () => validatorResult('structure', true, structureMatches, 'output-length-inconsistent'));
+  builtins.set('unchanged-regions', () => validatorResult('unchanged-regions', true, unchangedMatches, 'unchanged-region-differed'));
+  builtins.set('evidence', () => validatorResult('evidence', true, evidenceComplete, 'operation-provenance-missing'));
 
   for (const name of transaction.requiredValidators) {
     if (builtins.has(name)) {
@@ -235,8 +248,12 @@ export async function publishRebuildTransaction(materialized, validation, option
   if (typeof options.atomicPromote !== 'function') return { status: 'not-published', reason: 'rebuild-v2-atomic-promotion-required', outputHash: materialized.outputHash };
   try {
     const result = await options.atomicPromote(materialized.bytes, { materialized, validation });
-    if (!result || result.atomic !== true) return { status: 'rejected', reason: 'rebuild-v2-publication-not-atomic' };
-    return deepFreeze({ status: 'published', atomic: true, outputHash: materialized.outputHash, publicationIdentity: result.publicationIdentity || null, result: clone(result) });
+    if (!result || result.atomic !== true || result.committed !== true) return { status: 'rejected', reason: 'rebuild-v2-publication-not-atomic' };
+    const protocol = String(result.protocol || '');
+    if (!ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
+    const publicationIdentity = String(result.publicationIdentity || '').trim();
+    if (!publicationIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-required' };
+    return deepFreeze({ status: 'published', atomic: true, committed: true, protocol, outputHash: materialized.outputHash, publicationIdentity, result: clone(result) });
   } catch (error) {
     return { status: 'rejected', reason: 'rebuild-v2-publication-failed', detail: String(error?.message || error) };
   }
@@ -245,6 +262,8 @@ export async function publishRebuildTransaction(materialized, validation, option
 export function rebuildProfileSupport({ transaction, validation, publication, proof = {} } = {}) {
   const requiredCount = transaction?.requiredValidators?.length || 0;
   const executedCount = validation?.validators?.filter((item) => item.executed === true && item.status === 'passed').length || 0;
+  const formatProfileIds = sorted(proof.formatProfileIds);
+  const formatCoverageComplete = proof.profileDenominatorComplete === true && formatProfileIds.length > 0;
   const exact = transaction?.schemaVersion === REBUILD_TRANSACTION_SCHEMA
     && validation?.schemaVersion === REBUILD_VALIDATION_SCHEMA
     && validation.status === 'valid'
@@ -252,15 +271,24 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     && executedCount === requiredCount
     && publication?.status === 'published'
     && publication.atomic === true
+    && publication.committed === true
+    && ATOMIC_PUBLICATION_PROTOCOLS.has(publication.protocol)
+    && !!publication.publicationIdentity
     && proof.exactHead === true
     && proof.negativeValidatorTest === true
-    && proof.staleIdentityTest === true;
+    && proof.staleIdentityTest === true
+    && proof.formatSpecificValidatorTests === true
+    && proof.atomicInterruptionTest === true
+    && proof.realFixture === true
+    && formatCoverageComplete;
   return deepFreeze({
     format: transaction?.format || null,
     architecture: transaction?.architecture || null,
     operationClass: transaction?.sizeDelta === 0 ? 'same-size' : transaction?.sizeDelta > 0 ? 'growth' : 'shrink',
     requiredValidatorCount: requiredCount,
     executedValidatorCount: executedCount,
+    formatProfileIds,
+    formatCoverageComplete,
     status: exact ? 'supported-for-exact-rebuild-profile' : 'unsupported',
     authority: exact ? 'L4-validated-atomic-publication' : 'L3-plan-only',
   });
