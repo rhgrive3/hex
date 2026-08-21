@@ -157,6 +157,28 @@ assert.equal(supportsArm64SemanticAnalysis('x86_64'),false);
   assert.equal(model.truncated,true);
 }
 
+// Cancellation must cross the real UI->semantic-analysis seam and cancel the
+// backend chunk RPC, rather than merely rejecting the outer AI tool race.
+{
+  clearAnalysisCache();
+  const region={id:'text-abort',vmAddr:0x8000n,size:0x100n,exec:true};
+  let cancelled=0;
+  const backend={
+    gen:1,
+    fetchChunk(){
+      const pending=new Promise(()=>{});
+      pending.cancel=()=>{cancelled++;};
+      return pending;
+    },
+  };
+  const app={store:storeFor(region,'arm64'),backend,codeRegion:()=>region,symbols:symbolsFor(0x8000n,0x8040n)};
+  const controller=new AbortController();
+  const pending=analyzeModelAt(app,0x8000n,0x8040n,{maxInstructions:16,signal:controller.signal});
+  controller.abort('test-analysis-abort');
+  await assert.rejects(pending,(error)=>error?.name==='AbortError' && error?.code==='ABORT_ERR');
+  assert.equal(cancelled,1,'analysis abort must invoke the underlying chunk request cancel hook');
+}
+
 // ChatGPT Web intentionally has no model-response deadline, but local analysis
 // tools must never inherit that infinity. A tool that never settles is aborted
 // by its own finite deadline, and the registry returns a tool failure instead
