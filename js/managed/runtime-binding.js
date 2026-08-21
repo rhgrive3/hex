@@ -75,18 +75,26 @@ export function validateManagedRuntimeObservation(binding, observation, options 
   return { ok: true, observation };
 }
 
-export function managedRuntimeProfileSupport({ binding, proof = {} } = {}) {
+export function managedRuntimeProfileSupport({ binding, runtimeProfileProof = null, proof = {} } = {}) {
   const valid = binding?.schemaVersion === MANAGED_RUNTIME_BINDING_SCHEMA;
-  const proven = valid
-    && proof.exactHead === true
+  const runtimeBound = valid
+    && runtimeProfileProof?.status === 'supported-for-exact-provider-profile'
+    && runtimeProfileProof?.bindingId === binding.runtime.bindingId
+    && !!runtimeProfileProof?.providerProfileId;
+  const proofComplete = proof.exactHead === true
     && proof.identityNegativeTests === true
     && proof.staleEventTests === true
     && proof.stateBudgetTests === true
-    && proof.runtimeDisagreementPreservesStaticTruth === true;
+    && proof.runtimeDisagreementPreservesStaticTruth === true
+    && proof.frontendProviderTests === true;
+  const proven = valid && runtimeBound && proofComplete;
   return Object.freeze({
     frontendId: valid ? binding.frontendId : null,
     runtimeImplementation: valid ? binding.runtimeImplementation : null,
     runtimeVersion: valid ? binding.runtimeVersion : null,
+    runtimeBindingId: valid ? binding.runtime.bindingId : null,
+    providerProfileId: runtimeBound ? runtimeProfileProof.providerProfileId : null,
+    proofComplete,
     status: proven ? 'supported-for-exact-provider-profile' : valid ? 'partial' : 'unavailable',
     authority: proven ? 'runtime-evidence-bound' : 'none',
   });
