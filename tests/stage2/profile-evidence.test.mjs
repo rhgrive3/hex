@@ -13,6 +13,7 @@ const profiles = {
   'S2-F6-MACHO': ['macho:64'],
   'S2-F6-ELF': ['elf:64'],
   'S2-F6-PE': ['pe:pe32', 'pe:pe32+'],
+  'S2-P12-COLLAB-REMOTE': ['collaboration:remote-security-v1'],
 };
 const items = {};
 for (const id of STAGE2_PROFILE_EVIDENCE_IDS) {
