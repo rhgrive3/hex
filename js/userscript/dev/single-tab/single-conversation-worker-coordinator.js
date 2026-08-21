@@ -148,11 +148,21 @@ export class SingleConversationWorkerCoordinator {
   }
 
   async release(args = {}) {
-    this.assertClaim(args);
+    const claim = this.assertClaim(args);
     if (this.controller.isActive()) {
       throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'Cannot release the single-tab Worker while it is generating.');
     }
+    /* A terminal controller event may already have stopped generation while
+       finishTerminal() is still restoring the Supervisor surface. Do not clear
+       the claim underneath that async fence: doing so would make
+       finishTerminal() return before resolving runWorkerTurn(). */
+    const pending = this.pendingTerminal;
+    if (pending) await pending.promise.catch(() => null);
+    if (this.closed) throw workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Single-tab Worker coordinator is closed.');
+    if (this.claimed !== claim) return this.advertisement();
     await this.restoreSupervisor();
+    if (this.closed) throw workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Single-tab Worker coordinator closed while releasing.');
+    if (this.claimed !== claim) return this.advertisement();
     this.claimed = null;
     this.lastResult = null;
     return this.advertisement();
