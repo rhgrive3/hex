@@ -211,6 +211,7 @@ export class DynamicTaskGraph {
       if (task.state !== DEV_TASK_STATE.PENDING) continue;
       if (task.dependencies.every((id) => this.tasks.get(id).state === DEV_TASK_STATE.SUCCEEDED)) {
         task.state = DEV_TASK_STATE.READY;
+        task.readyAt = this.now();
       }
     }
   }
@@ -286,6 +287,7 @@ export class DynamicTaskGraph {
         task.error = attemptError;
         if (task.attempts < task.maxAttempts) {
           task.state = DEV_TASK_STATE.READY;
+          task.readyAt = this.now();
           return;
         }
         this.finishTaskFailure(task, attemptError || graphError('task-failed', `Task failed: ${task.id}`));
@@ -316,7 +318,7 @@ export class DynamicTaskGraph {
       leaseId: null,
       workerId: null,
       slot: null,
-      readyAt: this.now(),
+      readyAt: task.readyAt || this.now(),
       leaseClaimedAt: null,
       promptSubmitAt: null,
       completionDetectedAt: null,
@@ -482,6 +484,7 @@ function normalizeTasks(input, now) {
       attempts: 0,
       result: null,
       error: null,
+      readyAt: null,
       startedAt: null,
       finishedAt: null,
       executionActive: false,
