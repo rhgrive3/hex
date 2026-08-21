@@ -9,6 +9,12 @@ const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
 const SCOPE_PATH = path.join(ROOT, 'tools/validation/stage2/completion-scope.lock.json');
 const LEDGER_PATH = path.join(ROOT, 'tools/validation/stage2/closure-ledger.json');
 const OUTPUT_LIMIT = 7000;
+const REQUIRED_LEDGER_IDS = Object.freeze([
+  'S2-A7-NATIVE','S2-M6-WASM','S2-M6-DEX','S2-M6-CIL','S2-M6-JVM',
+  'S2-F6-MACHO','S2-F6-ELF','S2-F6-PE',
+  'S2-P12-KNOWLEDGE','S2-P12-RULES','S2-P12-PATTERNS','S2-P12-COLLAB-REMOTE',
+  'S2-IPAD-PHYSICAL','S2-FINAL-AUDIT',
+]);
 
 function git(args, allowFailure = false) {
   const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -58,9 +64,8 @@ function validateScopeAndLedger(headSha) {
       if (!fs.existsSync(path.join(ROOT, ref))) errors.push(`ledger-ref-missing:${item.id}:${ref}`);
     }
   }
-  const required = ['S2-A7-NATIVE','S2-M6-WASM','S2-M6-DEX','S2-M6-CIL','S2-M6-JVM','S2-F6-MACHO','S2-F6-ELF','S2-F6-PE','S2-P12-KNOWLEDGE','S2-P12-RULES','S2-P12-PATTERNS','S2-P12-COLLAB-REMOTE','S2-IPAD-PHYSICAL','S2-FINAL-AUDIT'];
-  for (const id of required) if (!ids.has(id)) errors.push(`ledger-required-id-missing:${id}`);
-  return { ok: errors.length === 0, errors, scope, ledgerItemCount: ids.size };
+  for (const id of REQUIRED_LEDGER_IDS) if (!ids.has(id)) errors.push(`ledger-required-id-missing:${id}`);
+  return { ok: errors.length === 0, errors, scope, ledger, ledgerItemCount: ids.size };
 }
 
 function auditStage2Source() {
@@ -94,6 +99,46 @@ function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, bui
   return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || record.evidenceId || null };
 }
 
+function commandPassed(results, fragment) {
+  return results.some((result) => result.command.includes(fragment) && result.status === 'passed');
+}
+
+function effectiveLedger(structural, { headSha, treeSha, sourceAudit, commands, physical, full }) {
+  const stage2Tests = commandPassed(commands, 'tests/stage2/run.mjs');
+  const stage1 = commandPassed(commands, 'tools/validation/stage1/verify.mjs');
+  const runtime = commandPassed(commands, 'runtime:test');
+  const phase11 = commandPassed(commands, 'phase11:test');
+  const phase12 = commandPassed(commands, 'phase12:test');
+  const benchmark = commandPassed(commands, 'benchmark:baseline');
+  const fullCheck = full && commandPassed(commands, 'check');
+  const conditions = {
+    'S1-A2-NATIVE': stage1,
+    'S2-A7-NATIVE': stage2Tests && runtime,
+    'S2-M6-WASM': stage2Tests && phase11,
+    'S2-M6-DEX': stage2Tests && phase11,
+    'S2-M6-CIL': stage2Tests && phase11,
+    'S2-M6-JVM': stage2Tests && phase11,
+    'S2-F6-MACHO': stage2Tests && phase12,
+    'S2-F6-ELF': stage2Tests && phase12,
+    'S2-F6-PE': stage2Tests && phase12,
+    'S2-P12-KNOWLEDGE': phase12,
+    'S2-P12-RULES': phase12,
+    'S2-P12-PATTERNS': phase12,
+    'S2-P12-COLLAB-REMOTE': stage2Tests && phase12,
+    'S2-IPAD-PHYSICAL': physical.status === 'passed',
+    'S2-FINAL-AUDIT': sourceAudit.ok && benchmark && fullCheck,
+  };
+  const proofIdentity = `${headSha}:${treeSha}`;
+  const items = (structural.ledger.items || []).map((item) => ({
+    id: item.id,
+    declaredStatus: item.status,
+    effectiveStatus: conditions[item.id] === true ? 'PROVEN' : item.status === 'PREEXISTING_NORMATIVE_EXCLUSION' ? 'PREEXISTING_NORMATIVE_EXCLUSION' : 'UNPROVEN',
+    proofIdentity: conditions[item.id] === true ? proofIdentity : item.proofIdentity || null,
+  }));
+  const unresolved = items.filter((item) => !['PROVEN', 'PREEXISTING_NORMATIVE_EXCLUSION'].includes(item.effectiveStatus));
+  return { items, unresolved, unmappedCount: REQUIRED_LEDGER_IDS.filter((id) => !items.some((item) => item.id === id)).length };
+}
+
 export function verifyStage2({ expectedSha = null, finalMode = false, physicalEvidencePath = null, buildIdentity = null, full = false } = {}) {
   const headSha = git(['rev-parse', 'HEAD']).stdout;
   const treeSha = git(['rev-parse', 'HEAD^{tree}']).stdout;
@@ -115,12 +160,15 @@ export function verifyStage2({ expectedSha = null, finalMode = false, physicalEv
   if (full) commands.push(npm('check'));
   const commandResults = commands.map(run);
   const physical = physicalEvidenceResult({ finalMode, evidencePath: physicalEvidencePath, headSha, treeSha, buildIdentity });
+  const ledger = effectiveLedger(structural, { headSha, treeSha, sourceAudit, commands: commandResults, physical, full });
 
   const failures = [];
   if (!structural.ok) failures.push(...structural.errors.map((reason) => ({ gate: 'scope-ledger', reason })));
   if (!sourceAudit.ok) failures.push(...sourceAudit.findings.map((reason) => ({ gate: 'source-audit', reason })));
   for (const result of commandResults) if (result.status !== 'passed') failures.push({ gate: 'command', reason: result.command });
   if (physical.status === 'failed') failures.push({ gate: 'physical-ipad', reason: physical.reason });
+  if (ledger.unmappedCount !== 0) failures.push({ gate: 'ledger', reason: `unmapped-count:${ledger.unmappedCount}` });
+  if (finalMode && ledger.unresolved.length) failures.push({ gate: 'ledger', reason: `unproven-count:${ledger.unresolved.length}` });
 
   const verdict = failures.length === 0 ? (finalMode ? 'COMPLETE' : 'IMPLEMENTATION_READY') : 'NOT_COMPLETE';
   const report = {
@@ -136,6 +184,7 @@ export function verifyStage2({ expectedSha = null, finalMode = false, physicalEv
     sourceAudit,
     commands: commandResults,
     physicalIPadEvidence: physical,
+    ledger,
     failures,
     verdict,
   };
