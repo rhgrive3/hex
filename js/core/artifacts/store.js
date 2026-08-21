@@ -189,32 +189,45 @@ export class ArtifactStore {
     }
   }
 
-  async #upstreamsValid(record, options, seen = new Set()) {
+  async #upstreamsValid(record, options, context = null) {
     if (options.verifyUpstreams === false) return true;
+    const ctx = context || {
+      activePath: new Set(),
+      validated: new Set(),
+      maxNodes: Number.isSafeInteger(options.maxNodes) ? options.maxNodes : 10000,
+      nodesVisited: 0,
+    };
     const currentId = String(record.artifactId);
-    if (seen.has(currentId)) return false;
-    const nextSeen = new Set(seen);
-    nextSeen.add(currentId);
-    for (const upstreamId of record.upstreamArtifactIds || []) {
-      aborted(options.signal);
-      if (nextSeen.has(upstreamId)) return false;
-      let raw;
-      try { this.metrics.reads++; raw = await this.backend.getRaw(upstreamId); }
-      catch (error) { this.metrics.storageFailures++; throw error; }
-      if (!raw) return false;
-      try {
-        const validated = validateStoredArtifact(raw, { artifactId:upstreamId });
-        this.metrics.readBytes += validated.payloadBytes.byteLength;
-        if (!(await this.#upstreamsValid(validated.record, options, nextSeen))) return false;
-      } catch (error) {
-        if (error instanceof ArtifactCorruptionError) {
-          this.metrics.validationFailures++;
-          return false;
+    if (ctx.activePath.has(currentId)) return false;
+    ctx.activePath.add(currentId);
+    try {
+      for (const upstreamId of record.upstreamArtifactIds || []) {
+        aborted(options.signal);
+        if (ctx.activePath.has(upstreamId)) return false;
+        if (ctx.validated.has(upstreamId)) continue;
+        if (++ctx.nodesVisited > ctx.maxNodes) return false;
+
+        let raw;
+        try { this.metrics.reads++; raw = await this.backend.getRaw(upstreamId); }
+        catch (error) { this.metrics.storageFailures++; throw error; }
+        if (!raw) return false;
+        try {
+          const validated = validateStoredArtifact(raw, { artifactId:upstreamId });
+          this.metrics.readBytes += validated.payloadBytes.byteLength;
+          if (!(await this.#upstreamsValid(validated.record, options, ctx))) return false;
+          ctx.validated.add(upstreamId);
+        } catch (error) {
+          if (error instanceof ArtifactCorruptionError) {
+            this.metrics.validationFailures++;
+            return false;
+          }
+          throw error;
         }
-        throw error;
       }
+      return true;
+    } finally {
+      ctx.activePath.delete(currentId);
     }
-    return true;
   }
 
   async #deleteObservedArtifact(artifactId, record, payloadBytes) {

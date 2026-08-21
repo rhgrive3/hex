@@ -95,7 +95,9 @@ export class DevSupervisorV0 {
   bindWorkerResult(run, result) {
     if (!result || typeof result !== 'object') return run;
     const patch = {};
-    if (result.workerId != null) patch.workerId = result.workerId;
+    /* Worker output is evidence, not authority. The active DevRun identity was
+       injected into the call before dispatch and must never be replaced by a
+       returned workerId, including one supplied by a stale or hostile Worker. */
     if (result.tabNodeId != null) patch.tabNodeId = result.tabNodeId;
     if (result.chatgptConversationId != null) patch.chatgptConversationId = result.chatgptConversationId;
     return Object.keys(patch).length ? bindDevRunIdentity(run, patch, { now: this.now() }) : run;

@@ -2,6 +2,7 @@ import { DebugAdapterError } from '../debug/adapter.js';
 import { DebugAdapterRuntimeProvider } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
 import { InterventionLedger } from './evidence-bridge.js';
+import { normalizeRuntimeModuleBinding } from './module-binding.js';
 
 function moduleFields(event) {
   const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
@@ -36,22 +37,10 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
         if (bindingKey) {
           const existing = session.modules.get(bindingKey);
           if (!existing) {
-            const identityEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
-            const hasProvenStaticIdentity = module.binaryId != null && (module.identityState === 'exact' || module.identityState === 'resolved' || identityEvidenceIds.length > 0);
-            session.modules.load({
+            session.modules.load(normalizeRuntimeModuleBinding(module, {
               bindingKey,
-              runtimeBase: module.runtimeBase ?? module.base,
-              runtimeSize: module.runtimeSize ?? module.size,
-              staticBase: module.staticBase ?? module.imageBase ?? null,
-              pathHint: module.pathHint ?? module.path ?? module.name ?? null,
-              binaryId: hasProvenStaticIdentity ? module.binaryId : null,
-              sliceId: hasProvenStaticIdentity ? (module.sliceId ?? null) : null,
-              imageId: hasProvenStaticIdentity ? (module.imageId ?? null) : null,
-              buildIdentity: module.buildIdentity ?? module.uuid ?? null,
-              identityState: hasProvenStaticIdentity ? (module.identityState ?? 'resolved') : 'unresolved',
               loadedSequence: event.sequence,
-              identityEvidenceIds,
-            });
+            }));
           }
         }
       } else if (event.kind === 'module-unload') {

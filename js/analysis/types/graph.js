@@ -60,10 +60,16 @@ export class TypeConstraintGraph {
 
   addHardConstraint(input) {
     const constraint = createHardConstraint(input);
-    this.#bucket(constraint.claim.entityId, constraint.claim.layer).hard.push(constraint);
+    const bucket = this.#bucket(constraint.claim.entityId, constraint.claim.layer);
+    const isDuplicate = bucket.hard.some((c) => (
+      c.kind === constraint.kind &&
+      c.origin === constraint.origin &&
+      c.claim.key === constraint.claim.key &&
+      c.providerVersion === constraint.providerVersion &&
+      c.buildIdentity === constraint.buildIdentity
+    ));
+    if (!isDuplicate) bucket.hard.push(constraint);
     if (constraint.origin === 'user-approved') {
-      // A user-approved constraint is provenance-tagged so its invalidation can
-      // be scoped to the results that actually consumed it (§10.5).
       this.userConstraintDigests.add(stableDigest(constraint.claim));
     }
     return constraint;
@@ -71,7 +77,14 @@ export class TypeConstraintGraph {
 
   addSoftEvidence(input) {
     const evidence = createSoftEvidence(input);
-    this.#bucket(evidence.claim.entityId, evidence.claim.layer).soft.push(evidence);
+    const bucket = this.#bucket(evidence.claim.entityId, evidence.claim.layer);
+    const isDuplicate = bucket.soft.some((e) => (
+      e.kind === evidence.kind &&
+      e.origin === evidence.origin &&
+      e.claim.key === evidence.claim.key &&
+      e.weight === evidence.weight
+    ));
+    if (!isDuplicate) bucket.soft.push(evidence);
     return evidence;
   }
 

@@ -138,19 +138,52 @@ export function createEvidenceEdge(input = {}) {
 
 function equalValue(a, b) { return stableStringify(a) === stableStringify(b); }
 
+export function canConfirmClaim(evidence, claim) {
+  if (!evidence || typeof evidence !== 'object') return false;
+  if (evidence.deterministic !== true) return false;
+  if (evidence.completeness === 'unsupported' || evidence.completeness === 'truncated' || evidence.completeness === 'partial') {
+    return false;
+  }
+  return true;
+}
+
 export class EvidenceGraph {
   #nodes = new Map();
   #edges = [];
+  #edgeKeys = new Set();
+  #maxNodes = 500_000;
+  #maxEdges = 1_000_000;
 
-  constructor(initial = {}) {
+  constructor(initial = {}, { maxNodes = 500_000, maxEdges = 1_000_000, signal = null } = {}) {
     if (!initial || typeof initial !== 'object' || Array.isArray(initial)) fail('evidence-invalid-graph');
+    this.#maxNodes = maxNodes;
+    this.#maxEdges = maxEdges;
     const nodes = safeArray(initial.nodes, 'evidence-invalid-nodes');
     const edges = safeArray(initial.edges, 'evidence-invalid-edges');
-    for (const node of nodes) this.addNode(node);
-    for (const edge of edges) this.addEdge(edge);
+    if (nodes.length > this.#maxNodes) fail('evidence-graph-node-budget-exceeded');
+    if (edges.length > this.#maxEdges) fail('evidence-graph-edge-budget-exceeded');
+    for (let i = 0; i < nodes.length; i++) {
+      if (i % 1000 === 0 && signal?.aborted) {
+        const err = new Error('AbortError');
+        err.name = 'AbortError';
+        throw err;
+      }
+      this.addNode(nodes[i]);
+    }
+    for (let i = 0; i < edges.length; i++) {
+      if (i % 1000 === 0 && signal?.aborted) {
+        const err = new Error('AbortError');
+        err.name = 'AbortError';
+        throw err;
+      }
+      this.addEdge(edges[i]);
+    }
   }
 
   addNode(input) {
+    if (this.#nodes.size >= this.#maxNodes && !this.#nodes.has(input?.id)) {
+      fail('evidence-graph-node-budget-exceeded');
+    }
     const node = createEvidenceNode(input);
     const existing = this.#nodes.get(node.id);
     if (existing) {
@@ -163,7 +196,12 @@ export class EvidenceGraph {
 
   addEdge(input) {
     const edge = createEvidenceEdge(input);
-    if (!this.#edges.some((item) => equalValue(item, edge))) this.#edges.push(edge);
+    const key = stableStringify(edge);
+    if (!this.#edgeKeys.has(key)) {
+      if (this.#edges.length >= this.#maxEdges) fail('evidence-graph-edge-budget-exceeded');
+      this.#edgeKeys.add(key);
+      this.#edges.push(edge);
+    }
     return edge;
   }
 
@@ -207,7 +245,10 @@ export class EvidenceGraph {
     }
     const knownContradictions = [...contradicting].filter((evidenceId) => this.#nodes.has(evidenceId));
     const knownSupport = [...supporting].filter((evidenceId) => this.#nodes.has(evidenceId));
-    const deterministicConfirmations = [...confirmedBy].filter((evidenceId) => this.#nodes.get(evidenceId)?.deterministic === true);
+    const deterministicConfirmations = [...confirmedBy].filter((evidenceId) => {
+      const node = this.#nodes.get(evidenceId);
+      return canConfirmClaim(node, claim);
+    });
     let verdict = claim.verdict;
     if (knownContradictions.length || claim.verdict === 'contradicted') verdict = 'contradicted';
     else if (deterministicConfirmations.length) verdict = 'confirmed';
@@ -233,10 +274,10 @@ export class EvidenceGraph {
     };
   }
 
-  static fromJSON(value) {
+  static fromJSON(value, options = {}) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) fail('evidence-invalid-graph');
     if (value.schemaVersion != null && Number(value.schemaVersion) !== 1) fail('evidence-schema-mismatch');
     if (!Array.isArray(value.nodes) || !Array.isArray(value.edges)) fail('evidence-invalid-graph');
-    return new EvidenceGraph({ nodes: value.nodes, edges: value.edges });
+    return new EvidenceGraph({ nodes: value.nodes, edges: value.edges }, options);
   }
 }

@@ -85,7 +85,7 @@ function productIdentity() {
     commitSha: commitSha ?? '0'.repeat(40),
     treeSha: treeSha ?? '0'.repeat(40),
     workingTreeClean: dirty.length === 0,
-    dirtyPaths: dirty.slice(0, 10),
+    dirtyPaths: dirty,
     branch: git(['rev-parse', '--abbrev-ref', 'HEAD']) ?? 'unknown',
   });
 }

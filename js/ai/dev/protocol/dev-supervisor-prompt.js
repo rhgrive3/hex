@@ -1,5 +1,6 @@
 import { DEV_SUPERVISOR_PROTOCOL } from './hex-dev-supervisor-v1.js';
 import { DEV_TOOL_CONTRACTS } from './dev-tool-contracts.js';
+import { createDevContextPacket } from './context-packet.js';
 import {
   DEV_RUNTIME_ACTIVATION_TOOL,
   DEV_RUNTIME_IDENTITY_TOOL,
@@ -54,22 +55,44 @@ function immutableSafetyLines() {
   ];
 }
 
-export function buildDevSupervisorPrompt({ run, availableTools = [], history = [], mode = DEV_PROMPT_MODE.BOOTSTRAP } = {}) {
+export function buildDevSupervisorPrompt({ run, availableTools = [], history = [], mode = DEV_PROMPT_MODE.BOOTSTRAP, contextPacket = null, contextSelection = null } = {}) {
   if (!run?.runId) throw new TypeError('Dev Supervisor prompt requires a DevRun.');
   const available = new Set((availableTools || []).map(String));
   return mode === DEV_PROMPT_MODE.CONTINUATION
-    ? continuationPrompt({ run, availableTools, history })
-    : bootstrapPrompt({ run, availableTools, available, history });
+    ? continuationPrompt({ run, availableTools, history, contextPacket, contextSelection })
+    : bootstrapPrompt({ run, availableTools, available, history, contextPacket, contextSelection });
+}
+
+/* The same objective/scope/policy the run already carries, in the typed
+   representation. Nothing is selected or pruned here -- choosing what belongs in
+   a packet is a later concern. A run without a goal yields no packet rather than
+   an invented objective. */
+export function devSupervisorContextPacket(run) {
+  if (!String(run?.goal || '').trim()) return null;
+  try {
+    return createDevContextPacket({
+      orchestrationRunId: run.runId,
+      taskId: run.runId,
+      role: 'dev-supervisor',
+      objective: run.goal,
+      scope: run.analysisScope,
+      constraints: run.decisionPolicy ? [`decisionPolicy=${run.decisionPolicy}`] : [],
+    });
+  } catch {
+    return null;
+  }
 }
 
 /* Only the fresh delta and the current position: the fixed contract above was
    already delivered and accepted in this same session. */
-function continuationPrompt({ run, availableTools, history }) {
+function continuationPrompt({ run, availableTools, history, contextPacket, contextSelection }) {
   const payload = {
     mode: DEV_PROMPT_MODE.CONTINUATION,
     run: { runId: run.runId, workerId: run.workerId, goal: run.goal, decisionPolicy: run.decisionPolicy, analysisScope: run.analysisScope, status: run.status },
     availableTools: [...availableTools],
     history: [...history],
+    ...(contextPacket ? { context: contextPacket } : {}),
+    ...(contextSelection ? { contextSelection } : {}),
   };
   return [
     `HEX DEV SUPERVISOR CONTINUATION ${DEV_SUPERVISOR_PROTOCOL}`,
@@ -114,19 +137,25 @@ function bootstrapContractLines(available, toolContracts) {
   ];
 }
 
-function bootstrapPrompt({ run, availableTools, available, history }) {
+function bootstrapPrompt({ run, availableTools, available, history, contextPacket, contextSelection }) {
+  // When the typed packet carries objective/scope/policy, the loose run fields
+  // are not repeated: one representation, not two.
   const payload = {
     mode: DEV_PROMPT_MODE.BOOTSTRAP,
     protocol: DEV_SUPERVISOR_PROTOCOL,
-    run: {
-      runId: run.runId,
-      workerId: run.workerId,
-      supervisorSessionKey: run.supervisorSessionKey,
-      goal: run.goal,
-      decisionPolicy: run.decisionPolicy,
-      analysisScope: run.analysisScope,
-      status: run.status,
-    },
+    run: contextPacket
+      ? { runId: run.runId, workerId: run.workerId, supervisorSessionKey: run.supervisorSessionKey, status: run.status }
+      : {
+        runId: run.runId,
+        workerId: run.workerId,
+        supervisorSessionKey: run.supervisorSessionKey,
+        goal: run.goal,
+        decisionPolicy: run.decisionPolicy,
+        analysisScope: run.analysisScope,
+        status: run.status,
+      },
+    ...(contextPacket ? { context: contextPacket } : {}),
+    ...(contextSelection ? { contextSelection } : {}),
     availableTools: [...availableTools],
     history: history.slice(-12),
   };

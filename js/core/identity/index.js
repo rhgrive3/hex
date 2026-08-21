@@ -224,12 +224,23 @@ export function createRuntimeSessionId(input = {}) {
 }
 
 export function canonicalAddress(value) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) fail('identity-unsafe-number-address');
+  } else if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text || !/^(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(text)) {
+      fail('identity-invalid-address-string');
+    }
+    value = text;
+  } else if (typeof value !== 'bigint') {
+    fail('identity-invalid-address');
+  }
   try {
     const n = typeof value === 'bigint' ? value : BigInt(value);
     if (n < 0n) fail('identity-negative-address');
     return `0x${n.toString(16)}`;
   } catch (error) {
-    if (error instanceof TypeError && error.message === 'identity-negative-address') throw error;
+    if (error instanceof TypeError && (error.message === 'identity-negative-address' || error.message === 'identity-unsafe-number-address' || error.message === 'identity-invalid-address-string')) throw error;
     fail('identity-invalid-address');
   }
 }

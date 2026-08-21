@@ -47,12 +47,27 @@ export function machoSymbolTruth(image) {
   };
 }
 
+function u64Address(value) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new TypeError('analysis-address-unsafe-number');
+  } else if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text || !/^(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(text)) throw new TypeError('analysis-address-invalid-string');
+    value = text;
+  } else if (typeof value !== 'bigint') {
+    throw new TypeError('analysis-address-invalid');
+  }
+  const addr = BigInt(value);
+  if (addr < 0n || addr > 0xffffffffffffffffn) throw new RangeError('analysis-address-out-of-range');
+  return addr;
+}
+
 export function analysisFromBinaryImage(image) {
   if (!image) return emptyAnalysis();
   const entries = new Map();
   const add = (address, name, kind, exported, prov, priority) => {
     if (address == null || !name) return;
-    const addr = BigInt(address), key = addr.toString();
+    const addr = u64Address(address), key = addr.toString();
     const next = { address: addr, name: String(name), kind, exported: !!exported, provenance: prov, priority };
     const current = entries.get(key);
     if (!current) { entries.set(key, next); return; }
@@ -83,7 +98,7 @@ export function analysisFromBinaryImage(image) {
   for (let i = 0; i < sorted.length; i++) { addrs[i] = sorted[i].address; kinds[i] = sorted[i].kind; flags[i] = sorted[i].exported ? 1 : 0; }
 
   const seedByAddress = new Map();
-  for (const seed of image.functions || []) if (seed?.address != null) seedByAddress.set(BigInt(seed.address).toString(), seed);
+  for (const seed of image.functions || []) if (seed?.address != null) seedByAddress.set(u64Address(seed.address).toString(), seed);
   const functions = [...seedByAddress.keys()].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   const funcs = new BigUint64Array(functions);
   const functionProvenance = functions.map((addr) => {

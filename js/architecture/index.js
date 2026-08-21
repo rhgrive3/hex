@@ -2,25 +2,20 @@ import {
   architecturePluginV2,
   architecturePluginsV2,
   ArchitecturePluginV2,
+  registerArchitecturePlugin,
+  canonicalArchitectureId,
+  normalizeArchitecturePositiveInteger,
 } from '../targets/architecture/index.js';
 
-const BUILTINS = new Map();
-
-function canonicalId(value) { return String(value || '').trim().toLowerCase(); }
-function positiveInteger(value, name, { nullable = false } = {}) {
-  if (nullable && value == null) return null;
-  const n = Number(value);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) throw new TypeError(`${name} must be a finite positive integer`);
-  return n;
-}
+const ADAPTER_CACHE = new WeakMap();
 
 export class ArchitectureAdapter {
   constructor(definition) {
-    const id = canonicalId(definition?.id);
+    const id = canonicalArchitectureId(definition?.id);
     if (!id) throw new TypeError('architecture id is required');
     this.id = id;
-    this.instructionAlignment = positiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');
-    this.fixedInstructionSize = positiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize', { nullable: true });
+    this.instructionAlignment = normalizeArchitecturePositiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');
+    this.fixedInstructionSize = normalizeArchitecturePositiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize', { nullable: true });
     this.viewerCompatible = !!definition.viewerCompatible;
     this.decode = definition.decode || null;
     this.assemble = definition.assemble || null;
@@ -65,7 +60,7 @@ export class UnsupportedArchitectureError extends Error {
     this.code = 'unsupported-architecture';
     this.unsupported = true;
     this.operation = operation;
-    this.architecture = canonicalId(architecture || 'unknown');
+    this.architecture = canonicalArchitectureId(architecture || 'unknown');
   }
 }
 
@@ -81,18 +76,61 @@ export function unsupportedArchitectureResult(operation, architecture) {
   };
 }
 
-export function registerArchitectureAdapter(definition, { replace = false } = {}) {
-  const adapter = definition instanceof ArchitectureAdapter ? definition : new ArchitectureAdapter(definition);
-  const id = canonicalId(adapter.id);
-  if (BUILTINS.has(id) && !replace) throw new Error(`architecture already registered: ${id}`);
-  BUILTINS.set(id, adapter);
-  return adapter;
+function legacyDefinition(plugin) {
+  const controlFlow = (instruction) => plugin.classifyControlFlow(instruction);
+  return {
+    id: plugin.id,
+    instructionAlignment: plugin.instructionAlignment,
+    fixedInstructionSize: plugin.fixedInstructionSize,
+    viewerCompatible: plugin.viewerCompatible,
+    decode: plugin.decode,
+    assemble: plugin.assemble,
+    controlFlow,
+    callKind(instruction) { return controlFlow(instruction) === 'call' ? 'call' : null; },
+    returnKind(instruction) { return controlFlow(instruction) === 'return' ? 'return' : null; },
+  };
 }
 
-export function architectureAdapter(id) { return BUILTINS.get(canonicalId(id)) || BUILTINS.get('unknown'); }
+function projectAdapter(plugin) {
+  if (!plugin) return null;
+  let cached = ADAPTER_CACHE.get(plugin);
+  if (!cached) {
+    cached = new ArchitectureAdapter(legacyDefinition(plugin));
+    ADAPTER_CACHE.set(plugin, cached);
+  }
+  return cached;
+}
+
+export function registerArchitectureAdapter(definition, { replace = false } = {}) {
+  const id = canonicalArchitectureId(definition?.id);
+  if (!id) throw new TypeError('architecture id is required');
+
+  const pluginDef = {
+    id,
+    instructionAlignment: definition.instructionAlignment,
+    fixedInstructionSize: definition.fixedInstructionSize,
+    viewerCompatible: definition.viewerCompatible,
+    decode: definition.decode,
+    assemble: definition.assemble,
+    classifyControlFlow: definition.controlFlow || (() => null),
+    semanticVersion: 'legacy-adapter-v1',
+    capabilities: {
+      decode: definition.decode ? 'native' : 'unsupported',
+      exactEffects: 'unsupported',
+      semanticAnalysis: 'unsupported',
+    },
+  };
+  registerArchitecturePlugin(pluginDef, { replace });
+  return architectureAdapter(id);
+}
+
+export function architectureAdapter(id) {
+  const plugin = architecturePluginV2(id) || architecturePluginV2('unknown');
+  return projectAdapter(plugin);
+}
 
 export function architectureCapability(image, engine = {}) {
-  const architecture = canonicalId(image?.arch || 'unknown');
+  const architecture = canonicalArchitectureId(image?.arch || 'unknown');
   const adapter = architectureAdapter(architecture);
   const target = architecturePluginV2(architecture);
   const engineSupported = !!engine[architecture] || (architecture === 'arm64e' && !!engine.arm64);
@@ -111,21 +149,5 @@ export function architectureCapability(image, engine = {}) {
   });
 }
 
-function legacyDefinition(plugin) {
-  const controlFlow = (instruction) => plugin.classifyControlFlow(instruction);
-  return {
-    id:plugin.id,
-    instructionAlignment:plugin.instructionAlignment,
-    fixedInstructionSize:plugin.fixedInstructionSize,
-    viewerCompatible:plugin.viewerCompatible,
-    decode:plugin.decode,
-    assemble:plugin.assemble,
-    controlFlow,
-    callKind(instruction) { return controlFlow(instruction) === 'call' ? 'call' : null; },
-    returnKind(instruction) { return controlFlow(instruction) === 'return' ? 'return' : null; },
-  };
-}
-
-for (const plugin of architecturePluginsV2()) registerArchitectureAdapter(legacyDefinition(plugin));
-
 export { ArchitecturePluginV2, architecturePluginV2, architecturePluginsV2 };
+

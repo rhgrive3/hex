@@ -36,6 +36,7 @@ export function legacyAiEvidenceToCanonical(record = {}) {
     }),
     payload: {
       legacySystem: 'ai-evidence-store',
+      kind: record.kind ?? null,
       status: record.status ?? 'unknown',
       title: record.title ?? null,
       sourceTool: record.sourceTool ?? null,
@@ -48,6 +49,11 @@ export function legacyAiEvidenceToCanonical(record = {}) {
       summary: record.summary ?? null,
       navigation: record.navigation ?? null,
       sourceData: record.sourceData ?? null,
+      entityId: record.entityId ?? null,
+      functionId: record.functionId ?? null,
+      instructionId: record.instructionId ?? null,
+      binaryId: record.binaryId ?? null,
+      binaryHash: record.binaryHash ?? null,
     },
     createdAt: record.timestamp ?? null,
   });
@@ -101,14 +107,35 @@ export function canonicalEvidenceToLegacyAi(node) {
   const canonical = createEvidenceNode(node);
   if (canonical.family === 'Claim') throw new TypeError('evidence-compat-claim-not-ai-record');
   const payload = canonical.payload || {};
-  return {
+  const status = ['verified', 'supported', 'hypothesis', 'unknown'].includes(payload.status)
+    ? payload.status
+    : (canonical.deterministic === true ? 'verified' : 'supported');
+
+  const out = {
     id: canonical.id,
-    kind: payload.semanticKind || canonical.semanticKind || 'observation',
-    status: canonical.deterministic ? 'verified' : (payload.status === 'hypothesis' ? 'hypothesis' : 'supported'),
-    title: payload.title || canonical.semanticKind || canonical.family,
-    sourceTool: payload.sourceTool || 'core-evidence',
-    confidence: canonical.confidence == null ? undefined : canonical.confidence,
-    timestamp: canonical.createdAt || undefined,
-    summary: payload.summary || undefined,
+    kind: payload.kind ?? canonical.semanticKind ?? 'observation',
+    status,
+    title: payload.title ?? canonical.semanticKind ?? canonical.family,
+    sourceTool: payload.sourceTool ?? 'core-evidence',
   };
+
+  if (payload.sourceId != null) out.sourceId = payload.sourceId;
+  if (payload.sourceRef != null) out.sourceRef = payload.sourceRef;
+  if (payload.sourceBinding != null) out.sourceBinding = payload.sourceBinding;
+  if (payload.address != null) out.address = payload.address;
+  if (payload.functionAddress != null) out.functionAddress = payload.functionAddress;
+  if (payload.functionName != null) out.functionName = payload.functionName;
+  if (payload.summary != null) out.summary = payload.summary;
+  if (payload.sourceData != null) out.sourceData = payload.sourceData;
+  if (payload.navigation != null) out.navigation = payload.navigation;
+  if (payload.entityId != null) out.entityId = payload.entityId;
+  if (payload.functionId != null) out.functionId = payload.functionId;
+  if (payload.instructionId != null) out.instructionId = payload.instructionId;
+  if (payload.binaryId != null) out.binaryId = payload.binaryId;
+  if (payload.binaryHash != null) out.binaryHash = payload.binaryHash;
+  if (canonical.completeness != null) out.completeness = canonical.completeness;
+  if (canonical.confidence != null) out.confidence = canonical.confidence;
+  if (canonical.createdAt != null) out.timestamp = canonical.createdAt;
+
+  return out;
 }

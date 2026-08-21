@@ -1,5 +1,6 @@
 import { EVIDENCE_STATUSES } from './schema.js';
 import { addressText, jsonSafe } from './validation.js';
+import { evidenceStoreToCanonicalGraph } from '../core/evidence/compat.js';
 
 const DETERMINISTIC_VERIFICATION = Symbol('deterministic-verification');
 
@@ -284,6 +285,7 @@ export class EvidenceStore {
     return !!address && this.all().some((item) => item.address === address || item.functionAddress === address);
   }
   verifiedIds() { return this.all().filter((item) => item.status === 'verified').map((item) => item.id); }
+  canonicalSnapshot() { return evidenceStoreToCanonicalGraph(this); }
 }
 
 function summarizeRow(row) {

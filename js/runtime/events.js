@@ -150,9 +150,52 @@ export function normalizeLegacyRuntimeEvent(input, context = {}) {
   });
 }
 
+function estimatePayloadSize(value, maxBytes) {
+  let size = 0;
+  function walk(v) {
+    if (size > maxBytes) return;
+    if (v == null) { size += 4; return; }
+    if (typeof v === 'boolean') { size += 5; return; }
+    if (typeof v === 'number') { size += 8; return; }
+    if (typeof v === 'string') { size += v.length * 2 + 2; return; }
+    if (typeof v === 'bigint') { size += 16; return; }
+    if (ArrayBuffer.isView(v)) { size += v.byteLength * 4; return; }
+    if (v instanceof ArrayBuffer) { size += v.byteLength * 4; return; }
+    if (Array.isArray(v)) {
+      size += 2;
+      for (const item of v) {
+        walk(item);
+        if (size > maxBytes) return;
+      }
+      return;
+    }
+    if (typeof v === 'object') {
+      size += 2;
+      for (const k of Object.keys(v)) {
+        size += k.length * 2 + 4;
+        walk(v[k]);
+        if (size > maxBytes) return;
+      }
+    }
+  }
+  walk(value);
+  return size;
+}
+
 export function createRuntimeEventBatch(input = {}) {
-  const events = Array.isArray(input.events) ? input.events.map((event) => createRuntimeEvent(event)) : [];
+  const rawEvents = Array.isArray(input.events) ? input.events : [];
+  const events = rawEvents.map((event) => createRuntimeEvent(event));
   const dropped = safeInteger(input.dropped, 0, 'dropped');
+  const runtimeSessionId = required(input.runtimeSessionId ?? events[0]?.runtimeSessionId, 'runtime-session-id-required', 'runtime event batch requires runtimeSessionId');
+  const providerId = required(input.providerId ?? events[0]?.providerId, 'runtime-provider-required', 'runtime event batch requires providerId');
+  const sessionEpoch = safeInteger(input.sessionEpoch ?? events[0]?.sessionEpoch, 1, 'sessionEpoch', { min: 1 });
+
+  for (const event of events) {
+    if (event.runtimeSessionId !== runtimeSessionId || event.providerId !== providerId || event.sessionEpoch !== sessionEpoch) {
+      throw new DebugAdapterError('runtime-event-batch-identity-mismatch', 'All events in a batch must match batch runtimeSessionId, providerId, and sessionEpoch');
+    }
+  }
+
   const hasLoss = dropped > 0 || events.some((event) => event.kind === 'gap' || event.kind === 'dropped-events' || event.completeness === 'truncated');
   const requested = normalizeCompleteness(input.completeness, hasLoss ? 'truncated' : 'partial');
   let strongestAllowed = hasLoss ? 'truncated' : 'complete';
@@ -163,9 +206,9 @@ export function createRuntimeEventBatch(input = {}) {
     throw new DebugAdapterError('runtime-completeness-upgrade', `event batch cannot upgrade ${strongestAllowed} source evidence to ${requested}`);
   }
   return deepFreeze({
-    runtimeSessionId: required(input.runtimeSessionId ?? events[0]?.runtimeSessionId, 'runtime-session-id-required', 'runtime event batch requires runtimeSessionId'),
-    providerId: required(input.providerId ?? events[0]?.providerId, 'runtime-provider-required', 'runtime event batch requires providerId'),
-    sessionEpoch: safeInteger(input.sessionEpoch ?? events[0]?.sessionEpoch, 1, 'sessionEpoch', { min: 1 }),
+    runtimeSessionId,
+    providerId,
+    sessionEpoch,
     events: Object.freeze(events),
     completeness: requested,
     dropped,
@@ -181,10 +224,16 @@ export class RuntimeEventNormalizer {
     this.context = { ...context };
     this.maxEvents = safeInteger(options.maxEvents, 4096, 'maxEvents', { min: 1 });
     this.maxBytes = safeInteger(options.maxBytes, 4 * 1024 * 1024, 'maxBytes', { min: 1024 });
+    this.maxDedupeEntries = safeInteger(options.maxDedupeEntries, Math.max(8192, this.maxEvents * 2), 'maxDedupeEntries', { min: 16 });
     this.queuedBytes = 0;
   }
 
   push(input) {
+    const rawPayload = input?.payload ?? (input && typeof input === 'object' && !input.runtimeSessionId ? input : null);
+    if (rawPayload && estimatePayloadSize(rawPayload, this.maxBytes - this.queuedBytes) > this.maxBytes - this.queuedBytes) {
+      this.#dropped++;
+      return null;
+    }
     const event = input?.runtimeSessionId ? createRuntimeEvent(input) : normalizeLegacyRuntimeEvent(input, this.context);
     if (event.sessionEpoch !== Number(this.context.sessionEpoch ?? event.sessionEpoch)) return null;
     const dedupe = dedupeIdentity(event);
@@ -195,7 +244,13 @@ export class RuntimeEventNormalizer {
       this.#dropped++;
       return null;
     }
-    if (scoped) this.#seen.add(scoped);
+    if (scoped) {
+      if (this.#seen.size >= this.maxDedupeEntries) {
+        const first = this.#seen.values().next().value;
+        if (first !== undefined) this.#seen.delete(first);
+      }
+      this.#seen.add(scoped);
+    }
     this.#queue.push(event);
     this.queuedBytes += bytes;
     return event;

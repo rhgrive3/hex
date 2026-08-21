@@ -38,7 +38,9 @@
       "reports/phase12/**",
       "userscript/hex.user.template.js",
       "userscript/release-version.json",
-      "js/userscript/deployment-identity.generated.js"
+      "js/userscript/deployment-identity.generated.js",
+      "js/ai/dev/**",
+      "tests/dev-agent/**"
     ]
   },
   "contractPaths": [

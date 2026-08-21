@@ -19,8 +19,8 @@ const client = {
     return { workerId: args.workerId, tabNodeId: 'tab-1', chatgptConversationId: null };
   },
   send: async (args, options) => {
-    calls.push(['send', args, options]);
-    return { workerId: args.workerId, tabNodeId: 'tab-1', chatgptConversationId: 'conversation-1', submitted: true };
+  calls.push(['send', args, options]);
+    return { workerId: 'spoofed-worker-from-result', tabNodeId: 'tab-1', chatgptConversationId: 'conversation-1', submitted: true };
   },
   observe: async (args) => ({ workerId: args.workerId, tabNodeId: 'tab-1', state: 'WORKING' }),
   followup: async (args, options) => { calls.push(['followup', args, options]); return args; },
@@ -86,6 +86,7 @@ const sent = await supervisor.executeToolDecision(run, {
   purpose: 'send',
 });
 run = sent.run;
+assert.equal(run.workerId, 'worker-1', 'Worker result metadata must not overwrite the runtime-owned DevRun worker identity');
 assert.equal(run.chatgptConversationId, 'conversation-1');
 assert.equal(calls.find(([name]) => name === 'send')[1].instruction, workerPrompt);
 assert.deepEqual(

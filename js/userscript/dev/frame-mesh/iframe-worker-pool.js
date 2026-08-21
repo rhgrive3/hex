@@ -41,9 +41,14 @@ export class IframeWorkerPool {
     this.leases = new Map();
     this.waiters = [];
     this.resultWaiters = new Set();
+    this.generation = 0;
+    this.closed = false;
   }
 
   async provision({ size = this.maxWorkers, projectUrl = null, timeoutMs = READY_TIMEOUT_MS } = {}) {
+    /* close() retires one ownership generation; an explicit provision is the
+       controlled reinitialization boundary for a fresh generation. */
+    this.closed = false;
     const wanted = boundedInt(size, 1, this.maxWorkers, this.maxWorkers);
     const limit = boundedInt(timeoutMs, 50, 120000, READY_TIMEOUT_MS);
     let href = null;
@@ -72,6 +77,7 @@ export class IframeWorkerPool {
   }
 
   async claim({ taskId = null, wait = true, signal = null } = {}) {
+    if (this.closed) throw poolError('transport-failure', 'Worker pool is closed.');
     if (signal?.aborted) throw abortError(signal.reason);
     const slot = this.availableSlot();
     if (slot) return this.claimSlot(slot, taskId, signal);
@@ -216,6 +222,9 @@ export class IframeWorkerPool {
   }
 
   close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.generation += 1;
     this.invalidateResultWaiters();
     for (const slot of this.slots.values()) closeSlot(slot);
     for (const waiter of this.waiters) waiter.reject(poolError('transport-failure', 'Worker pool closed.'));
@@ -308,19 +317,44 @@ export class IframeWorkerPool {
     if (signal?.aborted) throw abortError(signal.reason);
     if (slot.claimed || slot.reserving) throw poolError('worker-pool-full', 'Worker slot is already claimed or reserved.');
     slot.reserving = true;
+    const generation = this.generation;
+    const client = slot.client;
     const leaseId = randomId('lease', this.cryptoRef);
     const runId = randomId('poolrun', this.cryptoRef);
     const workerId = randomId('worker', this.cryptoRef);
+    let claimRollbackCompleted = false;
     try {
-      await slot.client.claim({ runId, workerId });
+      await client.claim({ runId, workerId });
+      if (this.closed || generation !== this.generation || this.slots.get(slot.index) !== slot) {
+        await this.rollbackClaim(slot, { runId, workerId }, {
+          code: 'worker-claim-cleanup-failed',
+          label: 'Worker claim after pool close',
+          client,
+        });
+        claimRollbackCompleted = true;
+        throw poolError('transport-failure', 'Worker pool closed while a Worker claim was settling.');
+      }
       if (signal?.aborted) {
         await this.rollbackCancelledClaim(slot, { runId, workerId });
+        claimRollbackCompleted = true;
         throw abortError(signal.reason);
       }
       slot.claimed = true; slot.leaseId = leaseId; slot.runId = runId; slot.workerId = workerId;
       slot.taskId = taskId == null ? null : String(taskId);
       this.leases.set(leaseId, slot.index);
       return { leaseId, ...this.publicSlot(slot) };
+    } catch (error) {
+      // A rejected claim RPC may have reached the Worker before its response
+      // was lost. Roll back that remote claim before making the local slot
+      // available again; if rollback is ambiguous, quarantine the slot.
+      if (!claimRollbackCompleted) {
+        await this.rollbackClaim(slot, { runId, workerId }, {
+          code: 'worker-claim-cleanup-failed',
+          label: 'Worker claim',
+          client,
+        });
+      }
+      throw error;
     } finally {
       slot.reserving = false;
       if (!slot.claimed) this.flushWaiters();
@@ -328,12 +362,19 @@ export class IframeWorkerPool {
   }
 
   async rollbackCancelledClaim(slot, identity) {
-    try { await slot.client.release(identity); }
+    return this.rollbackClaim(slot, identity, {
+      code: 'worker-claim-cancel-cleanup-failed',
+      label: 'Cancelled Worker claim',
+    });
+  }
+
+  async rollbackClaim(slot, identity, { code, label, client = slot.client } = {}) {
+    try { await client.release(identity); }
     catch (error) {
       if (String(error?.code || '') === 'worker-not-claimed') return;
       slot.error = {
-        code: 'worker-claim-cancel-cleanup-failed',
-        message: `Cancelled Worker claim cleanup failed: ${String(error?.message || error).slice(0, 384)}`,
+        code: String(code || 'worker-claim-cleanup-failed'),
+        message: `${String(label || 'Worker claim')} cleanup failed: ${String(error?.message || error).slice(0, 384)}`,
       };
     }
   }

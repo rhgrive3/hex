@@ -18,3 +18,4 @@ export class SchedulerDependencyIdentityError extends Error {
 // P4-7 canonical cutover: there is exactly one production scheduler implementation.
 // Keep the frozen public contract above and re-export the hardened P4-2 implementation.
 export { AnalysisScheduler } from './analysis-scheduler.js';
+export { createSchedulerEventBuffer } from './lifecycle-events.js';
