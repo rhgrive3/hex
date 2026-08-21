@@ -27,7 +27,11 @@ function drainReadyPending(log, results) {
       const result = log.applyOperation(operation);
       results.push(result);
       if (result.status === 'rejected') return result;
-      progressed = true;
+      // An operation may have all causal parents and still be intentionally
+      // unresolved (for example a tombstone blocks resurrection). applyOperation
+      // requeues that operation. Treating the delete/requeue cycle as progress
+      // spins forever and grows unresolved diagnostics on every pass.
+      if (result.status !== 'unresolved') progressed = true;
     }
   }
   return null;
