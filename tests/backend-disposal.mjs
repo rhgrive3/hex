@@ -3,42 +3,96 @@ import assert from 'node:assert/strict';
 const workers=[];
 let added=0,removed=0;
 class FakeWorker{
-  constructor(){this.sent=[];this.terminated=false;this.onmessage=null;workers.push(this);}
-  postMessage(m){this.sent.push(m);}
+  constructor(){this.sent=[];this.terminated=false;this.onmessage=null;this.onerror=null;this.onmessageerror=null;this.throwNext=null;workers.push(this);}
+  postMessage(m){if(this.throwNext){const error=this.throwNext;this.throwNext=null;throw error;}this.sent.push(m);}
   terminate(){this.terminated=true;}
 }
 globalThis.Worker=FakeWorker;
 globalThis.document={hidden:false,addEventListener(){added++;},removeEventListener(){removed++;}};
 const { Backend }=await import('../js/backend.js');
+
+// Every worker RPC exit path must settle its local promise. A timeout/cancel or
+// worker transport failure must never leave an entry orphaned in Backend.pending.
 {
   const b=new Backend();
-  assert.equal(added,1);
+  const pending=b._callTo('legacy','probe',{});
+  assert.equal(b.pending.size,1);
+  assert.equal(pending.cancel(),undefined);
+  await assert.rejects(pending,(error)=>error?.name==='AbortError' && error?.code==='ABORT_ERR');
+  assert.equal(b.pending.size,0,'cancel must remove and reject the pending RPC locally');
+  assert.ok(b.legacyWorker.sent.some((m)=>m.t==='cancel' && m.requestId===pending.requestId),'cancel must still notify the worker best-effort');
+
+  const a=b._callTo('legacy','probe',{});
+  const c=b._callTo('legacy','probe',{});
+  const other=b._callTo('platform','probe',{});
+  b.legacyWorker.onerror({message:'legacy crashed'});
+  await assert.rejects(a,(error)=>error?.code==='WORKER_FAILED');
+  await assert.rejects(c,(error)=>error?.code==='WORKER_FAILED');
+  assert.equal(b.pending.size,1,'worker failure must reject only requests owned by that worker');
+  other.cancel();
+  await assert.rejects(other,(error)=>error?.name==='AbortError');
+
+  const decodeFailure=b._callTo('platform','probe',{});
+  b.platformWorker.onmessageerror({message:'message decode failed'});
+  await assert.rejects(decodeFailure,(error)=>error?.code==='WORKER_FAILED');
+  assert.equal(b.pending.size,0,'messageerror must not orphan transport requests');
+
+  b.legacyWorker.throwNext=new Error('post failed');
+  const postFailure=b._callTo('legacy','probe',{});
+  await assert.rejects(postFailure,/post failed/);
+  assert.equal(b.pending.size,0,'synchronous postMessage failure must remove pending state');
+
+  const chunk=b.fetchChunk('text',0,true);
+  assert.equal(typeof chunk.cancel,'function','fetchChunk mapping must preserve cancellation');
+  chunk.cancel();
+  await assert.rejects(chunk,(error)=>error?.name==='AbortError');
+  assert.equal(b.pending.size,0);
+
+  const access=b.fieldAccessMany('text',[{offset:0x20n,size:4}]);
+  assert.equal(typeof access.cancel,'function','fieldAccessMany mapping must preserve cancellation');
+  access.cancel();
+  await assert.rejects(access,(error)=>error?.name==='AbortError');
+  assert.equal(b.pending.size,0);
+
+  const disasm=b._disassembleBytes(new Uint8Array([0,0,0,0]),0x1000n,'arm64');
+  const disasmWorker=b._disasmWorker;
+  assert.ok(disasmWorker);
+  disasmWorker.onerror({message:'decoder crashed'});
+  await assert.rejects(disasm,(error)=>error?.code==='WORKER_FAILED');
+  assert.equal(b._disasmPending.size,0,'disassembly worker failure must reject every local decode request');
+  assert.equal(b._disasmWorker,null,'failed disassembly worker must be released');
+  b.dispose();
+}
+
+{
+  const b=new Backend();
+  assert.equal(added,2);
   const pending=b._callTo('legacy','probe',{});
   const architectureProbe=b.probeArchitectures();
-  assert.equal(workers.length,3);
+  assert.ok(workers.includes(b.legacyWorker) && workers.includes(b.platformWorker));
   b.dispose();
   const probeResult=await architectureProbe;
   assert.equal(probeResult.ok,false);
-  assert.equal(workers[2].terminated,true,'active architecture probe must terminate on dispose');
   let error=null;try{await pending;}catch(e){error=e;}
   assert.equal(error?.code,'BACKEND_DISPOSED');
-  assert.ok(workers.slice(0,2).every((w)=>w.terminated));
-  assert.equal(removed,1);
+  assert.equal(b.legacyWorker.terminated,true);
+  assert.equal(b.platformWorker.terminated,true);
+  assert.equal(removed,2);
   b.dispose();
-  assert.equal(removed,1,'dispose must be idempotent');
+  assert.equal(removed,2,'dispose must be idempotent');
   let after=null;try{await b.probe();}catch(e){after=e;}
   assert.equal(after?.code,'BACKEND_DISPOSED');
   const workersBefore=workers.length;
   const disposedProbe=await b.probeArchitectures();
   assert.equal(disposedProbe.ok,false);
   assert.equal(workers.length,workersBefore,'disposed backend must not spawn probe workers');
-  const messagesBefore=workers.slice(0,2).reduce((sum,w)=>sum+w.sent.length,0);
+  const messagesBefore=[b.legacyWorker,b.platformWorker].reduce((sum,w)=>sum+w.sent.length,0);
   await assert.rejects(()=>b.open({name:'disposed.bin',size:1}), (error)=>error?.code==='BACKEND_DISPOSED');
-  const messagesAfter=workers.slice(0,2).reduce((sum,w)=>sum+w.sent.length,0);
+  const messagesAfter=[b.legacyWorker,b.platformWorker].reduce((sum,w)=>sum+w.sent.length,0);
   assert.equal(messagesAfter,messagesBefore,'disposed backend open must not post to terminated workers');
   const epochAfterDispose=b.gen;
   assert.equal(b.advanceEpoch(),epochAfterDispose,'disposed backend epoch advance must be a no-op');
-  const messagesAfterEpoch=workers.slice(0,2).reduce((sum,w)=>sum+w.sent.length,0);
+  const messagesAfterEpoch=[b.legacyWorker,b.platformWorker].reduce((sum,w)=>sum+w.sent.length,0);
   assert.equal(messagesAfterEpoch,messagesAfter,'disposed backend epoch advance must not post to terminated workers');
 }
 
