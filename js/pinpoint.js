@@ -135,15 +135,20 @@ function guardedAnalyze(analyze, opts) {
     const unlinkParent = linkParentSignal(controller, opts?.signal || null);
     let timer = null;
     let operation = null;
+    const cancelOperation = () => {
+      try { operation?.cancel?.(); } catch { /* abort remains authoritative */ }
+    };
+    controller.signal.addEventListener('abort', cancelOperation, { once: true });
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => {
         if (!controller.signal.aborted) controller.abort('pinpoint-analysis-timeout');
-        try { operation?.cancel?.(); } catch { /* timeout remains authoritative */ }
+        else cancelOperation();
         reject(timeoutError(ms));
       }, ms);
     });
     try {
       operation = analyze(...analyzeArgsWithSignal(args, controller.signal));
+      if (controller.signal.aborted) cancelOperation();
       return await Promise.race([Promise.resolve(operation), timeout]);
     } catch (error) {
       if (error?.code === 'pinpoint-analysis-timeout') {
@@ -152,6 +157,7 @@ function guardedAnalyze(analyze, opts) {
       throw error;
     } finally {
       if (timer != null) clearTimeout(timer);
+      controller.signal.removeEventListener('abort', cancelOperation);
       unlinkParent();
     }
   };
@@ -209,15 +215,20 @@ function batchedScanAccess(scanAccess, opts) {
       const unlinkParent = linkParentSignal(controller, opts?.signal || null);
       let timer = null;
       let operation = null;
+      const cancelOperation = () => {
+        try { operation?.cancel?.(); } catch { /* abort remains authoritative */ }
+      };
+      controller.signal.addEventListener('abort', cancelOperation, { once: true });
       const timeout = new Promise((_, reject) => {
         timer = setTimeout(() => {
           if (!controller.signal.aborted) controller.abort('pinpoint-access-timeout');
-          try { operation?.cancel?.(); } catch { /* timeout remains authoritative */ }
+          else cancelOperation();
           reject(accessTimeoutError(ms));
         }, ms);
       });
       try {
         operation = scanAccess(all, { signal: controller.signal });
+        if (controller.signal.aborted) cancelOperation();
       } catch (error) {
         unlinkParent();
         throw error;
@@ -232,6 +243,7 @@ function batchedScanAccess(scanAccess, opts) {
         })
         .finally(() => {
           if (timer != null) clearTimeout(timer);
+          controller.signal.removeEventListener('abort', cancelOperation);
           unlinkParent();
           state.promise = null;
         });

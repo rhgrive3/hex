@@ -1474,7 +1474,13 @@ export function showOverview(app) {
     }
     const box = progressBox(later, pick('中身を調べています…', 'Looking inside…'));
     let cancelled = false;
-    sheet.onClose = () => { cancelled = true; app.backend.cancelSearch(); app.backend.onScanProgress = null; };
+    const controller = new AbortController();
+    sheet.onClose = () => {
+      cancelled = true;
+      if (!controller.signal.aborted) controller.abort('auto-analysis-view-closed');
+      app.backend.cancelSearch();
+      app.backend.onScanProgress = null;
+    };
 
     prepare(app, box).then(async ({ strings, program, shapes }) => {
       if (cancelled || !sheet.root.isConnected) return;
@@ -1483,6 +1489,7 @@ export function showOverview(app) {
       const report = await autoAnalyze({
         strings, program, symbols: app.symbols, region, fields: app.fields,
         shapes, recognition,
+        signal: controller.signal,
         analyze: makeAnalyzer(app, region),
         scanAccess: makeAccessScanner(app, region),
         isCancelled: () => cancelled || !sheet.root.isConnected,
@@ -1574,6 +1581,7 @@ async function pinnedFor(app, goal, ctx) {
     strings: ctx.strings || [],
     region,
     map: report ? report.map : null,
+    signal: ctx.signal || null,
     // 形から立てた候補を開いて確かめるとき、参照している文言もそこで読む
     textAt: stringLookup(ctx.strings || []),
     analyze: makeAnalyzer(app, region),
@@ -3246,8 +3254,13 @@ export function showDataTable(app, schema) {
 export function showCandidates(app, goal) {
   if (!goal) return;
   app.lastGoal = goal;
+  const controller = new AbortController();
   const sheet = new Sheet(goalLabel(goal), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      if (!controller.signal.aborted) controller.abort('candidate-analysis-view-closed');
+      app.backend.cancelSearch();
+      app.backend.onScanProgress = null;
+    },
   });
   const body = sheet.body;
   const box = progressBox(body, pick('調べています…', 'Working…'));
@@ -3269,6 +3282,7 @@ export function showCandidates(app, goal) {
     });
     const pin = await pinnedFor(app, goal, {
       strings, program, shapes, region, box, ranked: ranked.candidates,
+      signal: controller.signal,
     });
     box.done();
     if (!sheet.root.isConnected) return;

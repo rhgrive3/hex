@@ -143,7 +143,7 @@ export async function autoAnalyze(opts) {
   const o = opts || {};
   const { strings = [], program = null, symbols = null, region = null } = o;
   const progress = o.onProgress || (() => {});
-  const cancelled = o.isCancelled || (() => false);
+  const cancelled = () => !!o.signal?.aborted || !!o.isCancelled?.();
   const deepLimit = o.deepLimit != null ? o.deepLimit : 12;
 
   const report = {
@@ -263,7 +263,7 @@ export async function autoAnalyze(opts) {
       const common = {
         goal, fields, program, symbols, strings, region, map: report.map,
         shapes: o.shapes || null, analyze: memo, scanAccess: o.scanAccess || null,
-        isCancelled: cancelled, limit: 12,
+        signal: o.signal || null, isCancelled: cancelled, limit: 12,
       };
       const alternatives = [];
       let best = null;
@@ -364,7 +364,7 @@ export async function autoAnalyze(opts) {
       const range = program ? program.functionRange(t.addr) : null;
       let model = null;
       try {
-        model = await (memo || o.analyze)(t.addr, range ? range.end : null);
+        model = await (memo || o.analyze)(t.addr, range ? range.end : null, { signal: o.signal || null });
       } catch (error) {
         diagnose('deep-analyze', error, { address: t.addr.toString() });
       }
