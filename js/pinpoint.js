@@ -204,10 +204,11 @@ function batchedScanAccess(scanAccess, opts) {
 }
 
 function preparedOptions(opts) {
+  const automaticBatch = opts?.shapes != null && opts?.forceAccessScan !== true;
   return {
     ...(opts || {}),
     analyze: guardedAnalyze(opts?.analyze, opts),
-    scanAccess: opts?.forceAccessScan === true ? opts?.scanAccess : batchedScanAccess(opts?.scanAccess, opts),
+    scanAccess: automaticBatch ? batchedScanAccess(opts?.scanAccess, opts) : opts?.scanAccess,
   };
 }
 
