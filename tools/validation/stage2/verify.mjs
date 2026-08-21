@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validatePhysicalIPadEvidence } from '../../../js/platform/physical-ipad-evidence.js';
+import { STAGE2_PROFILE_EVIDENCE_IDS, validateStage2ProfileEvidence } from '../../../js/platform/stage2-profile-evidence.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_PATH = path.join(ROOT, 'reports/stage2/stage2-verdict.json');
@@ -10,10 +11,9 @@ const SCOPE_PATH = path.join(ROOT, 'tools/validation/stage2/completion-scope.loc
 const LEDGER_PATH = path.join(ROOT, 'tools/validation/stage2/closure-ledger.json');
 const OUTPUT_LIMIT = 7000;
 const REQUIRED_LEDGER_IDS = Object.freeze([
-  'S2-A7-NATIVE','S2-M6-WASM','S2-M6-DEX','S2-M6-CIL','S2-M6-JVM',
-  'S2-F6-MACHO','S2-F6-ELF','S2-F6-PE',
-  'S2-P12-KNOWLEDGE','S2-P12-RULES','S2-P12-PATTERNS','S2-P12-COLLAB-REMOTE',
-  'S2-IPAD-PHYSICAL','S2-FINAL-AUDIT',
+  ...STAGE2_PROFILE_EVIDENCE_IDS,
+  'S2-IPAD-PHYSICAL',
+  'S2-FINAL-AUDIT',
 ]);
 
 function git(args, allowFailure = false) {
@@ -76,7 +76,9 @@ function auditStage2Source() {
     'js/collaboration/remote-authority.js',
     'js/collaboration/remote-delivery.js',
     'js/platform/physical-ipad-evidence.js',
+    'js/platform/stage2-profile-evidence.js',
     'js/platform/stage2-capability-maturity.js',
+    'js/knowledge/phase12-rules.js',
   ];
   const findings = [];
   for (const relative of paths) {
@@ -87,59 +89,59 @@ function auditStage2Source() {
   return { ok: findings.length === 0, findings };
 }
 
-function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, buildIdentity }) {
+function readEvidenceJson(finalMode, evidencePath, requiredReason, missingReason, invalidReason) {
   if (!finalMode) return { required: false, status: 'not-evaluated-in-implementation-mode' };
-  if (!evidencePath) return { required: true, status: 'failed', reason: 'physical-ipad-evidence-required' };
+  if (!evidencePath) return { required: true, status: 'failed', reason: requiredReason };
   const resolved = path.resolve(ROOT, evidencePath);
-  if (!fs.existsSync(resolved)) return { required: true, status: 'failed', reason: 'physical-ipad-evidence-file-missing' };
-  let record;
-  try { record = JSON.parse(fs.readFileSync(resolved, 'utf8')); }
-  catch (error) { return { required: true, status: 'failed', reason: 'physical-ipad-evidence-json-invalid', detail: String(error?.message || error) }; }
-  const checked = validatePhysicalIPadEvidence(record, { commitSha: headSha, treeSha, ...(buildIdentity ? { buildIdentity } : {}) });
-  return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || record.evidenceId || null };
+  if (!fs.existsSync(resolved)) return { required: true, status: 'failed', reason: missingReason };
+  try { return { required: true, status: 'loaded', record: JSON.parse(fs.readFileSync(resolved, 'utf8')) }; }
+  catch (error) { return { required: true, status: 'failed', reason: invalidReason, detail: String(error?.message || error) }; }
+}
+
+function physicalEvidenceResult({ finalMode, evidencePath, headSha, treeSha, buildIdentity }) {
+  const loaded = readEvidenceJson(finalMode, evidencePath, 'physical-ipad-evidence-required', 'physical-ipad-evidence-file-missing', 'physical-ipad-evidence-json-invalid');
+  if (loaded.status !== 'loaded') return loaded;
+  const checked = validatePhysicalIPadEvidence(loaded.record, { commitSha: headSha, treeSha, ...(buildIdentity ? { buildIdentity } : {}) });
+  return { required: true, status: checked.ok ? 'passed' : 'failed', reason: checked.reason || null, evidenceId: checked.evidenceId || loaded.record.evidenceId || null };
+}
+
+function profileEvidenceResult({ finalMode, evidencePath, headSha, treeSha }) {
+  const loaded = readEvidenceJson(finalMode, evidencePath, 'stage2-profile-evidence-required', 'stage2-profile-evidence-file-missing', 'stage2-profile-evidence-json-invalid');
+  if (loaded.status !== 'loaded') return loaded;
+  const checked = validateStage2ProfileEvidence(loaded.record, { commitSha: headSha, treeSha });
+  return {
+    required: true,
+    status: checked.ok ? 'passed' : 'failed',
+    reason: checked.reason || null,
+    failures: checked.failures || [],
+    evidenceId: checked.evidenceId || loaded.record.evidenceId || null,
+    provenIds: checked.ok ? Object.freeze([...STAGE2_PROFILE_EVIDENCE_IDS]) : Object.freeze([]),
+  };
 }
 
 function commandPassed(results, fragment) {
   return results.some((result) => result.command.includes(fragment) && result.status === 'passed');
 }
 
-function effectiveLedger(structural, { headSha, treeSha, sourceAudit, commands, physical, full }) {
-  const stage2Tests = commandPassed(commands, 'tests/stage2/run.mjs');
-  const stage1 = commandPassed(commands, 'tools/validation/stage1/verify.mjs');
-  const runtime = commandPassed(commands, 'runtime:test');
-  const phase11 = commandPassed(commands, 'phase11:test');
-  const phase12 = commandPassed(commands, 'phase12:test');
+function effectiveLedger(structural, { headSha, treeSha, sourceAudit, commands, physical, profiles, full }) {
   const benchmark = commandPassed(commands, 'benchmark:baseline');
   const fullCheck = full && commandPassed(commands, 'check');
-  const conditions = {
-    'S1-A2-NATIVE': stage1,
-    'S2-A7-NATIVE': stage2Tests && runtime,
-    'S2-M6-WASM': stage2Tests && phase11,
-    'S2-M6-DEX': stage2Tests && phase11,
-    'S2-M6-CIL': stage2Tests && phase11,
-    'S2-M6-JVM': stage2Tests && phase11,
-    'S2-F6-MACHO': stage2Tests && phase12,
-    'S2-F6-ELF': stage2Tests && phase12,
-    'S2-F6-PE': stage2Tests && phase12,
-    'S2-P12-KNOWLEDGE': phase12,
-    'S2-P12-RULES': phase12,
-    'S2-P12-PATTERNS': phase12,
-    'S2-P12-COLLAB-REMOTE': stage2Tests && phase12,
-    'S2-IPAD-PHYSICAL': physical.status === 'passed',
-    'S2-FINAL-AUDIT': sourceAudit.ok && benchmark && fullCheck,
-  };
+  const provenProfiles = new Set(profiles.provenIds || []);
+  const conditions = Object.fromEntries([...STAGE2_PROFILE_EVIDENCE_IDS].map((id) => [id, provenProfiles.has(id)]));
+  conditions['S2-IPAD-PHYSICAL'] = physical.status === 'passed';
+  conditions['S2-FINAL-AUDIT'] = sourceAudit.ok && benchmark && fullCheck;
   const proofIdentity = `${headSha}:${treeSha}`;
   const items = (structural.ledger.items || []).map((item) => ({
     id: item.id,
     declaredStatus: item.status,
     effectiveStatus: conditions[item.id] === true ? 'PROVEN' : item.status === 'PREEXISTING_NORMATIVE_EXCLUSION' ? 'PREEXISTING_NORMATIVE_EXCLUSION' : 'UNPROVEN',
-    proofIdentity: conditions[item.id] === true ? proofIdentity : item.proofIdentity || null,
+    proofIdentity: conditions[item.id] === true ? proofIdentity : null,
   }));
-  const unresolved = items.filter((item) => !['PROVEN', 'PREEXISTING_NORMATIVE_EXCLUSION'].includes(item.effectiveStatus));
+  const unresolved = items.filter((item) => REQUIRED_LEDGER_IDS.includes(item.id) && !['PROVEN', 'PREEXISTING_NORMATIVE_EXCLUSION'].includes(item.effectiveStatus));
   return { items, unresolved, unmappedCount: REQUIRED_LEDGER_IDS.filter((id) => !items.some((item) => item.id === id)).length };
 }
 
-export function verifyStage2({ expectedSha = null, finalMode = false, physicalEvidencePath = null, buildIdentity = null, full = false } = {}) {
+export function verifyStage2({ expectedSha = null, finalMode = false, physicalEvidencePath = null, profileEvidencePath = null, buildIdentity = null, full = false } = {}) {
   const headSha = git(['rev-parse', 'HEAD']).stdout;
   const treeSha = git(['rev-parse', 'HEAD^{tree}']).stdout;
   if (!/^[0-9a-f]{40}$/.test(headSha) || !/^[0-9a-f]{40}$/.test(treeSha)) throw new Error('stage2-git-identity-invalid');
@@ -160,19 +162,22 @@ export function verifyStage2({ expectedSha = null, finalMode = false, physicalEv
   if (full) commands.push(npm('check'));
   const commandResults = commands.map(run);
   const physical = physicalEvidenceResult({ finalMode, evidencePath: physicalEvidencePath, headSha, treeSha, buildIdentity });
-  const ledger = effectiveLedger(structural, { headSha, treeSha, sourceAudit, commands: commandResults, physical, full });
+  const profiles = profileEvidenceResult({ finalMode, evidencePath: profileEvidencePath, headSha, treeSha });
+  const ledger = effectiveLedger(structural, { headSha, treeSha, sourceAudit, commands: commandResults, physical, profiles, full });
 
   const failures = [];
   if (!structural.ok) failures.push(...structural.errors.map((reason) => ({ gate: 'scope-ledger', reason })));
   if (!sourceAudit.ok) failures.push(...sourceAudit.findings.map((reason) => ({ gate: 'source-audit', reason })));
   for (const result of commandResults) if (result.status !== 'passed') failures.push({ gate: 'command', reason: result.command });
   if (physical.status === 'failed') failures.push({ gate: 'physical-ipad', reason: physical.reason });
+  if (profiles.status === 'failed') failures.push({ gate: 'profile-evidence', reason: profiles.reason, details: profiles.failures || [] });
   if (ledger.unmappedCount !== 0) failures.push({ gate: 'ledger', reason: `unmapped-count:${ledger.unmappedCount}` });
+  if (finalMode && !full) failures.push({ gate: 'final-audit', reason: 'full-repository-check-required' });
   if (finalMode && ledger.unresolved.length) failures.push({ gate: 'ledger', reason: `unproven-count:${ledger.unresolved.length}` });
 
   const verdict = failures.length === 0 ? (finalMode ? 'COMPLETE' : 'IMPLEMENTATION_READY') : 'NOT_COMPLETE';
   const report = {
-    schemaVersion: 'stage2-verdict/v1',
+    schemaVersion: 'stage2-verdict/v2',
     stage: 2,
     headSha,
     treeSha,
@@ -183,6 +188,7 @@ export function verifyStage2({ expectedSha = null, finalMode = false, physicalEv
     scope: { version: structural.scope.scopeVersion, baselineCommit: structural.scope.baselineCommit, ledgerItemCount: structural.ledgerItemCount, status: structural.ok ? 'passed' : 'failed' },
     sourceAudit,
     commands: commandResults,
+    profileEvidence: profiles,
     physicalIPadEvidence: physical,
     ledger,
     failures,
@@ -202,6 +208,7 @@ if (isMain) {
       expectedSha: parseArg('--expect-sha', argv),
       finalMode: hasFlag('--final', argv),
       physicalEvidencePath: parseArg('--physical-evidence', argv),
+      profileEvidencePath: parseArg('--profile-evidence', argv),
       buildIdentity: parseArg('--build-identity', argv),
       full: hasFlag('--full', argv),
     });
