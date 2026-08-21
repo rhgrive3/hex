@@ -68,24 +68,62 @@ function concurrencyLines(available) {
   if (!available.has('worker.pool.claim')) {
     return ['The multi-Worker Pool is not available this turn. Run one Worker at a time through the worker.* tools and do not assume additional Worker slots exist.'];
   }
-  return [
-    'The multi-Worker iframe Pool is available. Use only leaseId/slot identities returned by worker.pool.* tools; never invent them.',
-    'Six Workers is the capacity limit, not a target. Provision and claim only as many Workers as the work actually needs; a seventh claim waits for a released slot.',
-    'worker.pool.provision can fail with worker-frame-blocked, worker-frame-timeout, worker-frame-origin, or worker-frame-unavailable. Report that exact blocker instead of pretending parallelism exists.',
-    'Use worker.pool.start for independent tasks that should execute concurrently, and release each lease only after its task has completed.',
-    ...(available.has('worker.graph.start')
-      ? ['For work with dependencies between tasks, prefer worker.graph.start over hand-scheduling leases: the host enforces dependency order, concurrency, retries and lease cleanup. Poll worker.graph.status and read worker.graph.task_result rather than assuming a task finished.']
-      : []),
+  const lines = [
+    'The multi-Worker iframe Pool is available. Use only leaseId/slot identities returned by the available worker.pool.* tools; never invent them.',
   ];
+  const poolOperations = [
+    'worker.pool.provision',
+    'worker.pool.claim',
+    'worker.pool.create_chat',
+    'worker.pool.start',
+    'worker.pool.observe',
+    'worker.pool.result',
+    'worker.pool.followup',
+    'worker.pool.nudge',
+    'worker.pool.stop',
+    'worker.pool.release',
+  ].filter((tool) => available.has(tool));
+  lines.push(`Available worker.pool.* operations this turn: ${poolOperations.join(', ')}. Do not assume any other Pool operation exists.`);
+  if (available.has('worker.pool.provision')) {
+    lines.push('Six Workers is the capacity limit, not a target. Provision and claim only as many Workers as the work actually needs; a seventh claim waits for a released slot.');
+    lines.push('worker.pool.provision can fail with worker-frame-blocked, worker-frame-timeout, worker-frame-origin, or worker-frame-unavailable. Report that exact blocker instead of pretending parallelism exists.');
+  }
+  if (available.has('worker.pool.start')) {
+    lines.push('Use worker.pool.start for independent tasks that should execute concurrently.');
+  }
+  if (available.has('worker.pool.result') && available.has('worker.pool.release')) {
+    lines.push('Read worker.pool.result and release each lease with worker.pool.release only after its task has completed.');
+  }
+  if (available.has('worker.graph.start')) {
+    const graphOperations = [
+      'worker.graph.start',
+      'worker.graph.status',
+      'worker.graph.task_result',
+      'worker.graph.cancel',
+    ].filter((tool) => available.has(tool));
+    lines.push(`Available worker.graph.* operations this turn: ${graphOperations.join(', ')}. Do not assume any other graph operation exists.`);
+    if (available.has('worker.graph.status') && available.has('worker.graph.task_result')) {
+      lines.push('For work with dependencies between tasks, prefer worker.graph.start over hand-scheduling leases: the host enforces dependency order, concurrency, retries and lease cleanup. Poll worker.graph.status and read worker.graph.task_result rather than assuming a task finished.');
+    }
+  }
+  return lines;
 }
 
 function delegationLines(available) {
   const lines = [];
   if (available.has('worker.claim')) {
-    lines.push('Single-slot delegation sequence: worker.claim -> worker.create_chat -> worker.send.');
+    const sequence = ['worker.claim', 'worker.create_chat', 'worker.send'].filter((tool) => available.has(tool));
+    if (sequence.length === 3) lines.push('Single-slot delegation sequence: worker.claim -> worker.create_chat -> worker.send.');
+    else lines.push(`Available single-slot delegation operations this turn: ${sequence.join(', ')}. Do not assume any other worker.* operation exists.`);
   }
   if (available.has('worker.pool.claim')) {
-    lines.push('Pool delegation sequence: worker.pool.claim -> worker.pool.create_chat -> worker.pool.start, then worker.pool.result and worker.pool.release for that same leaseId.');
+    const sequence = ['worker.pool.claim', 'worker.pool.create_chat', 'worker.pool.start'].filter((tool) => available.has(tool));
+    const completion = ['worker.pool.result', 'worker.pool.release'].filter((tool) => available.has(tool));
+    if (sequence.length === 3 && completion.length === 2) {
+      lines.push('Pool delegation sequence: worker.pool.claim -> worker.pool.create_chat -> worker.pool.start, then worker.pool.result and worker.pool.release for that same leaseId.');
+    } else {
+      lines.push(`Available Pool delegation operations this turn: ${[...sequence, ...completion].join(', ')}. Do not assume any other worker.pool.* operation exists.`);
+    }
   }
   if (available.has('worker.send') || available.has('worker.followup')) {
     lines.push('worker.send and worker.followup yield the host to the Worker, wait for the Worker to finish, capture its result, restore this Supervisor conversation, then return the tool result. Therefore do not emit wait merely because worker.send just ran.');

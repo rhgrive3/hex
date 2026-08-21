@@ -51,6 +51,45 @@ const REQUIRED_ARGUMENTS = Object.freeze({
   [DEV_RUNTIME_ACTIVATION_TOOL]: ['expectedCommit', 'expectedBuildId'],
 });
 
+const PUBLIC_TOOL_RPC_METHOD = Object.freeze({
+  [DEV_WORKER_TOOL.DISCOVER]: 'dev.worker.discover',
+  [DEV_WORKER_TOOL.CLAIM]: 'dev.worker.claim',
+  [DEV_WORKER_TOOL.CREATE_CHAT]: 'dev.worker.create_chat',
+  [DEV_WORKER_TOOL.SEND]: 'dev.worker.send',
+  [DEV_WORKER_TOOL.OBSERVE]: 'dev.worker.observe',
+  [DEV_WORKER_TOOL.FOLLOWUP]: 'dev.worker.followup',
+  [DEV_WORKER_TOOL.NUDGE]: 'dev.worker.nudge',
+  [DEV_WORKER_TOOL.STOP]: 'dev.worker.stop',
+  [DEV_WORKER_TOOL.RESULT]: 'dev.worker.result',
+  [DEV_WORKER_TOOL.RELEASE]: 'dev.worker.release',
+  [DEV_ADMIN_TOOL.RUNTIME_IDENTITY]: 'dev.runtime.identity',
+  [DEV_ADMIN_TOOL.PAGE_SNAPSHOT]: 'dev.admin.page_snapshot',
+  [DEV_ADMIN_TOOL.PAGE_SCRIPTS]: 'dev.admin.page_scripts',
+  [DEV_ADMIN_TOOL.PAGE_SCRIPT_SOURCE]: 'dev.admin.page_script_source',
+  [DEV_ADMIN_TOOL.SKILL_LIST]: 'dev.skill.list',
+  [DEV_ADMIN_TOOL.SKILL_DESCRIBE]: 'dev.skill.describe',
+  [DEV_ADMIN_TOOL.SKILL_INSTALL_CANDIDATE]: 'dev.skill.install_candidate',
+  [DEV_ADMIN_TOOL.SKILL_VALIDATE_CANDIDATE]: 'dev.skill.validate_candidate',
+  [DEV_ADMIN_TOOL.SKILL_ACTIVATE]: 'dev.skill.activate',
+  [DEV_ADMIN_TOOL.SKILL_ROLLBACK]: 'dev.skill.rollback',
+  [DEV_ADMIN_TOOL.SKILL_RUN]: 'dev.skill.run',
+  [DEV_ADMIN_TOOL.POOL_STATUS]: 'dev.worker_pool.status',
+  [DEV_ADMIN_TOOL.POOL_PROVISION]: 'dev.worker_pool.provision',
+  [DEV_ADMIN_TOOL.POOL_CLAIM]: 'dev.worker_pool.claim',
+  [DEV_ADMIN_TOOL.POOL_CREATE_CHAT]: 'dev.worker_pool.create_chat',
+  [DEV_ADMIN_TOOL.POOL_START]: 'dev.worker_pool.start',
+  [DEV_ADMIN_TOOL.POOL_OBSERVE]: 'dev.worker_pool.observe',
+  [DEV_ADMIN_TOOL.POOL_RESULT]: 'dev.worker_pool.result',
+  [DEV_ADMIN_TOOL.POOL_FOLLOWUP]: 'dev.worker_pool.followup',
+  [DEV_ADMIN_TOOL.POOL_NUDGE]: 'dev.worker_pool.nudge',
+  [DEV_ADMIN_TOOL.POOL_STOP]: 'dev.worker_pool.stop',
+  [DEV_ADMIN_TOOL.POOL_RELEASE]: 'dev.worker_pool.release',
+  [DEV_ADMIN_TOOL.GRAPH_START]: 'dev.task_graph.start',
+  [DEV_ADMIN_TOOL.GRAPH_STATUS]: 'dev.task_graph.status',
+  [DEV_ADMIN_TOOL.GRAPH_TASK_RESULT]: 'dev.task_graph.task_result',
+  [DEV_ADMIN_TOOL.GRAPH_CANCEL]: 'dev.task_graph.cancel',
+});
+
 function promptContracts(availableTools) {
   const prompt = buildDevSupervisorPrompt({
     run: {
@@ -117,17 +156,21 @@ function thePromptNeverAdvertisesAToolThatDoesNotExist() {
   assert.equal(pooled.prompt.includes('"size":6'), false, 'the provision example must not hard-code the capacity as the target');
   assert.equal(pooled.prompt.includes('the current single slot'), false, 'stale single-slot wording must not survive');
   assert.equal(pooled.prompt.includes('only one Worker may be active at a time'), false);
+
+  const partialPool = promptContracts([DEV_ADMIN_TOOL.POOL_CLAIM]);
+  assert.match(partialPool.prompt, /Available worker\.pool\.\* operations this turn: worker\.pool\.claim\./);
+  for (const unavailable of [
+    'worker.pool.provision',
+    'worker.pool.create_chat',
+    'worker.pool.start',
+    'worker.pool.result',
+    'worker.pool.release',
+  ]) {
+    assert.equal(partialPool.prompt.includes(unavailable), false, `partial Pool prompt must not instruct unavailable ${unavailable}`);
+  }
 }
 
 async function everyAdminToolReachesADistinctRuntimeOperation() {
-  const surface = createDevAdminToolSurface(adminClientStub());
-  assert.deepEqual([...surface.toolNames].sort(), [...DEV_ADMIN_TOOLS].sort(), 'the Admin surface exposes exactly the declared tools');
-
-  const worker = createDevWorkerToolSurface(workerClientStub());
-  assert.deepEqual([...worker.toolNames].sort(), [...DEV_WORKER_TOOLS].sort(), 'the Worker surface exposes exactly the declared tools');
-
-  // Each declared RPC method must reach its own runtime operation, so a tool
-  // cannot be advertised on a transport that silently drops it.
   const { port1, port2 } = new MessageChannel();
   const routed = [];
   const runtime = new Proxy({}, {
@@ -136,7 +179,37 @@ async function everyAdminToolReachesADistinctRuntimeOperation() {
   });
   const server = createDevWorkerParentRpc({ port: port1, runtime });
   const client = createDevWorkerParentRpcClient({ port: port2, timeoutMs: 2000 });
+  const admin = createDevAdminToolSurface(client);
+  const worker = createDevWorkerToolSurface(client);
   try {
+    assert.deepEqual([...DEV_PARENT_RPC_METHODS].sort(), Object.keys(CLIENT_METHOD_FOR).sort(), 'the RPC allow-list must contain every declared client method');
+    assert.deepEqual(
+      [...DEV_ADMIN_TOOLS, ...DEV_WORKER_TOOLS].sort(),
+      Object.keys(PUBLIC_TOOL_RPC_METHOD).sort(),
+      'every public surface tool must have an explicit RPC mapping',
+    );
+    for (const [tool, rpcMethod] of Object.entries(PUBLIC_TOOL_RPC_METHOD)) {
+      assert.ok(DEV_PARENT_RPC_METHODS.includes(rpcMethod), `${tool} must be allowed by the parent RPC`);
+      const surface = DEV_WORKER_TOOLS.includes(tool) ? worker : admin;
+      assert.ok(surface?.has(tool), `${tool} must be exposed by its canonical surface`);
+      routed.length = 0;
+      const answer = await surface.execute(tool, publicToolArguments(tool));
+      assert.equal(routed.length, 1, `${tool} must reach exactly one runtime operation`);
+      assert.equal(routed[0].name, runtimeMethodFor(rpcMethod), `${tool} must route to ${rpcMethod}`);
+      assert.deepEqual(answer, { ok: routed[0].name }, `${tool} must return its runtime operation's answer`);
+    }
+
+    // The wait-event client method is transport-only, not a Supervisor tool,
+    // but it remains part of the parent RPC contract and must stay reachable.
+    routed.length = 0;
+    const waitAnswer = await client.waitEvent({ events: ['worker.completed'] });
+    assert.equal(routed.length, 1, 'dev.worker.wait_event must reach exactly one runtime operation');
+    assert.equal(routed[0].name, CLIENT_METHOD_FOR['dev.worker.wait_event']);
+    assert.deepEqual(waitAnswer, { ok: routed[0].name });
+
+    // Exercise every allow-listed method directly as well. This catches a
+    // method removed from DEV_PARENT_RPC_METHODS even if a surface mapping is
+    // accidentally edited in the same test.
     for (const method of DEV_PARENT_RPC_METHODS) {
       routed.length = 0;
       const clientMethod = CLIENT_METHOD_FOR[method];
@@ -165,6 +238,41 @@ async function everyAdminToolReachesADistinctRuntimeOperation() {
     port1.close();
     port2.close();
   }
+}
+
+function runtimeMethodFor(rpcMethod) {
+  const graphMethods = Object.freeze({
+    'dev.task_graph.start': 'taskGraphStart',
+    'dev.task_graph.status': 'taskGraphStatus',
+    'dev.task_graph.task_result': 'taskGraphTaskResult',
+    'dev.task_graph.cancel': 'taskGraphCancel',
+  });
+  return graphMethods[rpcMethod] || CLIENT_METHOD_FOR[rpcMethod];
+}
+
+function publicToolArguments(tool) {
+  if (tool === DEV_WORKER_TOOL.SEND) return { instruction: 'parity probe' };
+  if (tool === DEV_WORKER_TOOL.FOLLOWUP) return { text: 'parity probe' };
+  if (tool === DEV_ADMIN_TOOL.PAGE_SCRIPT_SOURCE) return { index: 0 };
+  if (tool === DEV_ADMIN_TOOL.SKILL_DESCRIBE) return { skillId: 'parity' };
+  if (tool === DEV_ADMIN_TOOL.SKILL_INSTALL_CANDIDATE) return { manifest: {} };
+  if (tool === DEV_ADMIN_TOOL.SKILL_VALIDATE_CANDIDATE) return { skillId: 'parity' };
+  if (tool === DEV_ADMIN_TOOL.SKILL_ACTIVATE) return { skillId: 'parity' };
+  if (tool === DEV_ADMIN_TOOL.SKILL_ROLLBACK) return { skillId: 'parity' };
+  if (tool === DEV_ADMIN_TOOL.SKILL_RUN) return { skillId: 'parity', program: 'probe' };
+  if ([
+    DEV_ADMIN_TOOL.POOL_CREATE_CHAT,
+    DEV_ADMIN_TOOL.POOL_OBSERVE,
+    DEV_ADMIN_TOOL.POOL_RESULT,
+    DEV_ADMIN_TOOL.POOL_NUDGE,
+    DEV_ADMIN_TOOL.POOL_STOP,
+    DEV_ADMIN_TOOL.POOL_RELEASE,
+  ].includes(tool)) return { leaseId: 'parity-lease' };
+  if (tool === DEV_ADMIN_TOOL.POOL_START) return { leaseId: 'parity-lease', instruction: 'parity probe' };
+  if (tool === DEV_ADMIN_TOOL.POOL_FOLLOWUP) return { leaseId: 'parity-lease', text: 'parity probe' };
+  if (tool === DEV_ADMIN_TOOL.GRAPH_STATUS || tool === DEV_ADMIN_TOOL.GRAPH_CANCEL) return { graphId: 'parity-graph' };
+  if (tool === DEV_ADMIN_TOOL.GRAPH_TASK_RESULT) return { graphId: 'parity-graph', taskId: 'parity-task' };
+  return {};
 }
 
 function unknownToolsAreStillRejected() {
