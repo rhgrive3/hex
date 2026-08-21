@@ -12,4 +12,7 @@ assert.match(workflow, /--expect-sha/);
 assert.match(workflow, /workflow_dispatch/);
 assert.doesNotMatch(workflow, /git push\s+origin\s+main/);
 assert.match(workflow, /actions\/checkout@v4/);
+assert.match(workflow, /github\.event_name != 'pull_request'/);
+assert.match(workflow, /!startsWith\(github\.head_ref, 'dev-agent-hardening\/'\)/,
+  'Phase 12 must not claim Dev Agent hardening PRs through the shared package trigger');
 console.log('[phase12] permanent exact-SHA workflow contract passed');
