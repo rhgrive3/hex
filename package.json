@@ -28,6 +28,7 @@
     "phase8:ownership": "node tools/validation/phase8-ownership.mjs --check-manifest",
     "phase8:checkpoint": "node tools/validation/phase8/checkpoint.mjs",
     "phase9:test": "node tests/phase9/run.mjs",
+    "phase9:browser": "node tests/phase9/browser/worker-runtime.mjs",
     "phase9:verify": "node tools/validation/phase9/verify.mjs",
     "phase10:test": "node tests/phase10/run.mjs",
     "phase10:verify": "node tools/validation/phase10/verify.mjs",

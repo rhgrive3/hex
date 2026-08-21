@@ -51,6 +51,17 @@ finite-domain enumeration; width/assignment limits fail closed. Browser builds
 use the dedicated Worker transport and userscript builds include the worker as
 a protected module asset.
 
+The reproducible browser-runtime check is:
+
+```sh
+npm run phase9:browser
+```
+
+It runs the exact Worker path under Chromium and WebKit at an iPad-sized
+viewport with a same-origin/CSP harness. This is synthetic WebKit evidence, not
+an iPad device claim; real-device dogfood remains a separate release obligation
+when the release contract requires it.
+
 ## First vertical slice
 
 The first product proof is **Conditional Edge Feasibility**:
