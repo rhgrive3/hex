@@ -148,6 +148,27 @@ assert.equal((await partialApi.function(partialSnapshot, '0x4000')).completeness
 assert.equal((await partialApi.semanticIR(partialSnapshot, '0x4000')).completeness, 'partial');
 assert.equal((await partialApi.cfg(partialSnapshot, '0x4000')).completeness, 'partial');
 
+let ensureBinaryIdCalls = 0;
+const lazyBackend = {
+  gen: 6,
+  binaryId: null,
+  async ensureBinaryId({ signal } = {}) {
+    assert.equal(signal, null);
+    ensureBinaryIdCalls++;
+    this.binaryId = 'bin_lazy_backend';
+    return this.binaryId;
+  },
+};
+const lazyIdentityApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter({
+  store: { get: () => null },
+  backend: lazyBackend,
+}));
+const lazySnapshot = await lazyIdentityApi.snapshot();
+assert.equal(lazySnapshot.binaryId, 'bin_lazy_backend', 'snapshot must derive the canonical Backend identity before producer execution');
+assert.equal(ensureBinaryIdCalls, 1);
+await lazyIdentityApi.snapshot();
+assert.equal(ensureBinaryIdCalls, 1, 'cached Backend binaryId must avoid repeated hashing');
+
 const derivedIdentityApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter({
   store: { get: () => null },
   backend: { gen: 2, binaryId: null },
