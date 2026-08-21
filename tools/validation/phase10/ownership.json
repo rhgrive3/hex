@@ -17,7 +17,9 @@
     "js/phase12/",
     "js/rebuild/",
     "tests/phase12/",
-    "tools/validation/phase12/"
+    "tools/validation/phase12/",
+    "tests/stage1/",
+    "tools/validation/stage1/"
   ],
   "allowedExact": [
     ".github/workflows/phase10-release-validation.yml",
@@ -30,6 +32,7 @@
     "tools/validation/generated-output-policy.mjs",
     "tools/validation/phase11/ownership.json",
     ".github/workflows/phase12-release-validation.yml",
+    ".github/workflows/stage1-release-validation.yml",
     ".github/workflows/invariant-gates.yml",
     "docs/SUPPORT_MATRIX.md",
     "js/platform/capability-maturity.js",
@@ -56,6 +59,7 @@
     "tests/dev-agent/dynamic-task-graph-ready-trace.mjs",
     "js/cache/analysis-cache.js",
     "js/cache/artifact-orchestration.js",
+    "js/targets/architecture/coverage.js",
     "tests/ai-tool-registry-module-boundary.mjs",
     "tests/architecture-compat-live-view.mjs",
     "tests/phase-runner-contract.mjs",

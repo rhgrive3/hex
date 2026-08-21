@@ -1,0 +1,40 @@
+name: Stage 1 analysis truth validation
+
+on:
+  pull_request:
+    paths:
+      - 'js/targets/architecture/coverage.js'
+      - 'tests/stage1/**'
+      - 'tools/validation/stage1/**'
+      - '.github/workflows/stage1-release-validation.yml'
+      - 'tools/validation/phase10/ownership.json'
+      - 'tools/validation/phase11/ownership.json'
+      - 'tools/validation/phase12/ownership.json'
+  workflow_dispatch:
+    inputs:
+      expect_sha:
+        description: Exact candidate commit SHA to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expect_sha || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Verify exact Stage 1 candidate
+        env:
+          VERIFY_SHA: ${{ inputs.expect_sha || github.event.pull_request.head.sha || github.sha }}
+        run: node tools/validation/stage1/verify.mjs --expect-sha "$VERIFY_SHA"
