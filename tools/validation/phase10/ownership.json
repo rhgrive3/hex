@@ -4,6 +4,11 @@
   "owner": "phase10/runtime-providers living integration",
   "allowedPrefixes": [
     "js/runtime/",
+    "js/debug/",
+    "js/adapters/",
+    "js/runtime-evidence/",
+    "js/core/identity/",
+    "js/core/evidence/",
     "tests/phase10/",
     "tools/validation/phase10/"
   ],
