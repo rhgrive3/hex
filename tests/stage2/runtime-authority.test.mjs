@@ -20,30 +20,57 @@ const binding = createRuntimeAuthorityBinding({
 });
 assert.match(binding.bindingId, /^runtime-binding:/);
 
-const tracker = new RuntimeAuthorityTracker(binding);
-const first = createRuntimeObservation({ binding, sequence: 1, observedAt: '2026-08-22T00:00:00Z', kind: 'stop', payload: { pc: '0x1000' } });
-assert.equal(tracker.accept(first).status, 'accepted');
-assert.equal(tracker.accept(first).reason, 'runtime-observation-stale-sequence');
+assert.throws(() => new RuntimeAuthorityTracker(binding, { maxObservations: Number.NaN }), /runtime-max-observations-invalid/);
+assert.throws(() => new RuntimeAuthorityTracker(binding, { maxObservations: 5000 }), /runtime-max-observations-invalid/);
+const tracker = new RuntimeAuthorityTracker(binding, { maxObservations: 2 });
+for (let sequence = 1; sequence <= 3; sequence++) {
+  const observation = createRuntimeObservation({ binding, sequence, observedAt: `2026-08-22T00:00:0${sequence}Z`, kind: 'stop', payload: { pc: `0x100${sequence}` } });
+  assert.equal(tracker.accept(observation).status, 'accepted');
+}
+assert.equal(tracker.snapshot().observations.length, 2, 'runtime observation history must stay bounded');
+const replay = createRuntimeObservation({ binding, sequence: 3, observedAt: '2026-08-22T00:00:04Z', kind: 'stop' });
+assert.equal(tracker.accept(replay).reason, 'runtime-observation-stale-sequence');
 
 const wrongSession = createRuntimeObservation({
   binding: createRuntimeAuthorityBinding({ ...binding, sessionIdentity: 'session:other' }),
-  sequence: 2,
-  observedAt: '2026-08-22T00:00:01Z',
+  sequence: 4,
+  observedAt: '2026-08-22T00:00:05Z',
   kind: 'stop',
 });
 assert.equal(validateRuntimeObservation(binding, wrongSession).reason, 'runtime-observation-bindingId-mismatch');
 assert.equal(tracker.accept(wrongSession).status, 'rejected');
 
-assert.equal(tracker.authorizeMutation({ bindingId: binding.bindingId, actorIdentity: 'local:user', operation: 'write-memory', issuedAt: '2026-08-22T00:00:02Z' }).reason, 'runtime-mutation-explicit-approval-required');
-const authorized = tracker.authorizeMutation({ bindingId: binding.bindingId, actorIdentity: 'local:user', operation: 'write-memory', issuedAt: '2026-08-22T00:00:02Z', explicitApproval: true });
+assert.equal(tracker.authorizeMutation({ bindingId: binding.bindingId, actorIdentity: 'local:user', operation: 'write-memory', issuedAt: '2026-08-22T00:00:06Z' }).reason, 'runtime-mutation-explicit-approval-required');
+const authorized = tracker.authorizeMutation({ bindingId: binding.bindingId, actorIdentity: 'local:user', operation: 'write-memory', issuedAt: '2026-08-22T00:00:06Z', explicitApproval: true });
 assert.equal(authorized.status, 'authorized');
 assert.equal(authorized.token.authority, 'explicit-local-runtime-mutation');
 
+const requiredCapabilities = [
+  'connect', 'disconnect', 'attach', 'pause', 'resume', 'stepInto',
+  'breakpointAddress', 'removeBreakpoint', 'readRegisters', 'readMemory', 'writeMemory',
+  'threads', 'modules', 'cancel',
+];
+const providerCapabilities = Object.fromEntries(requiredCapabilities.map((name) => [name, true]));
+const fullProof = {
+  exactHead: true,
+  identityNegativeTests: true,
+  staleEventTests: true,
+  lifecycleTests: true,
+  capabilityTests: true,
+  moduleMappingTests: true,
+  mutationAuthorityTests: true,
+};
 const support = runtimeProfileSupport({
   binding,
-  providerCapabilities: { readMemory: true, readRegisters: true, disconnect: true },
-  proof: { exactHead: true, identityNegativeTests: true, staleEventTests: true },
+  providerProfileId: 'native:lldb-compatible-v1:test',
+  providerCapabilities,
+  requiredCapabilities,
+  proof: fullProof,
 });
 assert.equal(support.status, 'supported-for-exact-provider-profile');
-assert.equal(runtimeProfileSupport({ binding, providerCapabilities: { readMemory: true }, proof: { exactHead: true, identityNegativeTests: true, staleEventTests: true } }).status, 'partial');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', providerCapabilities, requiredCapabilities }).status, 'partial', 'capabilities without proof must not promote A7');
+assert.equal(runtimeProfileSupport({ binding, providerCapabilities, requiredCapabilities, proof: fullProof }).status, 'partial', 'anonymous provider profile must not promote A7');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', providerCapabilities: { ...providerCapabilities, stepInto: false }, requiredCapabilities, proof: fullProof }).status, 'partial');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:lldb-compatible-v1:test', providerCapabilities, proof: fullProof }).status, 'partial', 'empty required capability denominator must not promote A7');
+assert.throws(() => runtimeProfileSupport({ binding, providerProfileId: 'x', requiredCapabilities: ['inventedCapability'] }), /runtime-capability-unknown/);
 console.log('[stage2] runtime authority tests passed');
