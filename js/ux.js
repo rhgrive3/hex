@@ -32,10 +32,11 @@ installTransientMenuViewportGuard();
 
 /*
  * WebKit can report a drag that crosses the viewer's movement threshold and then
- * returns almost exactly to its starting point before pointerup. The viewer correctly
- * cancels long-press timing at the first excursion, but final-coordinate-only tap
- * detection would otherwise turn that completed drag back into a tap. Remember the
- * whole gesture at the viewport boundary and suppress only that single onSelect call.
+ * returns almost exactly to its starting point before pointerup. The viewer cancels
+ * its long-press timer when the excursion happens, but final-coordinate-only tap
+ * detection could otherwise reinterpret the completed drag as a tap. A capture-phase
+ * guard remembers the whole pointer gesture and prevents only that moved pointerup
+ * from reaching the viewer. Normal taps, long presses and range selection are untouched.
  */
 function installViewerDragReturnGuard(app) {
   const viewer = app?.viewer;
@@ -43,16 +44,6 @@ function installViewerDragReturnGuard(app) {
   if (!viewer || !viewport || viewer.__dragReturnGuardInstalled) return;
   const MOVE_TOLERANCE = 10;
   let gesture = null;
-  let suppressSelect = false;
-  const originalOnSelect = viewer.onSelect;
-
-  viewer.onSelect = (row) => {
-    if (suppressSelect) {
-      suppressSelect = false;
-      return;
-    }
-    return originalOnSelect(row);
-  };
 
   viewport.addEventListener('pointerdown', (event) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -71,12 +62,10 @@ function installViewerDragReturnGuard(app) {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     const moved = gesture.moved;
     gesture = null;
-    if (!moved) return;
-    suppressSelect = true;
-    queueMicrotask(() => { suppressSelect = false; });
+    if (moved) event.stopImmediatePropagation();
   }, { capture: true, passive: true });
 
-  viewport.addEventListener('pointercancel', () => { gesture = null; suppressSelect = false; }, { capture: true, passive: true });
+  viewport.addEventListener('pointercancel', () => { gesture = null; }, { capture: true, passive: true });
   Object.defineProperty(viewer, '__dragReturnGuardInstalled', { value: true });
 }
 
