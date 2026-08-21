@@ -356,7 +356,7 @@ export class Backend {
       if (platformInfo) {
         nextPlatform = platformInfo;
         nextFormat = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || 'unknown';
-        const capability = platformInfo.capability || platformInfo.slices?.[sliceIndex]?.capability;
+        const capability = platformInfo.capability || platformInfo.slices?.[0]?.capability;
         nextBridge = capability?.architecture === 'arm64';
         if (nextBridge) {
           try {
