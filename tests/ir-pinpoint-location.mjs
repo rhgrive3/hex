@@ -117,5 +117,31 @@ ok(c.compares && c.compares.some((x) => x.value === 100n && x.engine === 'ir-ssa
     'cached access evidence must remain available to later goals');
 }
 
+// A direct/manual pinpoint call has no automatic shape index. It must preserve
+// the legacy scan request instead of broadening every requested displacement to
+// size=0 or scanning unrelated fields.
+{
+  let requested = null;
+  const direct = await pinpointLocation({
+    goal,
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: ['damage', 'hp'] }],
+    program,
+    analyze: async () => model,
+    scanAccess: async (items) => {
+      requested = items.map((item) => ({ offset: BigInt(item.offset), size: Number(item.size) || 0 }));
+      const groups = new Map();
+      for (const item of requested) groups.set(item.offset.toString(), [{ addr: BASE + 32n, kind: 'store', size: item.size || 4 }]);
+      return groups;
+    },
+    budget: { left: 12 },
+    limit: 10,
+  });
+  ok(requested?.length, 'direct pinpoint should still call its supplied scanner');
+  ok(requested.some((item) => item.offset === 0x20n && item.size === 4),
+    'direct pinpoint must preserve the legacy requested field size');
+  ok(direct.changeSites.length > 0, 'direct pinpoint scan evidence remains available');
+}
+
 process.stdout.write('  ok  pinpointLocation consumes SSA RMW + threshold\n');
 process.stdout.write('  ok  pinpoint access scanning batches once across goals\n');
+process.stdout.write('  ok  direct pinpoint preserves legacy scan requests\n');
