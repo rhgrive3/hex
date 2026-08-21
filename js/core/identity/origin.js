@@ -10,6 +10,7 @@ function stringList(values, code) {
   return values.map((value) => String(value)).filter(Boolean);
 }
 function bigintValue(value, code) {
+  if (typeof value === 'string' && !value.trim()) fail(code);
   try { return typeof value === 'bigint' ? value : BigInt(value); }
   catch { fail(code); }
 }
