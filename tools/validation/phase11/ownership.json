@@ -6,16 +6,34 @@
     "js/managed/",
     "tests/phase11/",
     "tools/validation/phase11/",
-    "reports/phase11/"
+    "reports/phase11/",
+    "js/collaboration/",
+    "js/knowledge/phase12-",
+    "js/pattern/",
+    "js/phase12/",
+    "js/rebuild/",
+    "tests/phase12/",
+    "tools/validation/phase12/"
   ],
   "allowedExact": [
     ".github/workflows/phase11-release-validation.yml",
+    ".github/workflows/phase12-release-validation.yml",
+    ".github/workflows/invariant-gates.yml",
+    ".github/workflows/generated-sync.yml",
+    ".github/workflows/generated-userscript-autofix.yml",
+    ".github/workflows/userscript-host.yml",
+    "tests/dev-agent/generated-output-policy.mjs",
+    "tests/semantic-v2/integration-userscript-sync.test.mjs",
+    "tools/validation/generated-output-policy.mjs",
+    "tools/validation/phase10/ownership.json",
     "js/platform/capability-maturity.js",
     "tests/capability-maturity.mjs",
     "docs/SUPPORT_MATRIX.md",
     "userscript/hex.user.template.js",
     "userscript/release-version.json",
-    "package.json"
+    "package.json",
+    "js/ai/dev/protocol/dev-supervisor-prompt.js",
+    "tests/dev-agent/tool-contract-parity.mjs"
   ],
   "forbiddenPrefixes": [
     "js/binary/",

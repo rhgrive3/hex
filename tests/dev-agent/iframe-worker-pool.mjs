@@ -8,6 +8,12 @@ import {
 } from '../../js/userscript/dev/frame-mesh/iframe-worker-pool.js';
 import { ChatGPTDOMAdapter } from '../../js/userscript/chatgpt-adapter.js';
 
+/* The Pool attaches its own handlers to every started turn. A rejected Worker
+   send must therefore become a retained failed result, never a process-level
+   unhandled rejection. */
+const unhandledRejections = [];
+process.on('unhandledRejection', (reason) => unhandledRejections.push(reason));
+
 async function testSixFramesSeventhWaitsAndReuse() {
   const frames = new FakeFrameFactory();
   const pool = newPool(frames);
@@ -164,6 +170,213 @@ function testAdapterUsesWorkerFrameRealm() {
   assert.deepEqual(observed, ['observe'], 'mutation observers must come from the Worker frame realm');
 }
 
+/* Characterization of the completion ownership contract the Pool implements
+   today: an active turn is pending, a settled turn is a retained terminal
+   result, and neither survives the lease that produced it. */
+async function testCompletionOwnershipIsRetainedPerLease() {
+  const runtimes = new ControlledRuntimes();
+  const pool = newPool(new FakeFrameFactory(), { createWorkerRuntime: ({ slot }) => runtimes.create(slot) });
+  await pool.provision({ size: 2, timeoutMs: 2000 });
+
+  const first = await pool.claim({ taskId: 'char-first' });
+  const second = await pool.claim({ taskId: 'char-second' });
+  await pool.createChat({ leaseId: first.leaseId });
+  await pool.createChat({ leaseId: second.leaseId });
+
+  const started = await pool.start({ leaseId: first.leaseId, instruction: 'first turn' });
+  assert.equal(started.started, true);
+  assert.equal(started.working, true, 'start must mark the slot as actively pending');
+  assert.equal(publicSlot(pool, first.slot).working, true);
+  assert.equal((await pool.result({ leaseId: first.leaseId })).status, 'working', 'an active turn has no terminal result yet');
+  await assert.rejects(
+    pool.start({ leaseId: first.leaseId, instruction: 'second turn on one lease' }),
+    (error) => error?.code === 'worker-busy',
+    'a slot with an active turn must refuse a second start',
+  );
+  await assert.rejects(
+    pool.release({ leaseId: first.leaseId }),
+    (error) => error?.code === 'worker-busy',
+    'release must be refused while the Worker is still generating',
+  );
+  assert.equal(pool.status().claimedCount, 2, 'a refused release keeps the lease owned');
+
+  await pool.start({ leaseId: second.leaseId, instruction: 'second turn' });
+  runtimes.get(second.slot).complete({ status: 'completed', responseText: 'second done', chatgptConversationId: 'c-second' });
+  await settle();
+  assert.equal(publicSlot(pool, second.slot).working, false, 'the completed Worker settles');
+  assert.equal(publicSlot(pool, first.slot).working, true, 'one Worker completing must never settle another');
+  assert.equal((await pool.result({ leaseId: second.leaseId })).responseText, 'second done');
+  assert.equal((await pool.result({ leaseId: first.leaseId })).status, 'working');
+
+  runtimes.get(first.slot).complete({ status: 'completed', responseText: 'first done', chatgptConversationId: 'c-first' });
+  await settle();
+  assert.equal(publicSlot(pool, first.slot).working, false, 'settlement clears the active pending state');
+  const retained = await pool.result({ leaseId: first.leaseId });
+  assert.equal(retained.status, 'completed');
+  assert.equal(retained.responseText, 'first done');
+  assert.deepEqual(await pool.result({ leaseId: first.leaseId }), retained, 'a retained terminal result is stable across repeated reads');
+  assert.equal(runtimes.get(first.slot).resultCalls, 0, 'the retained result is the authority; the Worker is not re-asked');
+  assert.equal(publicSlot(pool, first.slot).chatgptConversationId, 'c-first');
+
+  await pool.release({ leaseId: first.leaseId });
+  await assert.rejects(
+    pool.result({ leaseId: first.leaseId }),
+    (error) => error?.code === 'lease-missing',
+    'a released lease can no longer read the Worker',
+  );
+  const released = publicSlot(pool, first.slot);
+  assert.equal(released.claimed, false);
+  assert.equal(released.leaseId, null);
+  assert.equal(released.workerId, null);
+  assert.equal(released.taskId, null);
+  assert.equal(released.chatgptConversationId, null, 'the retained result must not survive its lease');
+
+  const reclaimed = await pool.claim({ taskId: 'char-reclaim' });
+  assert.equal(reclaimed.slot, first.slot, 'the released frame is reusable');
+  assert.notEqual(reclaimed.leaseId, first.leaseId, 'reclaim mints a fresh leaseId');
+  assert.notEqual(reclaimed.workerId, first.workerId, 'reclaim mints a fresh workerId');
+  const identities = runtimes.get(first.slot).claims;
+  assert.equal(identities.length, 2);
+  assert.notEqual(identities[1].runId, identities[0].runId, 'reclaim mints a fresh runId');
+  assert.notEqual(identities[1].workerId, identities[0].workerId);
+  await assert.rejects(
+    pool.result({ leaseId: first.leaseId }),
+    (error) => error?.code === 'lease-missing',
+    'the stale lease stays invalid after the slot is reclaimed',
+  );
+
+  await pool.release({ leaseId: reclaimed.leaseId });
+  await pool.release({ leaseId: second.leaseId });
+  pool.close();
+}
+
+async function testRejectedWorkerTurnBecomesRetainedFailure() {
+  const runtimes = new ControlledRuntimes();
+  const pool = newPool(new FakeFrameFactory(), { createWorkerRuntime: ({ slot }) => runtimes.create(slot) });
+  await pool.provision({ size: 1, timeoutMs: 2000 });
+  const lease = await pool.claim({ taskId: 'char-failure' });
+  await pool.createChat({ leaseId: lease.leaseId });
+  await pool.start({ leaseId: lease.leaseId, instruction: 'doomed turn' });
+
+  const transport = new Error('the Worker frame went away');
+  transport.code = 'transport-failure';
+  runtimes.get(lease.slot).fail(transport);
+  await settle();
+
+  assert.equal(publicSlot(pool, lease.slot).working, false, 'a rejected turn clears the active pending state');
+  const failure = await pool.result({ leaseId: lease.leaseId });
+  assert.equal(failure.status, 'failed');
+  assert.equal(failure.error.code, 'transport-failure');
+  assert.match(failure.error.message, /Worker frame went away/);
+  assert.deepEqual(await pool.result({ leaseId: lease.leaseId }), failure, 'a retained failure is stable across repeated reads');
+  assert.equal(runtimes.get(lease.slot).resultCalls, 0);
+
+  await pool.release({ leaseId: lease.leaseId });
+  assert.equal(publicSlot(pool, lease.slot).claimed, false, 'release clears ownership after a failed turn too');
+  pool.close();
+  await settle();
+  assert.deepEqual(unhandledRejections, [], 'a rejected Worker send must never escape as an unhandled rejection');
+}
+
+/* waitResult() is the Promise-driven completion primitive CARD C consumes.
+   It must answer from the Pool's own retained state, never from a scanning
+   cadence, and never from a Worker the lease no longer owns. */
+async function testWaitResultAnswersFromRetainedStateWithoutPolling() {
+  const runtimes = new ControlledRuntimes();
+  const sleeps = [];
+  const pool = newPool(new FakeFrameFactory(), {
+    createWorkerRuntime: ({ slot }) => runtimes.create(slot),
+    sleep: async (ms) => { sleeps.push(ms); return tick(); },
+  });
+  await pool.provision({ size: 2, timeoutMs: 2000 });
+
+  // Completion before any wait registers: retained state is already the answer.
+  const early = await pool.claim({ taskId: 'wait-early' });
+  await pool.createChat({ leaseId: early.leaseId });
+  await pool.start({ leaseId: early.leaseId, instruction: 'early turn' });
+  runtimes.get(early.slot).complete({ status: 'completed', responseText: 'early done', chatgptConversationId: 'c-early' });
+  await settle();
+  assert.equal(publicSlot(pool, early.slot).working, false, 'the turn settled before waitResult was called');
+  sleeps.length = 0;
+  runtimes.get(early.slot).resultCalls = 0;
+  const earlyResult = await pool.waitResult({ leaseId: early.leaseId });
+  assert.equal(earlyResult.status, 'completed');
+  assert.equal(earlyResult.responseText, 'early done');
+  assert.equal(sleeps.length, 0, 'waitResult must never sleep');
+  assert.equal(runtimes.get(early.slot).resultCalls, 0, 'waitResult must never re-ask the Worker');
+
+  // Repeated waits are idempotent while the lease still owns the turn.
+  assert.deepEqual(await pool.waitResult({ leaseId: early.leaseId }), earlyResult);
+  assert.deepEqual(await pool.result({ leaseId: early.leaseId }), earlyResult);
+  assert.deepEqual(await pool.waitResult({ leaseId: early.leaseId }), earlyResult);
+  assert.equal(sleeps.length, 0);
+  assert.equal(runtimes.get(early.slot).resultCalls, 0);
+
+  // Wait registered while the Worker is still generating: one settlement, one wakeup.
+  const live = await pool.claim({ taskId: 'wait-live' });
+  await pool.createChat({ leaseId: live.leaseId });
+  await pool.start({ leaseId: live.leaseId, instruction: 'live turn' });
+  let settledCount = 0;
+  const waiting = pool.waitResult({ leaseId: live.leaseId }).then((value) => { settledCount += 1; return value; });
+  await settle();
+  assert.equal(settledCount, 0, 'the wait must stay pending while the Worker generates');
+  assert.equal(sleeps.length, 0, 'a pending wait must not poll');
+  runtimes.get(live.slot).complete({ status: 'completed', responseText: 'live done' });
+  const liveResult = await waiting;
+  assert.equal(settledCount, 1, 'the wait settles exactly once');
+  assert.equal(liveResult.responseText, 'live done');
+  assert.deepEqual(await pool.result({ leaseId: live.leaseId }), liveResult, 'waitResult returns the canonical retained result');
+  assert.equal(sleeps.length, 0);
+  assert.equal(runtimes.get(live.slot).resultCalls, 0);
+
+  await pool.release({ leaseId: early.leaseId });
+  await pool.release({ leaseId: live.leaseId });
+  pool.close();
+}
+
+async function testWaitResultNormalizesRejectionAndMissingTurn() {
+  const runtimes = new ControlledRuntimes();
+  const pool = newPool(new FakeFrameFactory(), { createWorkerRuntime: ({ slot }) => runtimes.create(slot) });
+  await pool.provision({ size: 1, timeoutMs: 2000 });
+
+  // A lease that never started a turn has nothing to wait for, and waitResult
+  // must say so rather than fabricate a terminal state.
+  const lease = await pool.claim({ taskId: 'wait-failure' });
+  await assert.rejects(
+    pool.waitResult({ leaseId: lease.leaseId }),
+    (error) => error?.code === 'worker-result-missing',
+    'no active turn and no retained result is a typed failure, not a fabricated success',
+  );
+
+  await pool.createChat({ leaseId: lease.leaseId });
+  await pool.start({ leaseId: lease.leaseId, instruction: 'doomed turn' });
+  const waiting = pool.waitResult({ leaseId: lease.leaseId });
+  const transport = new Error('the Worker frame went away');
+  transport.code = 'transport-failure';
+  runtimes.get(lease.slot).fail(transport);
+
+  const failure = await waiting;
+  assert.equal(failure.status, 'failed', 'a rejected send resolves the wait with the canonical retained failure');
+  assert.equal(failure.error.code, 'transport-failure');
+  assert.deepEqual(await pool.result({ leaseId: lease.leaseId }), failure, 'no second failure representation exists');
+  assert.deepEqual(await pool.waitResult({ leaseId: lease.leaseId }), failure, 'the retained failure is idempotent');
+
+  await assert.rejects(
+    pool.waitResult({ leaseId: 'lease-that-never-existed' }),
+    (error) => error?.code === 'lease-missing',
+  );
+
+  await pool.release({ leaseId: lease.leaseId });
+  await assert.rejects(
+    pool.waitResult({ leaseId: lease.leaseId }),
+    (error) => error?.code === 'lease-missing',
+    'a released lease can no longer wait on the Worker it used to own',
+  );
+  pool.close();
+  await settle();
+  assert.deepEqual(unhandledRejections, [], 'a waited rejection must never escape as an unhandled rejection');
+}
+
 function newPool(frames, overrides = {}) {
   return new IframeWorkerPool({
     maxWorkers: 6,
@@ -242,6 +455,45 @@ class FakeDocument {
   getElementById(id) { return this.documentElement.children.find((node) => node.id === id) || null; }
 }
 
+/* A Worker turn that only settles when the test says so. The real Pool owns the
+   send promise, so completion timing is the only thing a characterization test
+   needs to control. */
+class ControlledRuntimes {
+  constructor() { this.bySlot = new Map(); }
+  create(slot) {
+    const state = { slot, claims: [], resultCalls: 0, releaseCalls: 0, pending: null };
+    let claim = null;
+    const verify = (args) => { assert.equal(args.runId, claim?.runId); assert.equal(args.workerId, claim?.workerId); };
+    const coordinator = {
+      async claim(args) { claim = { runId: args.runId, workerId: args.workerId }; state.claims.push({ ...claim }); return { ...claim, claimed: true, dedicatedFrame: true }; },
+      async createChat(args) { verify(args); return { ...claim, prepared: true }; },
+      async send(args) { verify(args); return new Promise((resolve, reject) => { state.pending = { resolve, reject }; }); },
+      async followup(args) { verify(args); return { status: 'completed', responseText: `follow:${args.text}` }; },
+      async nudge(args) { verify(args); return { outcome: state.pending ? 'still-working' : 'not-running' }; },
+      async stop(args) { verify(args); return { outcome: state.pending ? 'stopped' : 'not-running' }; },
+      async observe(args) { verify(args); return { status: state.pending ? 'working' : 'available' }; },
+      async result(args) { verify(args); state.resultCalls += 1; return { status: state.pending ? 'working' : 'available' }; },
+      async release(args) { verify(args); state.releaseCalls += 1; claim = null; return { role: 'available', claimed: false }; },
+      close() { claim = null; state.pending = null; },
+    };
+    state.complete = (value) => { const pending = state.pending; state.pending = null; pending.resolve(value); };
+    state.fail = (error) => { const pending = state.pending; state.pending = null; pending.reject(error); };
+    this.bySlot.set(slot, state);
+    return { coordinator, ready: () => true, close() { coordinator.close(); } };
+  }
+  get(slot) { const state = this.bySlot.get(slot); assert.ok(state, `no controlled runtime for slot ${slot}`); return state; }
+}
+
+function publicSlot(pool, index) {
+  const slot = pool.status().slots.find((item) => item.slot === index);
+  assert.ok(slot, `slot ${index} must exist`);
+  return slot;
+}
+
+/* The Pool settles a turn through chained then/finally handlers, so a single
+   microtask drain is not enough to observe the retained result. */
+async function settle() { for (let index = 0; index < 5; index++) await tick(); }
+
 async function waitForResult(pool, leaseId) {
   for (let index = 0; index < 20; index++) {
     const result = await pool.result({ leaseId });
@@ -257,6 +509,12 @@ await testConcurrentClaimReservesSlotBeforeSettling();
 await testBlockedEmbeddingIsReportedExactly();
 await testNavigationDocumentReplacementRebindsRuntime();
 await testCrossOriginProjectUrlFailsClosed();
+await testCompletionOwnershipIsRetainedPerLease();
+await testRejectedWorkerTurnBecomesRetainedFailure();
+await testWaitResultAnswersFromRetainedStateWithoutPolling();
+await testWaitResultNormalizesRejectionAndMissingTurn();
 testOffscreenFrameHost();
 testAdapterUsesWorkerFrameRealm();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.deepEqual(unhandledRejections, [], 'no Pool turn in this file may escape as an unhandled rejection');
 console.log('iframe worker pool: ok');

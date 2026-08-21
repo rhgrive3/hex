@@ -54,6 +54,28 @@ F3 is intentionally conservative. Current loaders do parse substantial import/ex
 Phase 11 implements first-class managed frontends for WASM, DEX, CLR/CIL, and JVM. Each frontend decodes VM operations, produces exact low-level `VMEffects`, lowers to shared Semantic IR/CFG/SSA, and performs type/interprocedural analysis and decompilation via the shared middle-end. M6 (runtime debugging and live provider integration) is deferred pending Phase 10 provider contracts and evidence-bound runtime module bindings.
 
 
+## Phase 12 maturity
+
+Phase 12 currently exposes only bounded, low-authority paths. Package-derived
+knowledge remains suggestion-level until explicit local promotion; capability
+rules produce deterministic evidence rather than verified authority; local
+ChangeLog replay is canonical only on the local project and has no remote
+transport claim; patterns are read-only; and rebuild remains an R0 shadow path.
+No Phase 12 row below claims general remote collaboration, arbitrary pattern
+execution, or format-wide validated rebuilding.
+
+| Capability | Current state | Authority | Known limitation |
+|---|---|---|---|
+| Knowledge packages / recognition | Partial | Suggestion only | `hex-knowledge-pack` v2 compatibility and local evidence precedence are required |
+| Capability rules | Partial | Deterministic evidence only | Partial upstream analysis remains partial; AI cannot mint facts |
+| Collaboration / ChangeLog | Partial | Local canonical only | Remote security gate and derived-artifact exclusion remain required |
+| Declarative patterns | Partial | Bounded read-only evidence | No arbitrary JavaScript or loader-semantic mutation |
+| Rebuild | Partial | R0 shadow plan | Operation/profile validators and explicit atomic publication are required |
+
+These Phase 12 values are projected from `phase12Maturity()` in
+`js/platform/capability-maturity.js`; they are intentionally conservative and
+must not be rounded up to `supported` by UI or release evidence.
+
 ## Evidence used for current claims
 
 The values above are tied to the Master Architecture definitions plus current source and regression behavior, especially:
