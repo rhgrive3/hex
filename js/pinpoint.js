@@ -27,6 +27,8 @@ export * from './pinpoint-legacy.js';
 
 const DEFAULT_PINPOINT_ANALYSIS_TIMEOUT_MS = 30_000;
 const MAX_PINPOINT_ANALYSIS_TIMEOUT_MS = 120_000;
+const DEFAULT_AUTO_UNIQUE_ANALYSES = 48;
+const MAX_AUTO_UNIQUE_ANALYSES = 256;
 const ANALYZE_GUARDS = new WeakMap();
 
 function narrowedPriorCount(candidates, universe) {
@@ -44,28 +46,55 @@ function timeoutMs(opts) {
   return Math.max(1, Math.min(MAX_PINPOINT_ANALYSIS_TIMEOUT_MS, Math.floor(requested)));
 }
 
+function uniqueAnalysisLimit(opts) {
+  // `shapes` is the automatic-analysis marker: prepare() always builds that
+  // one-pass index before calling autoAnalyze. Direct pinpoint callers keep the
+  // historical unlimited behaviour unless they explicitly opt in.
+  if (opts?.shapes == null) return Infinity;
+  const requested = Number(opts?.maxPinpointAnalyses);
+  if (!Number.isFinite(requested) || requested < 1) return DEFAULT_AUTO_UNIQUE_ANALYSES;
+  return Math.max(1, Math.min(MAX_AUTO_UNIQUE_ANALYSES, Math.floor(requested)));
+}
+
 function timeoutError(ms) {
   const error = new Error(`pinpoint analysis timed out after ${ms}ms`);
   error.code = 'pinpoint-analysis-timeout';
   return error;
 }
 
+function analysisBudgetError(limit) {
+  const error = new Error(`pinpoint unique-analysis budget exhausted at ${limit} functions`);
+  error.code = 'pinpoint-analysis-budget';
+  return error;
+}
+
+function analysisKey(args) {
+  return args.slice(0, 2).map((value) => value == null ? 'null' : value.toString()).join(':');
+}
+
 /*
  * One stuck function analysis must not hold the whole automatic analysis open.
  * A short circuit breaker is shared by all pinpoint calls using the same
  * analyzer, so one orphaned backend request cannot spawn dozens more while the
- * remaining goals are being examined.
+ * remaining goals are being examined. Automatic analysis also has a shared
+ * unique-function ceiling; repeated reads of the same function remain free.
  */
 function guardedAnalyze(analyze, opts) {
   if (typeof analyze !== 'function') return analyze;
   let state = ANALYZE_GUARDS.get(analyze);
   if (!state) {
-    state = { blockedUntil: 0 };
+    state = { blockedUntil: 0, uniqueKeys: new Set() };
     ANALYZE_GUARDS.set(analyze, state);
   }
   const ms = timeoutMs(opts);
+  const uniqueLimit = uniqueAnalysisLimit(opts);
   return async (...args) => {
     if (Date.now() < state.blockedUntil) throw timeoutError(ms);
+    const key = analysisKey(args);
+    if (!state.uniqueKeys.has(key)) {
+      if (state.uniqueKeys.size >= uniqueLimit) throw analysisBudgetError(uniqueLimit);
+      state.uniqueKeys.add(key);
+    }
     let timer = null;
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => reject(timeoutError(ms)), ms);
