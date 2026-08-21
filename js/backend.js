@@ -356,7 +356,7 @@ export class Backend {
       if (platformInfo) {
         nextPlatform = platformInfo;
         nextFormat = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || 'unknown';
-        const capability = platformInfo.capability || platformInfo.slices?.[0]?.capability;
+        const capability = platformInfo.capability || platformInfo.slices?.[sliceIndex]?.capability;
         nextBridge = capability?.architecture === 'arm64';
         if (nextBridge) {
           try {
@@ -438,7 +438,10 @@ export class Backend {
     return true;
   }
 
-  cancelSearch(request) { this.cancel(request); }
+  cancelSearch(request) {
+    if (request == null) return false;
+    return this.cancel(request);
+  }
 
   analyze(sliceIndex, options = {}) {
     const explicitRoute = Object.hasOwn(options, 'route');
