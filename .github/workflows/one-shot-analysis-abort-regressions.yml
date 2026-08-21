@@ -154,3 +154,5 @@ jobs:
           git diff --cached --exit-code && exit 1 || true
           git commit -m "test(analysis): lock parent abort settlement end to end"
           git push origin HEAD:fix/analysis-cancellation-settlement
+
+# Existing-file update intentionally retriggers this one-shot patch.
