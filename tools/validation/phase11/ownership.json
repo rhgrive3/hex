@@ -39,7 +39,9 @@
     "package-lock.json",
     "node_modules/.package-lock.json",
     "js/ai/dev/supervisor/dev-supervisor-engine-v0.js",
-    "tests/dev-agent/supervisor-prompt-modes.mjs"
+    "tests/dev-agent/supervisor-prompt-modes.mjs",
+    "js/ai/dev/admin/tool-surface.js",
+    "js/ai/dev/protocol/dev-tool-contracts.js"
   ],
   "forbiddenPrefixes": [
     "js/binary/",

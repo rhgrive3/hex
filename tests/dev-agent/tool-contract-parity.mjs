@@ -16,13 +16,24 @@ import {
   createDevWorkerParentRpcClient,
 } from '../../js/userscript/dev/parent-rpc.js';
 import { DEV_RUNTIME_ACTIVATION_TOOL, DEV_RUNTIME_IDENTITY_TOOL } from '../../js/ai/dev/bootstrap/self-update-gate.js';
+import {
+  DEV_BATCH_POLICY,
+  DEV_OPERATION_CLASS,
+  DEV_TOOL_CONTRACTS,
+  DEV_TOOL_SURFACE,
+  devToolBatchPolicy,
+  devToolContract,
+  devToolNamesForSurface,
+  devToolOperationClass,
+  devBatchPolicyFor,
+} from '../../js/ai/dev/protocol/dev-tool-contracts.js';
 
-const PUBLIC_TOOLS = Object.freeze([
+const PUBLIC_TOOLS = Object.freeze([...new Set([
   ...DEV_WORKER_TOOLS,
   ...DEV_ADMIN_TOOLS,
   DEV_RUNTIME_IDENTITY_TOOL,
   DEV_RUNTIME_ACTIVATION_TOOL,
-]);
+])]);
 
 /* Arguments a caller cannot omit. This is a test expectation, not production
    metadata: H0 must not create a second operation table for H1 to replace. */
@@ -311,6 +322,141 @@ function unknownToolsAreStillRejected() {
   assert.equal(createDevWorkerToolSurface({ discover() {} }), null, 'a partial client must not become a usable Dev surface');
 }
 
+/* CARD H1: the registry is the one truth every projection is derived from.
+   These prove the projections still agree with it and with each other. */
+function everyExposedToolHasCanonicalMetadata() {
+  for (const tool of PUBLIC_TOOLS) {
+    const contract = devToolContract(tool);
+    assert.ok(contract, `${tool} is exposed but has no canonical metadata`);
+    assert.ok(contract.owner && typeof contract.owner === 'string', `${tool} must declare a non-empty owner`);
+    assert.ok(contract.argumentContract.length > 0, `${tool} must declare an argument contract`);
+    assert.ok(
+      Object.values(DEV_OPERATION_CLASS).includes(contract.operationClass),
+      `${tool} operation class must be one of the allowed classes, got ${contract.operationClass}`,
+    );
+  }
+  assert.equal(DEV_TOOL_CONTRACTS.length, PUBLIC_TOOLS.length, 'the registry describes exactly the exposed tools, no more');
+  assert.equal(new Set(DEV_TOOL_CONTRACTS.map((item) => item.publicName)).size, DEV_TOOL_CONTRACTS.length, 'tool names are unique');
+
+  // The surfaces are projections of the registry, in registry order.
+  assert.deepEqual([...DEV_ADMIN_TOOLS], [...devToolNamesForSurface(DEV_TOOL_SURFACE.ADMIN)], 'the Admin surface is the registry Admin projection');
+  assert.deepEqual([...DEV_WORKER_TOOLS], [...devToolNamesForSurface(DEV_TOOL_SURFACE.WORKER)], 'the Worker surface matches its registry projection');
+
+  // RPC-backed entries must name a real RPC method and its real client method.
+  const rpcMethods = new Set(DEV_PARENT_RPC_METHODS);
+  for (const contract of DEV_TOOL_CONTRACTS) {
+    if (!contract.rpcName) continue;
+    assert.ok(rpcMethods.has(contract.rpcName), `${contract.publicName} names a non-existent RPC method ${contract.rpcName}`);
+    assert.equal(
+      CLIENT_METHOD_FOR[contract.rpcName],
+      contract.clientMethod,
+      `${contract.publicName} must name the same client method the RPC transport uses`,
+    );
+  }
+  // dev.worker.wait_event has no public tool, and must not gain one silently.
+  const mapped = new Set(DEV_TOOL_CONTRACTS.map((item) => item.rpcName).filter(Boolean));
+  assert.deepEqual(
+    DEV_PARENT_RPC_METHODS.filter((method) => !mapped.has(method)),
+    ['dev.worker.wait_event'],
+    'every RPC method except the internal wait_event transport is owned by exactly one public tool',
+  );
+}
+
+/* Tools whose misclassification would be dangerous. An independent expectation,
+   deliberately not derived from the registry: a registry that reclassified any
+   of these as an observation would otherwise make itself batch-eligible. */
+const MUST_NOT_BE_OBSERVATION = Object.freeze({
+  [DEV_ADMIN_TOOL.POOL_PROVISION]: DEV_OPERATION_CLASS.MUTATION,
+  [DEV_ADMIN_TOOL.POOL_CLAIM]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_ADMIN_TOOL.POOL_CREATE_CHAT]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_ADMIN_TOOL.POOL_START]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_ADMIN_TOOL.POOL_STOP]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_ADMIN_TOOL.POOL_RELEASE]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_ADMIN_TOOL.POOL_FOLLOWUP]: DEV_OPERATION_CLASS.FULL_TURN,
+  [DEV_ADMIN_TOOL.POOL_NUDGE]: DEV_OPERATION_CLASS.FULL_TURN,
+  [DEV_ADMIN_TOOL.GRAPH_START]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_ADMIN_TOOL.GRAPH_CANCEL]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_ADMIN_TOOL.SKILL_INSTALL_CANDIDATE]: DEV_OPERATION_CLASS.MUTATION,
+  [DEV_ADMIN_TOOL.SKILL_ACTIVATE]: DEV_OPERATION_CLASS.MUTATION,
+  [DEV_ADMIN_TOOL.SKILL_ROLLBACK]: DEV_OPERATION_CLASS.MUTATION,
+  [DEV_ADMIN_TOOL.SKILL_VALIDATE_CANDIDATE]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_ADMIN_TOOL.SKILL_RUN]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_WORKER_TOOL.CLAIM]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_WORKER_TOOL.CREATE_CHAT]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_WORKER_TOOL.SEND]: DEV_OPERATION_CLASS.FULL_TURN,
+  [DEV_WORKER_TOOL.FOLLOWUP]: DEV_OPERATION_CLASS.FULL_TURN,
+  [DEV_WORKER_TOOL.NUDGE]: DEV_OPERATION_CLASS.FULL_TURN,
+  [DEV_WORKER_TOOL.STOP]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_WORKER_TOOL.RELEASE]: DEV_OPERATION_CLASS.CONTROL,
+  [DEV_RUNTIME_ACTIVATION_TOOL]: DEV_OPERATION_CLASS.CONTROL,
+});
+
+// The returned identity is read-only data, but the normal handler also
+// updates the self-update gate. That ownership-state side effect makes it
+// ineligible for H2 even while its operation class remains observation.
+const MUST_NOT_BE_BATCHABLE = Object.freeze([
+  DEV_ADMIN_TOOL.RUNTIME_IDENTITY,
+]);
+
+/* Batch eligibility is opt-in and fails closed. This card adds no batch tool;
+   it only makes the eligibility explicit for CARD H2. */
+function batchEligibilityIsOptInAndFailsClosed() {
+  for (const contract of DEV_TOOL_CONTRACTS) {
+    assert.ok(
+      Object.values(DEV_BATCH_POLICY).includes(contract.batchPolicy),
+      `${contract.publicName} batch policy must be a known value`,
+    );
+    if (contract.operationClass !== DEV_OPERATION_CLASS.OBSERVATION) {
+      assert.equal(
+        contract.batchPolicy,
+        DEV_BATCH_POLICY.NEVER,
+        `${contract.publicName} is ${contract.operationClass}, so it must never be batch-eligible`,
+      );
+    }
+  }
+
+  // Nothing that mutates, controls, or takes a full turn may be batched.
+  const batchable = DEV_TOOL_CONTRACTS.filter((item) => item.batchPolicy === DEV_BATCH_POLICY.OBSERVATION);
+  assert.ok(batchable.length > 0, 'at least one observation is eligible, or H2 would have nothing to batch');
+  for (const contract of batchable) {
+    assert.equal(contract.operationClass, DEV_OPERATION_CLASS.OBSERVATION);
+    assert.equal(
+      contract.argumentContract.includes('leaseId'),
+      false,
+      `${contract.publicName} is lease-scoped, which is exactly the ambiguity batch policy must refuse`,
+    );
+  }
+
+  // A state-changing tool must never be reclassified into eligibility.
+  for (const [tool, expected] of Object.entries(MUST_NOT_BE_OBSERVATION)) {
+    assert.equal(devToolOperationClass(tool), expected, `${tool} must stay classified as ${expected}`);
+    assert.notEqual(devToolOperationClass(tool), DEV_OPERATION_CLASS.OBSERVATION, `${tool} changes state and is never an observation`);
+    assert.equal(devToolBatchPolicy(tool), DEV_BATCH_POLICY.NEVER);
+  }
+  for (const tool of MUST_NOT_BE_BATCHABLE) {
+    assert.equal(devToolOperationClass(tool), DEV_OPERATION_CLASS.OBSERVATION);
+    assert.equal(devToolBatchPolicy(tool), DEV_BATCH_POLICY.NEVER, `${tool} has ownership-state side effects and must never be batchable`);
+  }
+
+  // The fail-closed rule itself, across every combination.
+  assert.equal(devBatchPolicyFor(DEV_OPERATION_CLASS.OBSERVATION, DEV_BATCH_POLICY.OBSERVATION), DEV_BATCH_POLICY.OBSERVATION);
+  assert.equal(devBatchPolicyFor(DEV_OPERATION_CLASS.OBSERVATION, undefined), DEV_BATCH_POLICY.NEVER, 'opting in is required');
+  assert.equal(devBatchPolicyFor(DEV_OPERATION_CLASS.OBSERVATION, 'yes-please'), DEV_BATCH_POLICY.NEVER, 'an unknown value is never');
+  for (const operationClass of [DEV_OPERATION_CLASS.MUTATION, DEV_OPERATION_CLASS.CONTROL, DEV_OPERATION_CLASS.FULL_TURN, DEV_OPERATION_CLASS.WAIT, 'invented']) {
+    assert.equal(
+      devBatchPolicyFor(operationClass, DEV_BATCH_POLICY.OBSERVATION),
+      DEV_BATCH_POLICY.NEVER,
+      `${operationClass} can never opt into batching`,
+    );
+  }
+
+  // A tool the registry does not describe is never batch-eligible.
+  assert.equal(devToolBatchPolicy('worker.graph.wait'), DEV_BATCH_POLICY.NEVER);
+  assert.equal(devToolBatchPolicy(''), DEV_BATCH_POLICY.NEVER);
+  assert.equal(devToolBatchPolicy(undefined), DEV_BATCH_POLICY.NEVER);
+  assert.equal(devToolOperationClass('not.a.tool'), null, 'unknown metadata is null, never a guess');
+}
+
 const CLIENT_METHOD_FOR = Object.freeze({
   'dev.worker.discover': 'discover',
   'dev.worker.claim': 'claim',
@@ -383,4 +529,6 @@ everyPublicToolIsCallableFromThePrompt();
 thePromptNeverAdvertisesAToolThatDoesNotExist();
 await everyAdminToolReachesADistinctRuntimeOperation();
 unknownToolsAreStillRejected();
+everyExposedToolHasCanonicalMetadata();
+batchEligibilityIsOptInAndFailsClosed();
 console.log('dev tool contract parity: ok');
