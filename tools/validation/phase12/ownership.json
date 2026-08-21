@@ -2,26 +2,11 @@
   "schemaVersion": "phase12-ownership/v1",
   "phase": 12,
   "lanes": {
-    "p12-k": [
-      "js/knowledge/phase12-**",
-      "js/signature/phase12-**",
-      "tests/phase12/knowledge/**"
-    ],
-    "p12-c": [
-      "js/collaboration/**",
-      "tests/phase12/collaboration/**"
-    ],
-    "p12-p": [
-      "js/pattern/**",
-      "tests/phase12/pattern/**"
-    ],
-    "p12-r": [
-      "js/rebuild/**",
-      "tests/phase12/rebuild/**"
-    ],
-    "p12-reviewer": [
-      "tests/phase12/adversarial/**"
-    ],
+    "p12-k": ["js/knowledge/phase12-**", "js/signature/phase12-**", "tests/phase12/knowledge/**"],
+    "p12-c": ["js/collaboration/**", "tests/phase12/collaboration/**"],
+    "p12-p": ["js/pattern/**", "tests/phase12/pattern/**"],
+    "p12-r": ["js/rebuild/**", "tests/phase12/rebuild/**"],
+    "p12-reviewer": ["tests/phase12/adversarial/**"],
     "p12-integration": [
       "js/phase12/**",
       "tools/validation/phase12/**",
@@ -34,6 +19,7 @@
       ".github/workflows/invariant-gates.yml",
       "package.json",
       "js/platform/capability-maturity.js",
+      "js/platform/stage2-capability-maturity.js",
       "js/platform/physical-ipad-evidence.js",
       "js/runtime/authority.js",
       "js/runtime/stage2.js",
@@ -80,6 +66,7 @@
     "tests/stage1/**",
     "tools/validation/stage2/**",
     "tests/stage2/**",
+    "js/platform/stage2-capability-maturity.js",
     "js/platform/physical-ipad-evidence.js",
     "js/runtime/authority.js",
     "js/runtime/stage2.js",
@@ -87,12 +74,7 @@
     "js/managed/index.js",
     "package.json"
   ],
-  "generatedPaths": [
-    "reports/phase12/**",
-    "userscript/hex.user.template.js",
-    "userscript/release-version.json",
-    "js/userscript/deployment-identity.generated.js"
-  ],
+  "generatedPaths": ["reports/phase12/**", "userscript/hex.user.template.js", "userscript/release-version.json", "js/userscript/deployment-identity.generated.js"],
   "releaseOnlyPaths": ["reports/phase12/**"],
   "forbiddenPaths": ["js/binary/**", "js/architecture/**", "main"],
   "generatedWriteOwners": ["p12-integration"],
