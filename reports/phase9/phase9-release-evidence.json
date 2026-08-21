@@ -1,27 +1,106 @@
 {
-  "schemaVersion": "phase9-release-evidence/v1",
+  "schemaVersion": "phase9-release-evidence/v2",
   "phase": 9,
-  "verdict": "READY",
   "verifier": {
     "id": "phase9.verifier",
-    "version": "1.0.0"
+    "version": "2.0.0"
   },
   "product": {
-    "commitSha": "73cdd208187a93a535d5fdfa7a4ab00728ed7f95",
-    "treeSha": "18dab371e5272d887680b81d47c8e6e1c5320162",
-    "clean": false
+    "commitSha": "ccb472477322ff3447e78e637ec66a06636bd7e0",
+    "treeSha": "a32126138ce96557fc4dcf9a8e2167273c935bf9",
+    "clean": false,
+    "dirtyFiles": [
+      "docs/PHASE9_SOLVER_BACKEND_ADR.md",
+      "docs/PHASE9_START_HERE.md",
+      "js/ai/tools/registry.js",
+      "js/symbolic/evidence/cache-policy.js",
+      "js/symbolic/evidence/symbolic-evidence.js",
+      "js/symbolic/solver/backend.js",
+      "js/symbolic/solver/fake-backend.js",
+      "js/symbolic/solver/index.js",
+      "js/symbolic/solver/registry.js",
+      "js/symbolic/solver/result.js",
+      "js/symbolic/solver/session.js",
+      "js/symbolic/translate/semantic-ir.js",
+      "js/symbolic/translate/support-matrix.js",
+      "js/symbolic/verify/edge-feasibility.js",
+      "js/symbolic/verify/eligibility.js",
+      "js/symbolic/verify/equivalence.js",
+      "js/symbolic/verify/global-reachability.js",
+      "js/symbolic/verify/patch.js",
+      "js/symbolic/verify/query.js",
+      "js/symbolic/verify/validate-model.js",
+      "scripts/build-userscript.mjs",
+      "tests/phase9/evidence/cache-policy.test.mjs",
+      "tests/phase9/evidence/symbolic-evidence.test.mjs",
+      "tests/phase9/solver/lifecycle.test.mjs",
+      "tests/phase9/translate/support-matrix.test.mjs",
+      "tests/phase9/verify/edge-feasibility.test.mjs",
+      "tests/phase9/verify/equivalence.test.mjs",
+      "tests/phase9/verify/global-reachability.test.mjs",
+      "tests/phase9/verify/patch.test.mjs",
+      "tests/phase9/verify/vacuous-proof.test.mjs",
+      "tools/validation/phase9/release-evidence.schema.json",
+      "tools/validation/phase9/verify.mjs",
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json",
+      "js/symbolic/solver/exhaustive-backend.js",
+      "js/symbolic/solver/heuristic-backend.js",
+      "js/symbolic/solver/worker-backend.js",
+      "js/symbolic/solver/worker-entry.js",
+      "tests/phase9/integration/late-result-boundary.test.mjs",
+      "tests/phase9/release/release-evidence.test.mjs",
+      "tests/phase9/solver/proof-authority.test.mjs",
+      "tests/phase9/solver/real-backend.test.mjs",
+      "tests/phase9/solver/worker-lifecycle.test.mjs",
+      "tests/phase9/verify/lifecycle-proof-boundary.test.mjs"
+    ]
+  },
+  "backend": {
+    "id": "hex-exhaustive-bv",
+    "version": "1.0.0",
+    "proofAuthority": "exact",
+    "capabilityFingerprint": "4ea05f339da8463fe444f472d8563dae",
+    "capabilities": {
+      "supportedSorts": [
+        "bool",
+        "bv"
+      ],
+      "maxBvWidth": 8,
+      "supportsQuantifiers": false,
+      "supportsIncremental": false,
+      "supportsCancellation": true,
+      "supportsModelExtraction": true,
+      "sessionReuseAfterTimeout": false,
+      "exactProofs": true,
+      "executionIsolation": "caller-selected",
+      "memoryBudgetClass": "measured-only",
+      "isRemote": false,
+      "isWasm": false,
+      "maxAssignments": 1048576,
+      "maxConstraints": 4096,
+      "maxExprNodes": 100000,
+      "proofAuthority": "exact",
+      "capabilityFingerprint": "4ea05f339da8463fe444f472d8563dae"
+    }
   },
   "testExecution": {
-    "selected": 19,
-    "total": 19,
+    "selected": 25,
+    "total": 25,
     "allPassed": true
   },
   "capabilities": {
+    "proofAuthorityContract": "verified",
+    "realExactSolverBackend": "verified",
+    "isolatedWorkerLifecycle": "verified",
+    "independentSatModelValidation": "verified",
+    "deterministicSmallBitvectorDifferential": "verified",
+    "globalPathCertificate": "verified",
+    "cacheIdentityFingerprint": "verified",
     "solverNeutralExprDag": "verified",
     "bitvectorSemantics": "verified",
     "pureEvaluator": "verified",
     "semanticIrTranslator": "verified",
-    "supportMatrix": "verified",
     "slicingScaffolding": "verified",
     "solverBackendAbstraction": "verified",
     "statusTaxonomy": "verified",
@@ -37,34 +116,68 @@
     {
       "id": "GATE-P9-EXPR",
       "description": "Bool and BV fixed-width Expr DAG, pure evaluation, and structural equality",
-      "status": "PASSED"
+      "status": "PASSED",
+      "ok": true,
+      "reason": null
     },
     {
       "id": "GATE-P9-TRANSLATOR",
       "description": "Semantic IR translator and backward dependency slicing with fail-closed classification",
-      "status": "PASSED"
+      "status": "PASSED",
+      "ok": true,
+      "reason": null
     },
     {
       "id": "GATE-P9-SOLVER",
       "description": "SolverBackend lifecycle, 9-status taxonomy, cancellation and disposal safety",
-      "status": "PASSED"
+      "status": "PASSED",
+      "ok": true,
+      "reason": null
     },
     {
       "id": "GATE-P9-FEASIBILITY",
       "description": "Conditional Edge Feasibility with SAT witness validation and vacuous-proof guard",
-      "status": "PASSED"
+      "status": "PASSED",
+      "ok": true,
+      "reason": null
     },
     {
       "id": "GATE-P9-EQUIVALENCE",
       "description": "Bounded Equivalence and Patch Verification with state/memory correspondence",
-      "status": "PASSED"
+      "status": "PASSED",
+      "ok": true,
+      "reason": null
     },
     {
       "id": "GATE-P9-EVIDENCE-CACHE",
       "description": "SymbolicEvidence schema and verifier fingerprint cache isolation",
-      "status": "PASSED"
+      "status": "PASSED",
+      "ok": true,
+      "reason": null
     }
   ],
-  "timestamp": "2026-08-21T03:12:19.904Z",
-  "evidenceDigest": "d67e754e370823a3ef3eb409c5af99ac337fa8a04482e3d6a0cda900e21a5877"
+  "verdict": "BLOCKING",
+  "deterministicDigest": "94855d7a6678b5773976586030cfaf94",
+  "evidenceDigest": "a1c8805e106108f85b29b3fe9da53a27",
+  "backendGate": {
+    "ok": true,
+    "checks": {
+      "satStatus": "sat",
+      "satModelValid": true,
+      "unsatStatus": "unsat",
+      "exact": true
+    },
+    "reason": null
+  },
+  "implementationGate": {
+    "checks": {
+      "exprEvaluator": true,
+      "translatorExact": true,
+      "unsafeMemoryUnknown": true,
+      "liveBackend": true,
+      "exactEdgeProof": true,
+      "queryIdentity": true
+    },
+    "ok": true
+  }
 }

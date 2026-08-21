@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { ToolRegistry } from '../../../js/ai/tools/registry.js';
+
+test('invalidated late solver results do not enter ObservationStore or EvidenceStore', async () => {
+  const ingested = [];
+  const evidenceStore = {
+    ingest(...args) { ingested.push(args); return [{ id: 'must-not-exist' }]; },
+  };
+  const registry = new ToolRegistry({ evidenceStore, context: { binaryIdentity: 'late-test' } });
+  registry.register({
+    name: 'late_solver_result',
+    deterministic: false,
+    storeResult: true,
+    modelProjection: (result) => result,
+    execute: async () => ({
+      verdict: 'unknown',
+      solverResult: {
+        status: 'unsat',
+        lifecycle: { late: true, stale: true, publishable: false },
+      },
+    }),
+  });
+
+  const result = await registry.execute('late_solver_result', {});
+
+  assert.deepEqual(result.evidence, []);
+  assert.equal(ingested.length, 0);
+  assert.equal(registry.observationStore.records.size, 0);
+  assert.equal(registry.observationStore.getCached('late_solver_result', {}), null);
+});

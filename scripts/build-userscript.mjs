@@ -15,6 +15,7 @@ const ORIGIN_TOKEN = '__HEX_ORIGIN__';
 const releaseStatePath = resolve(root, 'userscript/release-version.json');
 const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
+const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js'];
 
 await Promise.all([rm(dist, { recursive: true, force: true }), rm(generated, { recursive: true, force: true })]);
 await Promise.all([mkdir(resolve(dist, 'assets'), { recursive: true }), mkdir(resolve(dist, '.runtime'), { recursive: true }), mkdir(resolve(dist, 'userscript'), { recursive: true }), mkdir(generated, { recursive: true })]);
@@ -106,9 +107,14 @@ async function buildWorkerAssets() {
     const minified = await transform(inlineImports(entry, sources), { loader: 'js', target: 'safari17.4', minify: true, legalComments: 'none', sourcemap: false });
     classic[entry] = minified.code;
   }
-  const platform = await bundle('js/platform/worker.js', { format: 'iife' });
+  const modules = {
+    [MODULE_WORKER_ENTRIES[0]]: (await bundle(MODULE_WORKER_ENTRIES[0], { format: 'iife' })).toString('utf8'),
+  };
+  for (const entry of MODULE_WORKER_ENTRIES.slice(1)) {
+    modules[entry] = (await bundle(entry, { format: 'esm' })).toString('utf8');
+  }
   const wasm = await readFile(resolve(root, 'capstone.wasm'));
-  return { classic, modules: { 'js/platform/worker.js': platform.toString('utf8') }, wasm: wasm.toString('base64') };
+  return { classic, modules, wasm: wasm.toString('base64') };
 }
 async function collectClassic(path, sources) {
   path = normalizePath(path); if (sources.has(path)) return;

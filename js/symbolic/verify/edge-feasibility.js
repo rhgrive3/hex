@@ -12,7 +12,7 @@
 
 import { TRANSLATION_STATUS, COMPLETENESS_STATUS, createCompleteness } from '../translate/support-matrix.js';
 import { translateSemanticIR } from '../translate/semantic-ir.js';
-import { SOLVER_STATUS } from '../solver/result.js';
+import { isValidSolverResult, SOLVER_STATUS } from '../solver/result.js';
 import {
   VERIFICATION_QUERY_KIND,
   CLAIM_KIND,
@@ -22,6 +22,7 @@ import {
 import { validateSatModel } from './validate-model.js';
 import { checkProofEligibility } from './eligibility.js';
 import { checkPreconditionsConsistency } from './preconditions.js';
+import { createSymbolicEvidence } from '../evidence/symbolic-evidence.js';
 
 export async function verifyConditionalEdgeFeasibility({
   ir = null,
@@ -32,11 +33,13 @@ export async function verifyConditionalEdgeFeasibility({
   backend = null,
   session = null,
   options = {},
+  queryKind = VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
+  claimKind = CLAIM_KIND.EDGE_INFEASIBLE,
 } = {}) {
   if (!edgeCondition) {
     return Object.freeze({
       verdict: VERDICT.UNKNOWN,
-      claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+      claimKind,
       reasonCode: 'missing-edge-condition',
       proofStatement: 'Missing edge condition for verification',
       solverStatus: SOLVER_STATUS.INVALID_QUERY,
@@ -81,7 +84,7 @@ export async function verifyConditionalEdgeFeasibility({
   if (!edgeExpr) {
     return Object.freeze({
       verdict: VERDICT.UNKNOWN,
-      claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+      claimKind,
       reasonCode: 'translation-failed',
       proofStatement: 'Edge condition could not be translated into symbolic expression',
       solverStatus: SOLVER_STATUS.UNSUPPORTED,
@@ -115,6 +118,16 @@ export async function verifyConditionalEdgeFeasibility({
       if (pTrans.semanticUnknowns) {
         translationRes.semanticUnknowns = (translationRes.semanticUnknowns || 0) + pTrans.semanticUnknowns;
       }
+      if (pTrans.completeness) {
+        translationRes.completeness = createCompleteness(Object.fromEntries(
+          Object.keys(translationRes.completeness || {}).map((key) => [
+            key,
+            pTrans.completeness[key] === COMPLETENESS_STATUS.COMPLETE
+              ? translationRes.completeness?.[key] || COMPLETENESS_STATUS.COMPLETE
+              : pTrans.completeness[key],
+          ])
+        ));
+      }
     }
   }
 
@@ -128,17 +141,45 @@ export async function verifyConditionalEdgeFeasibility({
   queryConstraints.push(edgeExpr);
 
   const query = createVerificationQuery({
-    kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
-    claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+    kind: queryKind,
+    claimKind,
     targetEntity: { fromBlock, toBlock },
     constraints: queryConstraints,
     assertion: null,
     assumptions: translationRes.assumptions,
     completeness: translationRes.completeness,
+    semanticIrVersion: options.semanticIrVersion,
+    translatorVersion: options.translatorVersion,
+    architecture: options.architecture,
+    bitWidth: options.bitWidth ?? edgeExpr.sort?.width ?? null,
+    proofScope: options.proofScope || {
+      kind: queryKind,
+      fromBlock,
+      toBlock,
+      global: queryKind === VERIFICATION_QUERY_KIND.GLOBAL_EDGE_REACHABILITY,
+    },
   });
 
   // 4. Solve query Q
   const solverResult = await activeSession.check(query, options);
+
+  const lifecycle = solverResult?.lifecycle || {};
+  if (lifecycle.publishable === false || lifecycle.timedOut || lifecycle.cancelled || lifecycle.stale || lifecycle.disposed) {
+    return Object.freeze({
+      verdict: VERDICT.UNKNOWN,
+      claimKind,
+      reasonCode: lifecycle.timedOut ? 'timeout' : lifecycle.stale ? 'stale-result' : lifecycle.disposed ? 'disposed-session' : 'cancelled',
+      proofStatement: 'Solver result was invalidated by timeout, cancellation, disposal, or stale query replacement',
+      solverStatus: solverResult.status,
+      preconditionStatus: 'unknown',
+      assumptions: Object.freeze(translationRes.assumptions || []),
+      completeness: translationRes.completeness,
+      queryHash: query.queryHash,
+      query,
+      solverResult,
+      evidence: null,
+    });
+  }
 
   // 5. Evaluate Solver Result
   // Case A: SAT -> Feasible counterexample found
@@ -147,7 +188,7 @@ export async function verifyConditionalEdgeFeasibility({
     if (!modelValidation.valid) {
       return Object.freeze({
         verdict: VERDICT.UNKNOWN,
-        claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+        claimKind,
         reasonCode: 'invalid-sat-model',
         proofStatement: 'Solver returned SAT model that failed independent validation',
         solverStatus: SOLVER_STATUS.PROVIDER_FAILURE,
@@ -164,7 +205,7 @@ export async function verifyConditionalEdgeFeasibility({
 
     return Object.freeze({
       verdict: VERDICT.REFUTED,
-      claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+      claimKind,
       proofStatement: `Conditional edge from block ${fromBlock ?? 'unknown'} to ${toBlock ?? 'unknown'} is FEASIBLE under preconditions (witness found)`,
       solverStatus: solverResult.status,
       preconditionStatus: 'satisfiable',
@@ -186,7 +227,7 @@ export async function verifyConditionalEdgeFeasibility({
       if (pCheck.status === SOLVER_STATUS.UNSAT) {
         return Object.freeze({
           verdict: VERDICT.UNKNOWN,
-          claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+          claimKind,
           reasonCode: 'inconsistent-preconditions',
           proofStatement:
             'Preconditions are inconsistent (UNSAT); cannot prove edge infeasibility (vacuous proof rejected)',
@@ -202,7 +243,7 @@ export async function verifyConditionalEdgeFeasibility({
 
       return Object.freeze({
         verdict: VERDICT.UNKNOWN,
-        claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+        claimKind,
         reasonCode: pCheck.reason || 'unresolved-preconditions',
         proofStatement: `Preconditions satisfiability could not be resolved (${pCheck.status})`,
         solverStatus: solverResult.status,
@@ -216,25 +257,55 @@ export async function verifyConditionalEdgeFeasibility({
     }
 
     // Preconditions are satisfiable; check full proof eligibility
-    const isRemote = activeSession.backend?.isRemote || backend?.isRemote || false;
     const eligibility = checkProofEligibility({
       queryValid: true,
+      query,
       translationStatus: translationRes.status,
       scopeCompleteness: translationRes.completeness,
       semanticUnknowns: translationRes.semanticUnknowns,
       unsupportedEntities: translationRes.unsupportedEntities,
       assumptionsExplicit: true,
       preconditionsConsistent: true,
-      backendCapabilityExact: !isRemote,
+      backend: activeSession.backend || backend,
+      solverResult,
+      validSolverResult: isValidSolverResult(solverResult, { query, backend: activeSession.backend || backend }),
       solverResultStatus: solverResult.status,
       cancelled: activeSession.isCancelled?.() ?? false,
+      timedOut: lifecycle.timedOut === true,
+      stale: lifecycle.stale === true,
+      disposed: lifecycle.disposed === true,
       budgetExceeded: options.budgetExceeded ?? false,
+      budgetFailure: lifecycle.budgetExceeded === true,
     });
 
     if (eligibility.eligible) {
+      const proofBackend = activeSession.backend || backend;
+      const evidence = createSymbolicEvidence({
+        queryKind: query.kind,
+        claimKind,
+        proofStatement: `Conditional edge from block ${fromBlock ?? 'unknown'} to ${toBlock ?? 'unknown'} is PROVED INFEASIBLE under satisfiable preconditions`,
+        targetEntities: [String(fromBlock ?? 'unknown'), String(toBlock ?? 'unknown')],
+        queryHash: query.queryHash,
+        exprSchemaVersion: '1.0.0',
+        translatorVersion: query.translatorVersion,
+        semanticIrVersion: query.semanticIrVersion,
+        backendId: proofBackend.id,
+        backendVersion: proofBackend.version,
+        proofAuthority: proofBackend.proofAuthority,
+        capabilityFingerprint: proofBackend.capabilityFingerprint(),
+        solverStatus: solverResult.status,
+        preconditionStatus: 'satisfiable',
+        validationStatus: 'not-applicable',
+        assumptions: translationRes.assumptions || [],
+        completeness: translationRes.completeness,
+        architecture: query.architecture,
+        bitWidth: query.bitWidth,
+        proofScope: query.proofScope,
+        verdict: VERDICT.PROVED,
+      });
       return Object.freeze({
         verdict: VERDICT.PROVED,
-        claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+        claimKind,
         proofStatement: `Conditional edge from block ${fromBlock ?? 'unknown'} to ${toBlock ?? 'unknown'} is PROVED INFEASIBLE under satisfiable preconditions`,
         solverStatus: solverResult.status,
         preconditionStatus: 'satisfiable',
@@ -243,12 +314,15 @@ export async function verifyConditionalEdgeFeasibility({
         queryHash: query.queryHash,
         query,
         solverResult,
+        proofAuthority: proofBackend.proofAuthority,
+        capabilityFingerprint: proofBackend.capabilityFingerprint(),
+        evidence,
       });
     }
 
     return Object.freeze({
       verdict: VERDICT.UNKNOWN,
-      claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+      claimKind,
       reasonCode: eligibility.reasons.join('; '),
       proofStatement: `Proof ineligible: ${eligibility.reasons.join(', ')}`,
       solverStatus: solverResult.status,
@@ -264,7 +338,7 @@ export async function verifyConditionalEdgeFeasibility({
   // Case C: Non-conclusive solver statuses (TIMEOUT, CANCELLED, RESOURCE_LIMIT, UNSUPPORTED, etc.)
   return Object.freeze({
     verdict: VERDICT.UNKNOWN,
-    claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+    claimKind,
     reasonCode: solverResult.reason || solverResult.status,
     proofStatement: `Verification inconclusive: solver status ${solverResult.status}${
       solverResult.reason ? ` (${solverResult.reason})` : ''

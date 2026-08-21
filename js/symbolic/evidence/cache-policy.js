@@ -10,10 +10,11 @@
 
 import { stableDigest } from '../../core/identity/index.js';
 import { SOLVER_STATUS } from '../solver/result.js';
+import { PROOF_AUTHORITY } from '../solver/backend.js';
 import { EXPR_SCHEMA_VERSION, EXPR_DAG_VERSION } from '../expr/serialize.js';
 import { COMPLETENESS_STATUS } from '../translate/support-matrix.js';
 
-export const VERIFIER_FINGERPRINT_SCHEMA_VERSION = '1.0.0';
+export const VERIFIER_FINGERPRINT_SCHEMA_VERSION = '1.1.0';
 
 function sha256Hex(data) {
   return stableDigest(data);
@@ -39,8 +40,15 @@ export function computeVerifierFingerprint({
   exprSchemaVersion = EXPR_SCHEMA_VERSION,
   exprDagVersion = EXPR_DAG_VERSION,
   translatorVersion = '1.0.0',
+  semanticIrVersion = '2.0.0',
   backendId,
   backendVersion = '0.0.0',
+  proofAuthority = PROOF_AUTHORITY.NONE,
+  capabilityFingerprint = null,
+  architecture = 'generic',
+  bitWidth = null,
+  assumptionsFingerprint = null,
+  proofScope = null,
   solverOptions = null,
 } = {}) {
   if (!queryKind || typeof queryKind !== 'string' || queryKind.trim() === '') {
@@ -61,13 +69,26 @@ export function computeVerifierFingerprint({
   if (!backendVersion || typeof backendVersion !== 'string') {
     throw new TypeError('computeVerifierFingerprint: backendVersion is required and must be a string');
   }
+  if (!Object.values(PROOF_AUTHORITY).includes(proofAuthority)) {
+    throw new TypeError(`computeVerifierFingerprint: invalid proofAuthority '${proofAuthority}'`);
+  }
+  if (proofAuthority === PROOF_AUTHORITY.EXACT && (!capabilityFingerprint || typeof capabilityFingerprint !== 'string')) {
+    throw new TypeError('computeVerifierFingerprint: exact authority requires capabilityFingerprint');
+  }
 
   const payload = {
     backendId: String(backendId),
     backendVersion: String(backendVersion),
     exprDagVersion: String(exprDagVersion),
     exprSchemaVersion: String(exprSchemaVersion),
+    semanticIrVersion: String(semanticIrVersion),
     queryKind: String(queryKind),
+    proofAuthority: String(proofAuthority),
+    capabilityFingerprint: capabilityFingerprint == null ? null : String(capabilityFingerprint),
+    architecture: String(architecture),
+    bitWidth: bitWidth == null ? null : Number(bitWidth),
+    assumptionsFingerprint: assumptionsFingerprint == null ? null : String(assumptionsFingerprint),
+    proofScope: proofScope ? canonicalizeValue(proofScope) : null,
     solverOptions: solverOptions ? canonicalizeValue(solverOptions) : null,
     translatorVersion: String(translatorVersion),
   };
@@ -83,11 +104,17 @@ export function isCacheableProof({
   hasUnresolvedUnknowns = false,
   preconditionStatus = null,
   validationStatus = null,
+  proofAuthority = PROOF_AUTHORITY.NONE,
+  capabilityFingerprint = null,
+  backendId = null,
+  backendVersion = null,
 } = {}) {
   // 1. Only clean PROVED or REFUTED verdicts may be cached
   if (verdict !== 'proved' && verdict !== 'refuted') {
     return false;
   }
+
+  if (proofAuthority !== PROOF_AUTHORITY.EXACT || !capabilityFingerprint || !backendId || !backendVersion) return false;
 
   // 2. Check solver status: must be clean SAT or UNSAT, not failure/timeout/cancelled/etc.
   if (
@@ -124,6 +151,9 @@ export function isCacheableProof({
   if (preconditionStatus === 'inconsistent' || preconditionStatus === 'unknown') {
     return false;
   }
+
+  if (verdict === 'proved' && solverStatus !== SOLVER_STATUS.UNSAT) return false;
+  if (verdict === 'refuted' && solverStatus !== SOLVER_STATUS.SAT) return false;
 
   // 6. Rejected counterexamples cannot be cached as refuted proofs
   if (validationStatus === 'rejected' || validationStatus === 'failed') {

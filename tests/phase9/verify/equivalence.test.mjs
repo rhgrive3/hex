@@ -5,23 +5,22 @@ import { bvSort, BV_BINARY_OP, BV_COMPARE_OP } from '../../../js/symbolic/expr/k
 import { createBv, createFreshSymbol, createBinary, createCompare } from '../../../js/symbolic/expr/factory.js';
 import { SOLVER_STATUS } from '../../../js/symbolic/solver/result.js';
 import { FakeSolverBackend } from '../../../js/symbolic/solver/fake-backend.js';
+import { ExhaustiveBvBackend } from '../../../js/symbolic/solver/exhaustive-backend.js';
 import { VERDICT, CLAIM_KIND } from '../../../js/symbolic/verify/query.js';
 import { verifyBoundedEquivalence } from '../../../js/symbolic/verify/equivalence.js';
 
 test('verifyBoundedEquivalence: proves equivalence when solver returns UNSAT on difference condition', async () => {
   // Before: x + x
-  const x1 = createFreshSymbol(bvSort(32), 'x');
+  const x1 = createFreshSymbol(bvSort(4), 'x');
   const beforeExpr = createBinary(BV_BINARY_OP.ADD, x1, x1);
 
   // After: x << 1
-  const x2 = createFreshSymbol(bvSort(32), 'x');
-  const c1 = createBv(32, 1);
+  const x2 = x1;
+  const c1 = createBv(4, 1);
   const afterExpr = createBinary(BV_BINARY_OP.SHL, x2, c1);
 
   // Backend returns UNSAT (meaning no difference exists)
-  const backend = new FakeSolverBackend({
-    defaultStatus: SOLVER_STATUS.UNSAT,
-  });
+  const backend = new ExhaustiveBvBackend();
 
   const res = await verifyBoundedEquivalence({
     beforeTarget: beforeExpr,
@@ -34,6 +33,26 @@ test('verifyBoundedEquivalence: proves equivalence when solver returns UNSAT on 
   assert.equal(res.reasonCode, 'proved-equivalent');
   assert.ok(res.evidence);
   assert.equal(res.evidence.verdict, 'proved');
+});
+
+test('verifyBoundedEquivalence: requires and applies explicit symbolic correspondence', async () => {
+  const beforeX = createFreshSymbol(bvSort(4), 'input_before');
+  const afterX = createFreshSymbol(bvSort(4), 'input_after');
+  const beforeExpr = createBinary(BV_BINARY_OP.ADD, beforeX, beforeX);
+  const afterExpr = createBinary(BV_BINARY_OP.SHL, afterX, createBv(4, 1));
+  const backend = new ExhaustiveBvBackend();
+
+  const missing = await verifyBoundedEquivalence({ beforeTarget: beforeExpr, afterTarget: afterExpr, backend });
+  assert.equal(missing.verdict, VERDICT.UNKNOWN);
+  assert.equal(missing.reasonCode, 'missing-input-state-correspondence');
+
+  const mapped = await verifyBoundedEquivalence({
+    beforeTarget: beforeExpr,
+    afterTarget: afterExpr,
+    correspondence: { symbols: { [afterX.symbolId]: beforeX.symbolId } },
+    backend,
+  });
+  assert.equal(mapped.verdict, VERDICT.PROVED);
 });
 
 test('verifyBoundedEquivalence: refutes equivalence when solver produces valid counterexample', async () => {

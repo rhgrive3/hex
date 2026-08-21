@@ -15,8 +15,13 @@ export const VERIFICATION_QUERY_KIND = Object.freeze({
   GLOBAL_EDGE_REACHABILITY: 'global_edge_reachability',
 });
 
+export const QUERY_SCHEMA_VERSION = '1.1.0';
+export const SEMANTIC_IR_VERSION = '2.0.0';
+export const TRANSLATOR_VERSION = '1.1.0';
+
 export const CLAIM_KIND = Object.freeze({
   EDGE_INFEASIBLE: 'edge_infeasible',
+  GLOBAL_EDGE_UNREACHABLE: 'global_edge_unreachable',
   EDGE_FEASIBLE: 'edge_feasible',
   EQUIVALENT: 'equivalent',
   DIFFERENT: 'different',
@@ -28,6 +33,13 @@ export const VERDICT = Object.freeze({
   UNKNOWN: 'unknown',
 });
 
+function freezeDeep(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) freezeDeep(child, seen);
+  return Object.freeze(value);
+}
+
 export function isVerificationQuery(query) {
   return (
     !!query &&
@@ -35,6 +47,7 @@ export function isVerificationQuery(query) {
     typeof query.kind === 'string' &&
     typeof query.claimKind === 'string' &&
     Array.isArray(query.constraints) &&
+    query.schemaVersion === QUERY_SCHEMA_VERSION &&
     typeof query.queryHash === 'string'
   );
 }
@@ -48,6 +61,11 @@ export function createVerificationQuery({
   assumptions = [],
   completeness = null,
   requestedOutputs = [],
+  semanticIrVersion = SEMANTIC_IR_VERSION,
+  translatorVersion = TRANSLATOR_VERSION,
+  architecture = 'generic',
+  bitWidth = null,
+  proofScope = null,
 }) {
   if (!Object.values(VERIFICATION_QUERY_KIND).includes(kind)) {
     throw new TypeError(`createVerificationQuery: invalid query kind '${kind}'`);
@@ -66,20 +84,35 @@ export function createVerificationQuery({
   const normalizedAssumptions = Array.isArray(assumptions) ? [...assumptions] : [];
   const normalizedOutputs = Array.isArray(requestedOutputs) ? [...requestedOutputs] : [];
   const normalizedCompleteness = completeness || createCompleteness();
+  freezeDeep(targetEntity);
+  freezeDeep(normalizedConstraints);
+  freezeDeep(assertion);
+  freezeDeep(normalizedAssumptions);
+  freezeDeep(normalizedOutputs);
+  freezeDeep(normalizedCompleteness);
+  freezeDeep(proofScope);
 
-  const hashPayload = JSON.stringify({
+  const hashPayload = {
+    schemaVersion: QUERY_SCHEMA_VERSION,
     kind,
     claimKind,
     targetEntity: targetEntity && typeof targetEntity === 'object' ? targetEntity : String(targetEntity || ''),
-    constraints: normalizedConstraints.map((c) => computeStructuralHash(c)),
-    assertion: assertion ? computeStructuralHash(assertion) : null,
-    assumptions: normalizedAssumptions.map((a) => a.id || a.statement || String(a)),
+    constraints: normalizedConstraints.map((c) => ({ hash: computeStructuralHash(c), expression: c })),
+    assertion: assertion ? { hash: computeStructuralHash(assertion), expression: assertion } : null,
+    assumptions: normalizedAssumptions,
+    completeness: normalizedCompleteness,
     requestedOutputs: normalizedOutputs,
-  });
+    semanticIrVersion: String(semanticIrVersion),
+    translatorVersion: String(translatorVersion),
+    architecture: String(architecture),
+    bitWidth: bitWidth == null ? null : Number(bitWidth),
+    proofScope: proofScope || null,
+  };
 
   const queryHash = stableDigest(hashPayload);
 
   return Object.freeze({
+    schemaVersion: QUERY_SCHEMA_VERSION,
     kind,
     claimKind,
     targetEntity: targetEntity && typeof targetEntity === 'object' ? Object.freeze({ ...targetEntity }) : targetEntity,
@@ -88,6 +121,11 @@ export function createVerificationQuery({
     assumptions: Object.freeze(normalizedAssumptions),
     completeness: normalizedCompleteness,
     requestedOutputs: Object.freeze(normalizedOutputs),
+    semanticIrVersion: String(semanticIrVersion),
+    translatorVersion: String(translatorVersion),
+    architecture: String(architecture),
+    bitWidth: bitWidth == null ? null : Number(bitWidth),
+    proofScope: proofScope || null,
     queryHash,
   });
 }

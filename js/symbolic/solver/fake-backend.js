@@ -5,7 +5,7 @@
  * and status taxonomy verification.
  */
 
-import { SolverBackend } from './backend.js';
+import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
 import { SolverSession } from './session.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
 
@@ -17,12 +17,27 @@ export class FakeSolverSession extends SolverSession {
     this.queriesHandled = 0;
   }
 
-  async _executeCheck(query, options, token) {
+  async _executeCheck(query, options, token, signal) {
     this.queriesHandled++;
 
     const delayMs = options.delayMs ?? this.options.delayMs ?? this.backend.defaultDelayMs ?? 0;
     if (delayMs > 0) {
-      await new Promise((r) => setTimeout(r, delayMs));
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => signal?.removeEventListener?.('abort', onAbort);
+        const finish = (fn, value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          fn(value);
+        };
+        const timer = setTimeout(() => finish(resolve), delayMs);
+        const onAbort = () => {
+          finish(reject, new Error('fake-provider-aborted'));
+        };
+        signal?.addEventListener?.('abort', onAbort, { once: true });
+      });
     }
 
     // Check if handler is configured on backend or session options
@@ -49,7 +64,7 @@ export class FakeSolverSession extends SolverSession {
       });
     }
 
-    const defaultStatus = options.defaultStatus || this.options.defaultStatus || this.backend.defaultStatus || SOLVER_STATUS.UNSAT;
+    const defaultStatus = options.defaultStatus || this.options.defaultStatus || this.backend.defaultStatus || SOLVER_STATUS.UNKNOWN;
     const defaultModel = options.defaultModel || this.options.defaultModel || this.backend.defaultModel || null;
 
     return createSolverResult({
@@ -76,13 +91,14 @@ export class FakeSolverBackend extends SolverBackend {
   constructor({
     id = 'fake-solver',
     version = '1.0.0',
-    defaultStatus = SOLVER_STATUS.UNSAT,
+    defaultStatus = SOLVER_STATUS.UNKNOWN,
     defaultModel = null,
     defaultDelayMs = 0,
     handler = null,
     queryMap = null,
   } = {}) {
-    super({ id, version, isRemote: false, isWasm: false });
+    // A fake/test provider is never allowed to opt into proof authority.
+    super({ id, version, proofAuthority: PROOF_AUTHORITY.TEST_ONLY, isRemote: false, isWasm: false });
     this.defaultStatus = defaultStatus;
     this.defaultModel = defaultModel;
     this.defaultDelayMs = defaultDelayMs;

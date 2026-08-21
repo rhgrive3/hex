@@ -8,6 +8,7 @@
  */
 
 import {
+  EXPR_KIND,
   bvSort,
   boolSort,
   BV_COMPARE_OP,
@@ -26,7 +27,7 @@ import {
   createCompleteness,
 } from '../translate/support-matrix.js';
 import { translateSemanticIR } from '../translate/semantic-ir.js';
-import { SOLVER_STATUS } from '../solver/result.js';
+import { isValidSolverResult, SOLVER_STATUS } from '../solver/result.js';
 import {
   VERIFICATION_QUERY_KIND,
   CLAIM_KIND,
@@ -37,6 +38,81 @@ import { validateSatModel } from './validate-model.js';
 import { checkProofEligibility } from './eligibility.js';
 import { checkPreconditionsConsistency } from './preconditions.js';
 import { createSymbolicEvidence } from '../evidence/symbolic-evidence.js';
+
+function collectFreshSymbols(expr, out = [], seen = new Set()) {
+  if (!expr || typeof expr !== 'object' || seen.has(expr)) return out;
+  seen.add(expr);
+  if (expr.kind === EXPR_KIND.FRESH_SYMBOL) out.push(expr);
+  if (expr.kind === EXPR_KIND.UNARY || expr.kind === EXPR_KIND.EXTRACT || expr.kind === EXPR_KIND.CAST) collectFreshSymbols(expr.arg, out, seen);
+  else if (expr.kind === EXPR_KIND.BINARY || expr.kind === EXPR_KIND.COMPARE || expr.kind === EXPR_KIND.CONCAT) {
+    collectFreshSymbols(expr.left, out, seen); collectFreshSymbols(expr.right, out, seen);
+  } else if (expr.kind === EXPR_KIND.CONNECTIVE) {
+    for (const arg of expr.args || []) collectFreshSymbols(arg, out, seen);
+  } else if (expr.kind === EXPR_KIND.ITE) {
+    collectFreshSymbols(expr.cond, out, seen); collectFreshSymbols(expr.thenExpr, out, seen); collectFreshSymbols(expr.elseExpr, out, seen);
+  }
+  return out;
+}
+
+function resolveSymbol(symbols, key) {
+  if (!key) return null;
+  return symbols.find((symbol) => symbol === key || symbol.symbolId === String(key) || symbol.name === String(key)) || null;
+}
+
+function replaceSymbols(expr, replacements, seen = new Map()) {
+  if (!expr || typeof expr !== 'object') return expr;
+  if (expr.kind === EXPR_KIND.FRESH_SYMBOL) {
+    const direct = replacements.get(expr);
+    if (direct) return direct;
+    const byName = [...replacements.entries()].find(([candidate]) => candidate.name === expr.name && candidate.sort.kind === expr.sort.kind && candidate.sort.width === expr.sort.width);
+    return byName?.[1] || expr;
+  }
+  if (seen.has(expr)) return seen.get(expr);
+  const children = {};
+  if (expr.kind === EXPR_KIND.UNARY || expr.kind === EXPR_KIND.EXTRACT || expr.kind === EXPR_KIND.CAST) children.arg = replaceSymbols(expr.arg, replacements, seen);
+  else if (expr.kind === EXPR_KIND.BINARY || expr.kind === EXPR_KIND.COMPARE || expr.kind === EXPR_KIND.CONCAT) {
+    children.left = replaceSymbols(expr.left, replacements, seen);
+    children.right = replaceSymbols(expr.right, replacements, seen);
+  } else if (expr.kind === EXPR_KIND.CONNECTIVE) children.args = Object.freeze((expr.args || []).map((arg) => replaceSymbols(arg, replacements, seen)));
+  else if (expr.kind === EXPR_KIND.ITE) {
+    children.cond = replaceSymbols(expr.cond, replacements, seen);
+    children.thenExpr = replaceSymbols(expr.thenExpr, replacements, seen);
+    children.elseExpr = replaceSymbols(expr.elseExpr, replacements, seen);
+  }
+  if (Object.keys(children).length === 0) return expr;
+  const replaced = Object.freeze({ ...expr, ...children });
+  seen.set(expr, replaced);
+  return replaced;
+}
+
+function correspondAfterSymbols(beforeExpr, afterExpr, correspondence = {}) {
+  const beforeSymbols = collectFreshSymbols(beforeExpr);
+  const afterSymbols = collectFreshSymbols(afterExpr);
+  const replacements = new Map();
+  for (const symbol of afterSymbols) if (beforeSymbols.includes(symbol)) replacements.set(symbol, symbol);
+
+  const addPair = (afterKey, beforeKey) => {
+    const after = resolveSymbol(afterSymbols, afterKey);
+    const before = resolveSymbol(beforeSymbols, beforeKey);
+    if (after && before && after.sort.kind === before.sort.kind && after.sort.width === before.sort.width) replacements.set(after, before);
+  };
+  for (const pair of Array.isArray(correspondence.inputs) ? correspondence.inputs : []) {
+    addPair(pair?.after ?? pair?.afterSymbol ?? pair?.afterName, pair?.before ?? pair?.beforeSymbol ?? pair?.beforeName);
+  }
+  for (const [afterKey, beforeKey] of Object.entries(correspondence.symbols || {})) addPair(afterKey, beforeKey);
+
+  const beforeArgs = correspondence.beforeArgs || {};
+  const afterArgs = correspondence.afterArgs || {};
+  for (const [index, beforeKey] of Object.entries(beforeArgs)) {
+    if (afterArgs[index] !== undefined) addPair(afterArgs[index], beforeKey);
+  }
+
+  const unresolved = afterSymbols.filter((symbol) => !replacements.has(symbol));
+  if (unresolved.length > 0) {
+    return { ok: false, reason: 'missing-input-state-correspondence', symbols: unresolved.map((symbol) => symbol.name) };
+  }
+  return { ok: true, expression: replaceSymbols(afterExpr, replacements), replacements };
+}
 
 export async function verifyBoundedEquivalence({
   beforeIr = null,
@@ -131,20 +207,47 @@ export async function verifyBoundedEquivalence({
     });
   }
 
+  const correspondenceResult = correspondAfterSymbols(beforeExpr, afterExpr, correspondence);
+  if (!correspondenceResult.ok) {
+    return Object.freeze({
+      verdict: VERDICT.UNKNOWN,
+      claimKind: CLAIM_KIND.EQUIVALENT,
+      reasonCode: correspondenceResult.reason,
+      proofStatement: 'Equivalence requires an explicit correspondence for every symbolic input/state value',
+      solverStatus: SOLVER_STATUS.UNSUPPORTED,
+      assumptions: Object.freeze(combinedAssumptions),
+      completeness: createCompleteness({ queryScope: COMPLETENESS_STATUS.PARTIAL }),
+      queryHash: null,
+      query: null,
+      solverResult: null,
+      evidence: null,
+      unresolvedSymbols: Object.freeze(correspondenceResult.symbols),
+    });
+  }
+  afterExpr = correspondenceResult.expression;
+  const symbolReplacements = correspondenceResult.replacements;
+
   // 2. Translate preconditions P
   let pExpr = null;
   let pAssumptions = [];
+  let pUnsupported = [];
+  let pUnknowns = 0;
+  let pTrans = null;
   if (preconditions) {
     if (Array.isArray(preconditions)) {
       pExpr = preconditions;
     } else if (preconditions.kind && preconditions.sort) {
       pExpr = preconditions;
     } else {
-      const pTrans = translateSemanticIR(preconditions, { ir: beforeIr, ...options });
+      pTrans = translateSemanticIR(preconditions, { ir: beforeIr, ...options });
       pExpr = pTrans.expression;
       pAssumptions = pTrans.assumptions || [];
+      pUnsupported = pTrans.unsupportedEntities || [];
+      pUnknowns = pTrans.semanticUnknowns || 0;
     }
   }
+  if (Array.isArray(pExpr)) pExpr = pExpr.map((expr) => replaceSymbols(expr, symbolReplacements));
+  else if (pExpr) pExpr = replaceSymbols(pExpr, symbolReplacements);
 
   // 3. Form difference condition: beforeExpr != afterExpr
   // Sort match check
@@ -171,18 +274,22 @@ export async function verifyBoundedEquivalence({
   // Assertion for solver query: diffCond is true (looking for counterexample difference)
   const constraints = pExpr ? (Array.isArray(pExpr) ? pExpr : [pExpr]) : [];
   const allAssumptions = [...combinedAssumptions, ...pAssumptions];
+  const allUnsupported = [...combinedUnsupported, ...pUnsupported];
+  const allUnknowns = combinedUnknowns + pUnknowns;
 
+  const translationResults = [beforeTrans, afterTrans, pTrans].filter(Boolean);
+  const mergeCompleteness = (key) => {
+    const statuses = translationResults.map((item) => item.completeness?.[key] || COMPLETENESS_STATUS.PARTIAL);
+    if (statuses.includes(COMPLETENESS_STATUS.UNSUPPORTED)) return COMPLETENESS_STATUS.UNSUPPORTED;
+    if (statuses.includes(COMPLETENESS_STATUS.PARTIAL)) return COMPLETENESS_STATUS.PARTIAL;
+    return COMPLETENESS_STATUS.COMPLETE;
+  };
   const completeness = createCompleteness({
-    translation:
-      combinedUnknowns > 0 || combinedUnsupported.length > 0
-        ? COMPLETENESS_STATUS.UNSUPPORTED
-        : allAssumptions.length > 0
-        ? COMPLETENESS_STATUS.PARTIAL
-        : COMPLETENESS_STATUS.COMPLETE,
-    controlFlow: COMPLETENESS_STATUS.COMPLETE,
-    memoryEffects: COMPLETENESS_STATUS.COMPLETE,
-    pathCoverage: COMPLETENESS_STATUS.COMPLETE,
-    queryScope: COMPLETENESS_STATUS.COMPLETE,
+    translation: allUnknowns > 0 || allUnsupported.length > 0 ? COMPLETENESS_STATUS.UNSUPPORTED : mergeCompleteness('translation'),
+    controlFlow: mergeCompleteness('controlFlow'),
+    memoryEffects: mergeCompleteness('memoryEffects'),
+    pathCoverage: mergeCompleteness('pathCoverage'),
+    queryScope: mergeCompleteness('queryScope'),
   });
 
   const query = createVerificationQuery({
@@ -197,10 +304,35 @@ export async function verifyBoundedEquivalence({
     assertion: diffCond,
     assumptions: allAssumptions,
     completeness,
+    semanticIrVersion: options.semanticIrVersion,
+    translatorVersion: options.translatorVersion,
+    architecture: options.architecture,
+    bitWidth: options.bitWidth ?? beforeExpr.sort?.width ?? null,
+    proofScope: options.proofScope || {
+      kind: VERIFICATION_QUERY_KIND.BOUNDED_EQUIVALENCE,
+      memoryRegions,
+    },
   });
 
   // 4. Execute solver check
   const solverResult = await activeSession.check(query, options);
+
+  const lifecycle = solverResult?.lifecycle || {};
+  if (lifecycle.publishable === false || lifecycle.timedOut || lifecycle.cancelled || lifecycle.stale || lifecycle.disposed) {
+    return Object.freeze({
+      verdict: VERDICT.UNKNOWN,
+      claimKind: CLAIM_KIND.EQUIVALENT,
+      reasonCode: lifecycle.timedOut ? 'timeout' : lifecycle.stale ? 'stale-result' : lifecycle.disposed ? 'disposed-session' : 'cancelled',
+      proofStatement: 'Solver result was invalidated by timeout, cancellation, disposal, or stale query replacement',
+      solverStatus: solverResult.status,
+      assumptions: Object.freeze(allAssumptions),
+      completeness,
+      queryHash: query.queryHash,
+      query,
+      solverResult,
+      evidence: null,
+    });
+  }
 
   // 5. Evaluate result
   if (solverResult.status === SOLVER_STATUS.SAT) {
@@ -230,14 +362,20 @@ export async function verifyBoundedEquivalence({
       targetEntities: [String(query.targetEntity.beforeId), String(query.targetEntity.afterId)],
       queryHash: query.queryHash,
       exprSchemaVersion: '1.0.0',
-      translatorVersion: '1.0.0',
+      translatorVersion: query.translatorVersion,
+      semanticIrVersion: query.semanticIrVersion,
       backendId: activeSession.backend?.id || 'unknown',
       backendVersion: activeSession.backend?.version || '0.0.0',
+      proofAuthority: activeSession.backend?.proofAuthority || 'none',
+      capabilityFingerprint: activeSession.backend?.capabilityFingerprint?.() || null,
       solverStatus: solverResult.status,
       preconditionStatus: 'satisfiable',
       validationStatus: 'validated',
       assumptions: allAssumptions,
       completeness,
+      architecture: query.architecture,
+      bitWidth: query.bitWidth,
+      proofScope: query.proofScope,
       origins: [
         ...Object.keys(beforeTrans?.originMap || {}),
         ...Object.keys(afterTrans?.originMap || {}),
@@ -267,12 +405,15 @@ export async function verifyBoundedEquivalence({
     // Check preconditions consistency (Vacuous proof guard)
     const pCheck = await checkPreconditionsConsistency(pExpr, activeSession, options);
     if (!pCheck.consistent) {
+      const inconsistent = pCheck.status === SOLVER_STATUS.UNSAT;
       return Object.freeze({
         verdict: VERDICT.UNKNOWN,
         claimKind: CLAIM_KIND.EQUIVALENT,
-        reasonCode: 'inconsistent-preconditions',
-        proofStatement: 'Equivalence cannot be proved: claim preconditions are contradictory (vacuous proof rejected)',
-        solverStatus: SOLVER_STATUS.UNSAT,
+        reasonCode: inconsistent ? 'inconsistent-preconditions' : (pCheck.reason || 'unresolved-preconditions'),
+        proofStatement: inconsistent
+          ? 'Equivalence cannot be proved: claim preconditions are contradictory (vacuous proof rejected)'
+          : `Equivalence preconditions could not be resolved (${pCheck.status})`,
+        solverStatus: solverResult.status,
         preconditionConsistency: pCheck,
         assumptions: Object.freeze(allAssumptions),
         completeness,
@@ -285,19 +426,26 @@ export async function verifyBoundedEquivalence({
 
     const eligibility = checkProofEligibility({
       queryValid: true,
+      query,
       translationStatus:
-        combinedUnknowns === 0 && combinedUnsupported.length === 0
+        allUnknowns === 0 && allUnsupported.length === 0
           ? (allAssumptions.length > 0 ? TRANSLATION_STATUS.EXACT_WITH_ASSUMPTIONS : TRANSLATION_STATUS.EXACT)
           : TRANSLATION_STATUS.UNSUPPORTED,
       scopeCompleteness: completeness,
-      semanticUnknowns: combinedUnknowns,
-      unsupportedEntities: combinedUnsupported,
+      semanticUnknowns: allUnknowns,
+      unsupportedEntities: allUnsupported,
       assumptionsExplicit: true,
       preconditionsConsistent: pCheck.consistent === true,
-      backendCapabilityExact: true,
+      backend: activeSession.backend,
+      solverResult,
+      validSolverResult: isValidSolverResult(solverResult, { query, backend: activeSession.backend }),
       solverResultStatus: solverResult.status,
       cancelled: activeSession.isCancelled(),
-      budgetExceeded: false,
+      timedOut: lifecycle.timedOut === true,
+      stale: lifecycle.stale === true,
+      disposed: lifecycle.disposed === true,
+      budgetExceeded: options.budgetExceeded ?? false,
+      budgetFailure: lifecycle.budgetExceeded === true,
     });
 
     if (!eligibility.eligible) {
@@ -325,13 +473,19 @@ export async function verifyBoundedEquivalence({
       queryHash: query.queryHash,
       exprSchemaVersion: '1.0.0',
       translatorVersion: '1.0.0',
+      semanticIrVersion: query.semanticIrVersion,
       backendId: activeSession.backend?.id || 'unknown',
       backendVersion: activeSession.backend?.version || '0.0.0',
+      proofAuthority: activeSession.backend?.proofAuthority || 'none',
+      capabilityFingerprint: activeSession.backend?.capabilityFingerprint?.() || null,
       solverStatus: solverResult.status,
       preconditionStatus: 'satisfiable',
       validationStatus: 'validated',
       assumptions: allAssumptions,
       completeness,
+      architecture: query.architecture,
+      bitWidth: query.bitWidth,
+      proofScope: query.proofScope,
       origins: [
         ...Object.keys(beforeTrans?.originMap || {}),
         ...Object.keys(afterTrans?.originMap || {}),

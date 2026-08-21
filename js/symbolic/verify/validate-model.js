@@ -55,12 +55,15 @@ export function validateSatModel(query, model) {
       };
     }
 
-    const isSatisfied =
-      c.sort?.kind === SORT_KIND.BOOL
-        ? evalRes.value === true
-        : c.sort?.kind === SORT_KIND.BV
-        ? evalRes.value !== 0n
-        : Boolean(evalRes.value);
+    if (c.sort?.kind !== SORT_KIND.BOOL) {
+      return {
+        valid: false,
+        reason: 'invalid-query-predicate',
+        detail: { constraintIndex: i, sort: c.sort },
+      };
+    }
+
+    const isSatisfied = evalRes.value === true;
 
     if (!isSatisfied) {
       return {
@@ -92,12 +95,11 @@ export function validateSatModel(query, model) {
       };
     }
 
-    const isSatisfied =
-      assertion.sort?.kind === SORT_KIND.BOOL
-        ? evalRes.value === true
-        : assertion.sort?.kind === SORT_KIND.BV
-        ? evalRes.value !== 0n
-        : Boolean(evalRes.value);
+    if (assertion.sort?.kind !== SORT_KIND.BOOL) {
+      return { valid: false, reason: 'invalid-query-assertion', detail: { sort: assertion.sort } };
+    }
+
+    const isSatisfied = evalRes.value === true;
 
     if (!isSatisfied) {
       return {

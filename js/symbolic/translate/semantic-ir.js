@@ -266,18 +266,9 @@ export function translateSemanticIR(target, options = {}) {
           return translateValue(inst.reachingStore.args[0].value, width);
         }
         if (inst.loc && inst.loc.kind !== MK.UNKNOWN) {
-          assumptions.push(
-            createAssumption({
-              id: `load_assumption_${inst.id}`,
-              kind: 'memory-read-immutable',
-              statement: `Memory location ${inst.loc.key || inst.loc.kind} assumed stable at load ${inst.id}`,
-              source: 'translator',
-              originIds: inst.origin != null ? [String(inst.origin)] : [],
-              trust: ASSUMPTION_TRUST.SEMANTIC_FACT,
-            })
-          );
-          const sym = createFreshSymbol(bvSort(width), `mem_${inst.loc.key || inst.id}`, { loadInst: inst.id, loc: inst.loc });
-          return sym;
+          semanticUnknowns++;
+          unsupportedEntities.push({ id: inst.id, op: 'load', reason: 'missing-unique-reaching-store' });
+          return createUnknownSemantic(bvSort(width), 'missing-unique-reaching-store', { instructionId: inst.id });
         }
         semanticUnknowns++;
         unsupportedEntities.push({ id: inst.id, op: 'load', reason: 'unknown-load-alias' });

@@ -13,7 +13,16 @@ import {
   isRefutedEvidence,
 } from '../../../js/symbolic/evidence/symbolic-evidence.js';
 import { SOLVER_STATUS } from '../../../js/symbolic/solver/result.js';
+import { ExhaustiveBvBackend } from '../../../js/symbolic/solver/exhaustive-backend.js';
 import { COMPLETENESS_STATUS, createAssumption, createCompleteness } from '../../../js/symbolic/translate/support-matrix.js';
+
+const exactBackend = new ExhaustiveBvBackend();
+const exactBackendFields = {
+  backendId: exactBackend.id,
+  backendVersion: exactBackend.version,
+  proofAuthority: exactBackend.proofAuthority,
+  capabilityFingerprint: exactBackend.capabilityFingerprint(),
+};
 
 test('SymbolicEvidence schema builder produces immutable validated evidence records', () => {
   const assumption = createAssumption({
@@ -38,8 +47,7 @@ test('SymbolicEvidence schema builder produces immutable validated evidence reco
     queryHash: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
     exprSchemaVersion: '1.0.0',
     translatorVersion: '1.0.0',
-    backendId: 'fake-solver',
-    backendVersion: '1.0.0',
+    ...exactBackendFields,
     solverStatus: SOLVER_STATUS.UNSAT,
     preconditionStatus: PRECONDITION_STATUS.SATISFIABLE,
     validationStatus: VALIDATION_STATUS.NOT_APPLICABLE,
@@ -51,7 +59,7 @@ test('SymbolicEvidence schema builder produces immutable validated evidence reco
   });
 
   assert.equal(evidence.schemaVersion, EVIDENCE_SCHEMA_VERSION);
-  assert.equal(evidence.schemaVersion, '1.0.0');
+  assert.equal(evidence.schemaVersion, '1.1.0');
   assert.equal(evidence.queryKind, 'edge-feasibility');
   assert.equal(evidence.claimKind, 'edge-feasibility');
   assert.equal(evidence.proofStatement, 'Edge 0x1000->0x1020 is infeasible under precondition P');
@@ -59,8 +67,8 @@ test('SymbolicEvidence schema builder produces immutable validated evidence reco
   assert.equal(evidence.queryHash, 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90');
   assert.equal(evidence.exprSchemaVersion, '1.0.0');
   assert.equal(evidence.translatorVersion, '1.0.0');
-  assert.equal(evidence.backendId, 'fake-solver');
-  assert.equal(evidence.backendVersion, '1.0.0');
+  assert.equal(evidence.backendId, exactBackend.id);
+  assert.equal(evidence.backendVersion, exactBackend.version);
   assert.equal(evidence.solverStatus, SOLVER_STATUS.UNSAT);
   assert.equal(evidence.preconditionStatus, PRECONDITION_STATUS.SATISFIABLE);
   assert.equal(evidence.validationStatus, VALIDATION_STATUS.NOT_APPLICABLE);
@@ -128,9 +136,9 @@ test('SymbolicEvidence rejects missing or invalid required fields', () => {
     queryHash: 'hash123',
     exprSchemaVersion: '1.0.0',
     translatorVersion: '1.0.0',
-    backendId: 'fake-solver',
-    backendVersion: '1.0.0',
+    ...exactBackendFields,
     solverStatus: SOLVER_STATUS.UNSAT,
+    preconditionStatus: PRECONDITION_STATUS.SATISFIABLE,
     verdict: EVIDENCE_VERDICT.PROVED,
   };
 
@@ -173,8 +181,7 @@ test('SymbolicEvidence enforces fail-closed semantic invariants', () => {
     proofStatement: 'Edge is infeasible',
     targetEntities: ['func:0x1000'],
     queryHash: 'hash123',
-    backendId: 'fake-solver',
-    backendVersion: '1.0.0',
+    ...exactBackendFields,
   };
 
   // Invariant 1: Inconsistent precondition cannot mint proved evidence (vacuous truth prevention)
@@ -244,9 +251,9 @@ test('SymbolicEvidence generates deterministic collision-resistant evidence IDs'
     proofStatement: 'Edge is infeasible',
     targetEntities: ['func:0x1000', 'block:0x1000'],
     queryHash: 'hash_abc',
-    backendId: 'fake-solver',
-    backendVersion: '1.0.0',
+    ...exactBackendFields,
     solverStatus: SOLVER_STATUS.UNSAT,
+    preconditionStatus: PRECONDITION_STATUS.SATISFIABLE,
     verdict: EVIDENCE_VERDICT.PROVED,
   };
 

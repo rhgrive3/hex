@@ -11,6 +11,7 @@ import {
 } from '../../../js/symbolic/expr/factory.js';
 import { SOLVER_STATUS } from '../../../js/symbolic/solver/result.js';
 import { FakeSolverBackend } from '../../../js/symbolic/solver/fake-backend.js';
+import { ExhaustiveBvBackend } from '../../../js/symbolic/solver/exhaustive-backend.js';
 import { VERDICT } from '../../../js/symbolic/verify/query.js';
 import { checkPreconditionsConsistency } from '../../../js/symbolic/verify/preconditions.js';
 import { verifyConditionalEdgeFeasibility } from '../../../js/symbolic/verify/edge-feasibility.js';
@@ -106,28 +107,12 @@ test('vacuous proof guard: contradictory preconditions block edge infeasibility 
 });
 
 test('vacuous proof guard: satisfiable preconditions allow genuine infeasibility proof', async () => {
-  const x = createFreshSymbol(bvSort(32), 'arg_x0');
+  const x = createFreshSymbol(bvSort(4), 'arg_x0');
   // Edge condition: x == 42
-  const edgeCond = createCompare(BV_COMPARE_OP.EQ, x, createBv(32, 42n));
+  const edgeCond = createCompare(BV_COMPARE_OP.EQ, x, createBv(4, 10n));
   // Preconditions P: x > 100
-  const p = createCompare(BV_COMPARE_OP.UGT, x, createBv(32, 100n));
-
-  // Handler: Q (x > 100 AND x == 42) is UNSAT; P (x > 100) is SAT with model x = 150
-  const backend = new FakeSolverBackend({
-    handler: async (query) => {
-      // If query is for preconditions P alone
-      if (query.targetEntity === 'preconditions') {
-        return {
-          status: SOLVER_STATUS.SAT,
-          model: { arg_x0: 150n },
-        };
-      }
-      // Query Q = P AND edgeCond is UNSAT
-      return {
-        status: SOLVER_STATUS.UNSAT,
-      };
-    },
-  });
+  const p = createCompare(BV_COMPARE_OP.UGT, x, createBv(4, 11n));
+  const backend = new ExhaustiveBvBackend();
 
   const res = await verifyConditionalEdgeFeasibility({
     fromBlock: 0,
