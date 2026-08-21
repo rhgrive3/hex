@@ -177,6 +177,7 @@ export class FieldIndex {
   findFields(query, limit = 200) {
     const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
+    if (Number(limit) <= 0) return out;
     for (const c of this.classes.values()) {
       for (const iv of c.ivars) {
         re.lastIndex = 0;
@@ -192,6 +193,7 @@ export class FieldIndex {
   findClasses(query, limit = 200) {
     const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
+    if (Number(limit) <= 0) return out;
     for (const c of this.classes.values()) {
       re.lastIndex = 0;
       if (re.test(c.name)) out.push(c);
