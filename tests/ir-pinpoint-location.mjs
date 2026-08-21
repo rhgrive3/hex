@@ -2,6 +2,7 @@
 import { buildSemanticModel } from '../js/blocks.js';
 import { GOALS } from '../js/goals.js';
 import { pinpointLocation } from '../js/pinpoint.js';
+import { AMOUNT, SHAPE, foldShapes } from '../js/shapes.js';
 
 const BASE = 0x100000000n;
 function modelOf(lines) {
@@ -39,13 +40,15 @@ const model = modelOf([
 const goal = GOALS.find((g) => g.id === 'hp');
 ok(goal, 'hp goal exists');
 
+const program = {
+  functionRange: () => ({ start: BASE, end: BASE + 48n }),
+  functionStartOf: () => BASE,
+};
+
 const result = await pinpointLocation({
   goal,
   ranked: [{ addr: BASE, name: 'applyDamage', strings: ['damage', 'hp'] }],
-  program: {
-    functionRange: () => ({ start: BASE, end: BASE + 48n }),
-    functionStartOf: () => BASE,
-  },
+  program,
   analyze: async () => model,
   budget: { left: 12 },
   limit: 10,
@@ -61,4 +64,38 @@ ok(c.updates[0].steps.some((s) => s.op === 'sub'), 'arithmetic survives into pin
 ok(c.compares && c.compares.some((x) => x.value === 100n && x.engine === 'ir-ssa'),
   'SSA-propagated guard reaches pinpoint');
 
+// Automatic analysis has already paid for the whole-program value-shape pass.
+// With that index present, pinpoint must not rescan the whole executable region
+// through fieldAccessMany for every goal. The observed shape mutation is still
+// surfaced as a grouped change site.
+{
+  const shapes = foldShapes({
+    count: 1, capped: false,
+    disp: Int32Array.of(0x20),
+    size: Uint8Array.of(4),
+    flags: Uint8Array.of(SHAPE.DECREASE | SHAPE.CLAMP | SHAPE.CROSS),
+    amtKind: Uint8Array.of(AMOUNT.FIELD),
+    amtDisp: Int32Array.of(0x30),
+    addr: BigUint64Array.of(BASE + 32n),
+    span: Int32Array.of(0x100),
+    amtSize: Uint8Array.of(4),
+    amtSpan: Int32Array.of(0x100),
+  });
+  let scans = 0;
+  const fast = await pinpointLocation({
+    goal,
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: ['damage', 'hp'] }],
+    program,
+    analyze: async () => model,
+    shapes,
+    scanAccess: async () => { scans++; throw new Error('redundant whole-region scan'); },
+    budget: { left: 12 },
+    limit: 10,
+  });
+  eq(scans, 0, 'shape-backed pinpoint must not repeat fieldAccess whole-region scans');
+  ok(fast.changeSites.some((site) => site.first === BASE + 32n && site.stores > 0),
+    'shape mutation must remain available as a grouped change site');
+}
+
 process.stdout.write('  ok  pinpointLocation consumes SSA RMW + threshold\n');
+process.stdout.write('  ok  shape-backed pinpoint avoids redundant whole-region scans\n');
