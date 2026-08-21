@@ -36,6 +36,9 @@ const app = {
 };
 
 const api = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(app));
+app.analysisQueries = api; // mirrors App constructor assignment after adapter creation
+assert.equal(app._fetchFunctionModel.name, 'routedFunctionModel', 'Function Workspace producer must be installed behind the query boundary');
+
 const snapshot = await api.snapshot();
 assert.equal(snapshot.binaryId, 'bin_live');
 assert.equal(snapshot.projectRevision, revision);
@@ -53,7 +56,11 @@ assert.equal(ir.value, semanticIr, 'query layer must prefer canonical semantic-v
 const cfg = await api.cfg(snapshot, '0x1000');
 assert.equal(cfg.completeness, 'complete');
 assert.equal(cfg.value, canonicalCfg, 'query layer must prefer canonical semantic CFG over compatibility projection');
-assert.equal(fetches, 3, 'each public query resolves through the live non-UI-mutating producer');
+assert.equal(fetches, 3, 'each public query resolves through the captured live non-UI-mutating producer');
+
+const workspaceModel = await app._fetchFunctionModel(0x1000n);
+assert.equal(workspaceModel.id, 'fn_1000');
+assert.equal(fetches, 4, 'Function Workspace route must cross AnalysisQueryAPI and terminate once at the captured producer');
 
 revision++;
 await assert.rejects(() => api.function(snapshot, '0x1000'), (error) => error instanceof AnalysisSnapshotStaleError);
