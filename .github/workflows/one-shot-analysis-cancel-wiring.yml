@@ -1,0 +1,102 @@
+name: One-shot analysis cancellation wiring
+
+on:
+  push:
+    branches:
+      - fix/analysis-cancellation-settlement
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/analysis-cancellation-settlement
+          fetch-depth: 0
+      - name: Apply exact wiring patch and remove this workflow
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('js/panels.js')
+          source = path.read_text()
+
+          old_scanner = """function makeAccessScanner(app, region) {
+            if (!region) return null;
+            return async (list) => {
+              const offsets = (list || []).map((x) => ({ offset: x.offset, size: x.size || 0 }));
+              if (!offsets.length) return new Map();
+              return app.backend.fieldAccessMany(region.id, offsets);
+            };
+          }"""
+          new_scanner = """function makeAccessScanner(app, region) {
+            if (!region) return null;
+            return (list) => {
+              const offsets = (list || []).map((x) => ({ offset: x.offset, size: x.size || 0 }));
+              if (!offsets.length) return Promise.resolve(new Map());
+              // Keep Backend.fieldAccessMany's cancellable promise intact. An async
+              // wrapper would assimilate it and strip the custom cancel() hook used
+              // by the pinpoint timeout to settle the underlying Worker RPC.
+              return app.backend.fieldAccessMany(region.id, offsets);
+            };
+          }"""
+
+          old_analyzer = """function makeAnalyzer(app, region) {
+            if (!region || !app.store.get('canDisassemble')) return null;
+            const totalRows = Number(region.size / 4n);
+            return async (addr, end) => {
+              const startRow = Number((addr - region.vmAddr) / 4n);
+              if (!(startRow >= 0) || startRow >= totalRows) return null;
+              const endRow = end != null
+                ? Math.min(totalRows - 1, Number((end - region.vmAddr) / 4n) - 1)
+                : Math.min(totalRows - 1, startRow + 512);
+              if (endRow < startRow) return null;
+              // 速さのために文字列は読まない。あとで開いたときに読み足される。
+              const res = await analyzeFunctionCached(app.backend, region, startRow, endRow,
+                app.symbols, null, { texts: false });
+              return res.model;
+            };
+          }"""
+          new_analyzer = """function makeAnalyzer(app, region) {
+            if (!region || !app.store.get('canDisassemble')) return null;
+            const totalRows = Number(region.size / 4n);
+            return async (addr, end, options = {}) => {
+              const startRow = Number((addr - region.vmAddr) / 4n);
+              if (!(startRow >= 0) || startRow >= totalRows) return null;
+              const endRow = end != null
+                ? Math.min(totalRows - 1, Number((end - region.vmAddr) / 4n) - 1)
+                : Math.min(totalRows - 1, startRow + 512);
+              if (endRow < startRow) return null;
+              // 速さのために文字列は読まない。あとで開いたときに読み足される。
+              // Pinpoint injects AbortSignal through options; preserve it all the way
+              // into semantic analysis while keeping this lightweight path text-free.
+              const res = await analyzeFunctionCached(app.backend, region, startRow, endRow,
+                app.symbols, null, { ...(options || {}), texts: false });
+              return res.model;
+            };
+          }"""
+
+          for old, new, label in [
+            (old_scanner, new_scanner, 'makeAccessScanner'),
+            (old_analyzer, new_analyzer, 'makeAnalyzer'),
+          ]:
+            count = source.count(old)
+            if count != 1:
+              raise SystemExit(f'{label}: expected exactly one source match, got {count}')
+            source = source.replace(old, new)
+
+          path.write_text(source)
+          Path('.github/workflows/one-shot-analysis-cancel-wiring.yml').unlink()
+      - name: Commit exact source patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/panels.js .github/workflows/one-shot-analysis-cancel-wiring.yml
+          git diff --cached --check
+          git diff --cached --exit-code && exit 1 || true
+          git commit -m "fix(auto): preserve pinpoint cancellation through UI adapters"
+          git push origin HEAD:fix/analysis-cancellation-settlement
