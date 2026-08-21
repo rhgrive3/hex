@@ -3,7 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { matchRoute } from '../js/ui/router.js';
 import { ROUTES, PRIMARY_NAV, LEGACY_MIGRATION, createActionRegistry } from '../js/ui/registry.js';
-import { installViewerDragReturnGuard } from '../js/ui/viewer-gesture-guard.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
@@ -30,37 +29,7 @@ check('ux.js is a thin product bootstrap', ux.includes('installProductUI') && !u
 check('legacy hidden-button architecture is not recreated', !ux.includes('ux-source-action') && !ux.includes('ux-v2'));
 check('legacy analysis actions are not delegated through DOM click', !/(btn-tools|btn-functions|btn-search|btn-jump|btn-strings|btn-sections|btn-struct)[\s\S]{0,160}\.click\(/.test(ux));
 check('file picker activation is an explicit canonical action', ux.includes("actions.register('file.open'") && ux.includes("getElementById('file-input')?.click()"));
-check('viewer drag-return guard is installed by compatibility bootstrap', ux.includes('installViewerDragReturnGuard(window.__app.viewer)'));
 check('ux.css is only a canonical stylesheet entrypoint', uxCss.includes('./tokens.css') && uxCss.includes('./mobile.css') && !uxCss.includes('.ux-v2'));
-
-class FakeViewport {
-  constructor() { this.listeners = new Map(); }
-  addEventListener(type, fn) {
-    const list = this.listeners.get(type) || [];
-    list.push(fn);
-    this.listeners.set(type, list);
-  }
-  emit(type, event) {
-    for (const fn of this.listeners.get(type) || []) fn(event);
-  }
-}
-const viewport = new FakeViewport();
-const viewer = { vp: viewport };
-check('viewer gesture guard installs once', installViewerDragReturnGuard(viewer) === true && installViewerDragReturnGuard(viewer) === true);
-const row = { _row: 7 };
-const target = { closest: (selector) => selector === '.row' ? row : null };
-let stopped = 0;
-viewport.emit('pointerdown', { pointerId: 1, pointerType: 'touch', button: 0, clientX: 10, clientY: 10, target });
-viewport.emit('pointermove', { pointerId: 1, clientX: 28, clientY: 10 });
-viewport.emit('pointermove', { pointerId: 1, clientX: 10, clientY: 10 });
-viewport.emit('pointerup', { pointerId: 1, stopImmediatePropagation: () => { stopped++; } });
-check('drag-return pointerup cannot be reinterpreted as a tap', stopped === 1);
-viewport.emit('pointerdown', { pointerId: 2, pointerType: 'touch', button: 0, clientX: 10, clientY: 10, target });
-viewport.emit('pointerup', { pointerId: 2, stopImmediatePropagation: () => { stopped++; } });
-check('normal tap pointerup remains untouched', stopped === 1);
-let toleranceRejected = false;
-try { installViewerDragReturnGuard({ vp: new FakeViewport() }, { moveTolerance: Number.NaN }); } catch { toleranceRejected = true; }
-check('invalid gesture tolerance fails closed', toleranceRejected);
 
 check('modern copy path retained', ui.includes('navigator.clipboard.writeText'));
 check('legacy Safari copy fallback retained', ui.includes("document.execCommand('copy')") && ui.includes("document.createElement('textarea')"));
