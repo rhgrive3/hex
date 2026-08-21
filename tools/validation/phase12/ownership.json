@@ -25,6 +25,7 @@
     "p12-integration": [
       "js/phase12/**",
       "tools/validation/phase12/**",
+      "tests/phase12/run.mjs",
       "tests/phase12/foundation/**",
       "tests/phase12/integration/**",
       ".github/workflows/phase12-release-validation.yml",
