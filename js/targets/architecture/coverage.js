@@ -4,7 +4,8 @@ import { architecturePluginV2 } from './registry.js';
 export const MACHINE_EFFECTS_COVERAGE_SCHEMA = 'machine-effects-coverage/v1';
 
 const EXACT_COMPLETENESS = new Set(['exact', 'exact-with-intrinsic']);
-const COVERED_COMPLETENESS = new Set(['exact', 'exact-with-intrinsic', 'partial', 'unknown']);
+const COVERED_COMPLETENESS = new Set(['exact', 'exact-with-intrinsic', 'partial']);
+const VALID_COMPLETENESS = new Set([...COVERED_COMPLETENESS, 'unknown']);
 
 function resolvePlugin(value) {
   if (value && typeof value === 'object' && typeof value.id === 'string') return value;
@@ -29,6 +30,7 @@ export function machineEffectsCoverageDescriptor(architectureOrPlugin) {
     capability: String(plugin.capabilities?.exactEffects || (typeof plugin.liftExact === 'function' ? 'available' : 'unsupported')),
     denominator: 'observed-decoded-instructions',
     unsupportedPolicy: 'explicit',
+    unknownPolicy: 'represented-not-covered',
   });
 }
 
@@ -59,7 +61,7 @@ export function classifyMachineEffectsCoverage(architectureOrPlugin, decoded, co
   } catch (error) {
     return Object.freeze({ ...base, status: 'error', reason: 'machine-effects-invalid-bundle', error: frozenError(error) });
   }
-  if (!COVERED_COMPLETENESS.has(validated.completeness)) {
+  if (!VALID_COMPLETENESS.has(validated.completeness)) {
     return Object.freeze({
       ...base,
       status: 'error',
@@ -69,7 +71,7 @@ export function classifyMachineEffectsCoverage(architectureOrPlugin, decoded, co
   }
   return Object.freeze({
     ...base,
-    status: 'covered',
+    status: COVERED_COMPLETENESS.has(validated.completeness) ? 'covered' : 'unknown',
     completeness: validated.completeness,
     exact: EXACT_COMPLETENESS.has(validated.completeness),
     instructionId: validated.instructionId,
@@ -105,15 +107,19 @@ export function measureMachineEffectsCoverage(architectureOrPlugin, decodedInstr
   }
   const denominator = decodedInstructions.length;
   const exactCount = counts.exact + counts.exactWithIntrinsic;
-  const coveredCount = exactCount + counts.partial + counts.unknown;
+  const coveredCount = exactCount + counts.partial;
+  const representedCount = coveredCount + counts.unknown;
   return Object.freeze({
     ...machineEffectsCoverageDescriptor(plugin),
     denominatorCount: denominator,
     coveredCount,
+    representedCount,
     exactCount,
     unsupportedCount: counts.unsupported,
+    unknownCount: counts.unknown,
     errorCount: counts.error,
     coverageRate: denominator === 0 ? null : coveredCount / denominator,
+    representationRate: denominator === 0 ? null : representedCount / denominator,
     exactRate: denominator === 0 ? null : exactCount / denominator,
     counts: Object.freeze(counts),
     classifications: Object.freeze(classifications),
