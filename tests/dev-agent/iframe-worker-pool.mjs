@@ -6,6 +6,7 @@ import {
   WORKER_FRAME_HOST_ID,
   defaultCreateFrame,
 } from '../../js/userscript/dev/frame-mesh/iframe-worker-pool.js';
+import { DedicatedWorkerCoordinator } from '../../js/userscript/dev/frame-mesh/dedicated-worker-coordinator.js';
 import { ChatGPTDOMAdapter } from '../../js/userscript/chatgpt-adapter.js';
 
 /* The Pool attaches its own handlers to every started turn. A rejected Worker
@@ -59,6 +60,81 @@ async function testConcurrentClaimReservesSlotBeforeSettling() {
   assert.equal(lease.slot, 1);
   await pool.release({ leaseId: lease.leaseId });
   pool.close();
+}
+
+async function testClosedPoolRejectsLateClaimWithoutResurrectingLease() {
+  let claimStarted;
+  const claimStartedPromise = new Promise((resolve) => { claimStarted = resolve; });
+  let releaseClaim;
+  const claimReleasePromise = new Promise((resolve) => { releaseClaim = resolve; });
+  const calls = [];
+  const pool = newPool(new FakeFrameFactory(), {
+    createWorkerRuntime: ({ slot, document }) => {
+      const runtime = fakeWorkerRuntime(slot, document);
+      const claim = runtime.coordinator.claim.bind(runtime.coordinator);
+      const release = runtime.coordinator.release.bind(runtime.coordinator);
+      runtime.coordinator.claim = async (args) => {
+        calls.push('claim');
+        claimStarted();
+        await claimReleasePromise;
+        return claim(args);
+      };
+      runtime.coordinator.release = async (args) => {
+        calls.push('release');
+        return release(args);
+      };
+      return runtime;
+    },
+  });
+  await pool.provision({ size: 1, timeoutMs: 2000 });
+
+  const pending = pool.claim({ taskId: 'late-claim', wait: false });
+  await claimStartedPromise;
+  pool.close();
+  releaseClaim();
+
+  await assert.rejects(
+    pending,
+    (error) => error?.code === 'transport-failure',
+    'a claim that finishes after pool close must not publish a lease to the retired pool',
+  );
+  assert.deepEqual(calls, ['claim', 'release'], 'a late remote acceptance must still attempt cleanup');
+  assert.equal(pool.status().slots.length, 0);
+  assert.equal(pool.status().claimedCount, 0);
+  await assert.rejects(
+    pool.claim({ taskId: 'after-close', wait: false }),
+    (error) => error?.code === 'transport-failure',
+  );
+}
+
+async function testDedicatedCoordinatorCloseSettlesInFlightSend() {
+  const listeners = new Set();
+  let sendStarted;
+  const sendStartedPromise = new Promise((resolve) => { sendStarted = resolve; });
+  let finishSend;
+  const controller = {
+    on(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    observe() { return { state: 'WORKING' }; },
+    workerConversation() { return null; },
+    isActive() { return true; },
+    async send() {
+      sendStarted();
+      return new Promise((resolve) => { finishSend = resolve; });
+    },
+    result() { return { status: 'working' }; },
+  };
+  const coordinator = new DedicatedWorkerCoordinator({ controller, tabNodeId: 'dedicated-close-test' });
+  await coordinator.claim({ runId: 'close-run', workerId: 'close-worker' });
+  const pending = coordinator.send({ runId: 'close-run', workerId: 'close-worker', instruction: 'never settles' });
+  await sendStartedPromise;
+  coordinator.close();
+  await assert.rejects(
+    pending,
+    (error) => error?.code === 'transport-failure',
+    'closing a dedicated Worker must settle a send even when the initial controller RPC is still pending',
+  );
+  finishSend({ status: 'completed' });
+  for (const listener of listeners) listeners({ kind: 'completed' });
 }
 
 async function testRejectedClaimRollsBackBeforeReuse() {
@@ -579,6 +655,8 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
 await testSixFramesSeventhWaitsAndReuse();
 await testConcurrentClaimReservesSlotBeforeSettling();
+await testClosedPoolRejectsLateClaimWithoutResurrectingLease();
+await testDedicatedCoordinatorCloseSettlesInFlightSend();
 await testRejectedClaimRollsBackBeforeReuse();
 await testRejectedClaimQuarantinesWhenRollbackFails();
 await testBlockedEmbeddingIsReportedExactly();
