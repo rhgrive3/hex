@@ -143,6 +143,38 @@ assert.equal((await x86Api.cfg(x86Snapshot, '0x1000')).value, cfg);
 assert.equal((await x86Api.decompile(x86Snapshot, '0x1000')).value.pseudocode, 'int f(void) { return 1; }');
 assert.equal(canonicalCalls, 4, 'each immutable query reaches the canonical producer or its artifact warm path');
 
+const unknownEndApp = {
+  ...x86App,
+  backend:{
+    ...x86App.backend,
+    binaryId:'bin_x86_unknown_end',
+    async analyzeSemanticFunction(options) {
+      assert.equal(options.completeness, 'partial', 'unproven function ends must never be promoted to a complete semantic artifact');
+      return {
+        route:'phase5-shadow-v2',
+        architectureId:'x86_64',
+        abiId:options.abiId,
+        pipeline:{ semanticIr, cfg },
+        decompiler:{ semantic:true, pseudocode:'int unknown_end(void);', lines:[], evidence:[] },
+      };
+    },
+  },
+  validatedFunctionRange(address) {
+    assert.equal(BigInt(address), 0x1000n);
+    return {
+      ok:true, start:0x1000n, end:0x1100n, region,
+      function:{ start:0x1000n, end:null },
+      complete:true, reason:null, provenance:'region-fallback',
+    };
+  },
+};
+const unknownEndApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(unknownEndApp));
+unknownEndApp.analysisQueries = unknownEndApi;
+const unknownEndSnapshot = await unknownEndApi.snapshot();
+const unknownEnd = await unknownEndApi.function(unknownEndSnapshot, '0x1000');
+assert.equal(unknownEnd.completeness, 'partial');
+assert.equal(unknownEnd.status.reason, 'function-end-unproven');
+
 let riscvCalls = 0;
 function riscvApp(flags) {
   return {
