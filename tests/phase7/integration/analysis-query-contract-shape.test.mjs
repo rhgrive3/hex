@@ -16,6 +16,7 @@ assert.equal(queried, true);
 assert.equal(info.completeness, 'partial');
 assert.equal(info.status.reason, 'fixture');
 assert.deepEqual(info.cost, { units:2 });
+assert.equal(info.page, null, 'non-paged queries must not fabricate pagination state');
 assert.equal(info.value.architecture, 'x86_64');
 assert.equal(Object.isFrozen(info), true);
 assert.equal(Object.isFrozen(info.status), true);
