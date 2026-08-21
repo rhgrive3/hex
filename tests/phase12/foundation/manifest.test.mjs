@@ -7,6 +7,8 @@ import { loadManifest, validateAggregateFiles, validateFiles, validateManifest }
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const manifest = loadManifest();
 const phaseManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/validation/phase12/manifest.json'), 'utf8'));
+const phase10Ownership = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/validation/phase10/ownership.json'), 'utf8'));
+const phase11Ownership = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/validation/phase11/ownership.json'), 'utf8'));
 
 assert.deepEqual(validateManifest(manifest), []);
 assert.match(phaseManifest.foundation.commitSha, /^[0-9a-f]{40}$/);
@@ -15,6 +17,12 @@ assert.equal(phaseManifest.foundation.phase11Evidence.commitSha, phaseManifest.f
 assert.equal(phaseManifest.permanentVerifier.id, 'phase12.verifier');
 assert.equal(phaseManifest.permanentVerifier.version, '1.0.0');
 assert.ok(fs.existsSync(path.join(ROOT, 'tools/validation/phase12/release-evidence.schema.json')));
+for (const prefix of ['js/collaboration/', 'js/knowledge/phase12-', 'js/pattern/', 'js/phase12/', 'js/rebuild/', 'tests/phase12/', 'tools/validation/phase12/']) {
+  assert.ok(phase10Ownership.allowedPrefixes.includes(prefix), `Phase 10 must explicitly allow Phase 12 path ${prefix}`);
+  assert.ok(phase11Ownership.allowedPrefixes.includes(prefix), `Phase 11 must explicitly allow Phase 12 path ${prefix}`);
+}
+assert.ok(phase10Ownership.allowedExact.includes('.github/workflows/phase12-release-validation.yml'));
+assert.ok(phase11Ownership.allowedExact.includes('.github/workflows/phase12-release-validation.yml'));
 
 const componentViolation = validateFiles(['js/collaboration/operation.js'], 'p12-k', manifest);
 assert.equal(componentViolation.ok, false);

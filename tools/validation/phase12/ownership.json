@@ -32,6 +32,8 @@
       "package.json",
       "js/platform/capability-maturity.js",
       "docs/SUPPORT_MATRIX.md",
+      "tools/validation/phase10/ownership.json",
+      "tools/validation/phase11/ownership.json",
       "reports/phase12/**",
       "userscript/hex.user.template.js",
       "userscript/release-version.json",
@@ -50,6 +52,8 @@
     "tools/validation/phase12/**",
     "tests/phase12/foundation/**",
     "tests/phase12/integration/**",
+    "tools/validation/phase10/ownership.json",
+    "tools/validation/phase11/ownership.json",
     "package.json"
   ],
   "generatedPaths": [

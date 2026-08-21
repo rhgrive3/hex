@@ -6,10 +6,18 @@
     "js/managed/",
     "tests/phase11/",
     "tools/validation/phase11/",
-    "reports/phase11/"
+    "reports/phase11/",
+    "js/collaboration/",
+    "js/knowledge/phase12-",
+    "js/pattern/",
+    "js/phase12/",
+    "js/rebuild/",
+    "tests/phase12/",
+    "tools/validation/phase12/"
   ],
   "allowedExact": [
     ".github/workflows/phase11-release-validation.yml",
+    ".github/workflows/phase12-release-validation.yml",
     ".github/workflows/generated-sync.yml",
     ".github/workflows/generated-userscript-autofix.yml",
     ".github/workflows/userscript-host.yml",
