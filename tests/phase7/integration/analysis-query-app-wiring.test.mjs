@@ -4,40 +4,54 @@ import { AnalysisQueryAPI, AnalysisSnapshotStaleError, createAppAnalysisQueryAda
 let epoch = 7;
 let revision = 3;
 let artifactVersions = { semantic: 'v2', cfg: 'v1' };
-let fetches = 0;
+let producerCalls = 0;
 const semanticIr = Object.freeze({ schemaVersion: 'semantic-ir/v2', nodes: [{ id: 'n1' }] });
 const canonicalCfg = Object.freeze({ schemaVersion: 'cfg/v2', blocks: [{ id: 'b0' }], edges: [] });
 const compatibilityIr = Object.freeze({ schemaVersion: 'legacy-ir/v1', instructions: [] });
 const compatibilityCfg = Object.freeze({ blocks: [{ id: 'legacy-b0' }], edges: [] });
+const analysis = Object.freeze({
+  id: 'fn_1000',
+  model: Object.freeze({
+    ir: compatibilityIr,
+    cfg: compatibilityCfg,
+    semanticAnalysis: Object.freeze({ pipeline: Object.freeze({ semanticIr, cfg: canonicalCfg }) }),
+  }),
+  completeness: Object.freeze({ complete: true }),
+});
 const app = {
   store: {
     get(key) {
-      if (key === 'fileInfo') return { hash: 'file-hash-that-must-not-win-over-backend-id' };
+      if (key === 'fileInfo') return { hash: 'metadata-hash-that-must-not-win-over-backend-id' };
       if (key === 'project') return { revision };
       return null;
     },
   },
   backend: {
     binaryId: 'bin_live',
+    analysisRoute: 'artifact',
     get gen() { return epoch; },
   },
+  symbols: { gen: 2 },
   get analysisArtifactVersions() { return artifactVersions; },
-  async _fetchFunctionModel(address) {
-    fetches++;
+  async analysisFunctionProducer(address) {
+    producerCalls++;
     assert.equal(address, 0x1000n);
-    return {
-      id: 'fn_1000',
-      startAddress: 0x1000n,
-      ir: compatibilityIr,
-      cfg: compatibilityCfg,
-      semanticAnalysis: { pipeline: { semanticIr, cfg: canonicalCfg } },
-    };
+    return analysis;
+  },
+  async analyzeFunctionAt() {
+    throw new Error('legacy route must not run after query installation');
+  },
+  validatedFunctionRange() {
+    return { ok: true, start: 0x1000n, region: { id: 'text' } };
+  },
+  executableRegionFor() {
+    return this.validatedFunctionRange().region;
   },
 };
 
 const api = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(app));
 app.analysisQueries = api;
-assert.equal(app._fetchFunctionModel.name, 'routedFunctionModel', 'Function Workspace producer must be installed behind the query boundary');
+assert.equal(app.analyzeFunctionAt.name, 'routedAnalyzeFunctionAt', 'the actual App function entry point must be routed');
 
 const snapshot = await api.snapshot();
 assert.equal(snapshot.binaryId, 'bin_live');
@@ -56,11 +70,7 @@ assert.equal(ir.value, semanticIr, 'query layer must prefer canonical semantic-v
 const cfg = await api.cfg(snapshot, '0x1000');
 assert.equal(cfg.completeness, 'complete');
 assert.equal(cfg.value, canonicalCfg, 'query layer must prefer canonical semantic CFG over compatibility projection');
-assert.equal(fetches, 3, 'each public query resolves through the captured live non-UI-mutating producer');
-
-const workspaceModel = await app._fetchFunctionModel(0x1000n);
-assert.equal(workspaceModel.id, 'fn_1000');
-assert.equal(fetches, 4, 'Function Workspace route must cross AnalysisQueryAPI and terminate once at the captured producer');
+assert.equal(producerCalls, 3, 'each public query resolves once through the non-mutating producer');
 
 revision++;
 await assert.rejects(() => api.function(snapshot, '0x1000'), (error) => error instanceof AnalysisSnapshotStaleError);
@@ -96,9 +106,12 @@ await assert.rejects(
 
 const unavailableApp = {
   store: { get: (key) => key === 'fileInfo' ? { hash: 'bin_unavailable' } : null },
-  backend: { gen: 0, binaryId: 'bin_unavailable' },
+  backend: { gen: 0, binaryId: 'bin_unavailable', analysisRoute: 'artifact' },
+  symbols: { gen: 0 },
+  async analyzeFunctionAt() { return null; },
 };
 const unavailableApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(unavailableApp));
+unavailableApp.analysisQueries = unavailableApi;
 const unavailableSnapshot = await unavailableApi.snapshot();
 for (const query of [
   () => unavailableApi.function(unavailableSnapshot, '0x2000'),
@@ -110,48 +123,31 @@ for (const query of [
   assert.equal(result.value, null, 'missing producers must not fabricate empty complete analysis');
 }
 
-const truncatedModel = {
+const truncatedAnalysis = {
   id: 'fn_truncated',
   truncated: true,
-  semanticAnalysis: {
-    pipeline: {
-      semanticIr: { nodes: [{ id: 'partial-node' }] },
-      cfg: { blocks: [{ id: 'partial-block' }], edges: [] },
-    },
-  },
+  completeness: { complete: false, reason: 'budget' },
+  model: { semanticAnalysis: { pipeline: { semanticIr: { nodes: [] }, cfg: { blocks: [], edges: [] } } } },
 };
 const truncatedApp = {
   store: { get: () => null },
-  backend: { gen: 4, binaryId: 'bin_truncated' },
-  async _fetchFunctionModel() { return truncatedModel; },
+  backend: { gen: 4, binaryId: 'bin_truncated', analysisRoute: 'artifact' },
+  symbols: { gen: 0 },
+  analysisFunctionProducer: async () => truncatedAnalysis,
+  analyzeFunctionAt: async () => null,
 };
 const truncatedApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(truncatedApp));
+truncatedApp.analysisQueries = truncatedApi;
 const truncatedSnapshot = await truncatedApi.snapshot();
 assert.equal((await truncatedApi.function(truncatedSnapshot, '0x3000')).completeness, 'truncated');
 assert.equal((await truncatedApi.semanticIR(truncatedSnapshot, '0x3000')).completeness, 'truncated');
 assert.equal((await truncatedApi.cfg(truncatedSnapshot, '0x3000')).completeness, 'truncated');
 
-const partialApp = {
-  store: { get: () => null },
-  backend: { gen: 5, binaryId: 'bin_partial' },
-  async _fetchFunctionModel() {
-    return {
-      id: 'fn_partial',
-      complete: false,
-      semanticAnalysis: { pipeline: { semanticIr: { nodes: [] }, cfg: { blocks: [], edges: [] } } },
-    };
-  },
-};
-const partialApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(partialApp));
-const partialSnapshot = await partialApi.snapshot();
-assert.equal((await partialApi.function(partialSnapshot, '0x4000')).completeness, 'partial');
-assert.equal((await partialApi.semanticIR(partialSnapshot, '0x4000')).completeness, 'partial');
-assert.equal((await partialApi.cfg(partialSnapshot, '0x4000')).completeness, 'partial');
-
 let ensureBinaryIdCalls = 0;
 const lazyBackend = {
   gen: 6,
   binaryId: null,
+  analysisRoute: 'artifact',
   async ensureBinaryId({ signal } = {}) {
     assert.equal(signal, null);
     ensureBinaryIdCalls++;
@@ -159,26 +155,34 @@ const lazyBackend = {
     return this.binaryId;
   },
 };
-const lazyIdentityApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter({
-  store: { get: () => null },
+const lazyApp = {
+  store: { get: (key) => key === 'fileInfo' ? { hash: 'parser-metadata-must-not-bypass-canonical-backend-id' } : null },
   backend: lazyBackend,
-}));
+  symbols: { gen: 0 },
+  analyzeFunctionAt: async () => null,
+};
+const lazyIdentityApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(lazyApp));
+lazyApp.analysisQueries = lazyIdentityApi;
 const lazySnapshot = await lazyIdentityApi.snapshot();
-assert.equal(lazySnapshot.binaryId, 'bin_lazy_backend', 'snapshot must derive the canonical Backend identity before producer execution');
+assert.equal(lazySnapshot.binaryId, 'bin_lazy_backend', 'Backend canonical identity must outrank parser/project metadata');
 assert.equal(ensureBinaryIdCalls, 1);
 await lazyIdentityApi.snapshot();
 assert.equal(ensureBinaryIdCalls, 1, 'cached Backend binaryId must avoid repeated hashing');
 
 const derivedIdentityApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter({
   store: { get: () => null },
-  backend: { gen: 2, binaryId: null },
+  backend: { gen: 2, binaryId: null, analysisRoute: 'artifact' },
+  symbols: { gen: 0 },
   async ensureAnalysisIdentity() { return 'bin_derived'; },
+  async analyzeFunctionAt() { return null; },
 }));
 assert.equal((await derivedIdentityApi.snapshot()).binaryId, 'bin_derived');
 
 const unboundIdentityApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter({
   store: { get: () => null },
-  backend: { gen: 3, binaryId: null },
+  backend: { gen: 3, binaryId: null, analysisRoute: 'artifact' },
+  symbols: { gen: 0 },
+  async analyzeFunctionAt() { return null; },
 }));
 await assert.rejects(
   () => unboundIdentityApi.snapshot(),
