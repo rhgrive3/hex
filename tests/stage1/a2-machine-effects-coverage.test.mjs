@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { parseOperands } from '../../js/arm64.js';
+import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
 import '../../js/targets/architecture/index.js';
 import {
   MACHINE_EFFECTS_COVERAGE_SCHEMA,
@@ -27,6 +28,7 @@ function arm64Instruction(instructionId, mnemonic, operands = '', extra = {}) {
   assert.equal(descriptor.architectureId, 'arm64');
   assert.equal(descriptor.denominator, 'observed-decoded-instructions');
   assert.equal(descriptor.unsupportedPolicy, 'explicit');
+  assert.equal(descriptor.unknownPolicy, 'represented-not-covered');
 }
 
 const exact = arm64Instruction('stage1-arm64-exact', 'b', '#0x5000', { branchTarget: 0x5000n });
@@ -50,10 +52,13 @@ const unsupported = arm64Instruction('stage1-arm64-unsupported', 'stage1_unsuppo
   const result = measureMachineEffectsCoverage('arm64', [exact, unsupported]);
   assert.equal(result.denominatorCount, 2);
   assert.equal(result.coveredCount, 1);
+  assert.equal(result.representedCount, 1);
   assert.equal(result.exactCount, 1);
   assert.equal(result.unsupportedCount, 1);
+  assert.equal(result.unknownCount, 0);
   assert.equal(result.errorCount, 0);
   assert.equal(result.coverageRate, 0.5);
+  assert.equal(result.representationRate, 0.5);
   assert.equal(result.exactRate, 0.5);
   assert.deepEqual(result.counts, {
     exact: 1,
@@ -67,9 +72,47 @@ const unsupported = arm64Instruction('stage1-arm64-unsupported', 'stage1_unsuppo
 }
 
 {
+  const unknownPlugin = {
+    id: 'stage1-unknown',
+    semanticVersion: '1',
+    modes: () => ['test'],
+    capabilities: { exactEffects: 'partial' },
+    liftExact(decoded) {
+      const instructionId = decoded.instructionId;
+      return createMachineEffectBundle({
+        instructionId,
+        architectureId: 'stage1-unknown',
+        mode: 'test',
+        operations: [],
+        controlEffect: { kind: 'unknown', reason: 'fixture unresolved control effect' },
+        possibleFaults: [],
+        origin: { instructionIds: [instructionId] },
+        completeness: 'unknown',
+        unknownEffects: { categories: ['other'], reason: 'fixture unresolved effects' },
+      });
+    },
+  };
+  const unknownInstruction = { instructionId: 'stage1-explicit-unknown' };
+  const classified = classifyMachineEffectsCoverage(unknownPlugin, unknownInstruction);
+  assert.equal(classified.status, 'unknown');
+  assert.equal(classified.completeness, 'unknown');
+  assert.equal(classified.exact, false);
+
+  const result = measureMachineEffectsCoverage(unknownPlugin, [unknownInstruction]);
+  assert.equal(result.denominatorCount, 1);
+  assert.equal(result.coveredCount, 0, 'unknown semantics must never inflate measured coverage');
+  assert.equal(result.representedCount, 1, 'unknown semantics are still explicitly represented');
+  assert.equal(result.unknownCount, 1);
+  assert.equal(result.coverageRate, 0);
+  assert.equal(result.representationRate, 1);
+  assert.equal(result.exactRate, 0);
+}
+
+{
   const result = measureMachineEffectsCoverage('arm64', []);
   assert.equal(result.denominatorCount, 0);
   assert.equal(result.coverageRate, null);
+  assert.equal(result.representationRate, null);
   assert.equal(result.exactRate, null);
 }
 
