@@ -160,7 +160,7 @@ function publishFunctionAnalysis(app, address, result) {
   return result;
 }
 
-function installLiveFunctionQueryRoute(app, producer) {
+function installLiveFunctionQueryRoute(app) {
   if (!app || typeof app.analyzeFunctionAt !== 'function' || app.analyzeFunctionAt?.[QUERY_ROUTED_ANALYZE]) return;
   const original = app.analyzeFunctionAt.bind(app);
   const routed = async function routedAnalyzeFunctionAt(functionId, options = {}) {
@@ -175,10 +175,8 @@ function installLiveFunctionQueryRoute(app, producer) {
       if (result.completeness === 'unsupported' || result.value == null) return null;
       return publishFunctionAnalysis(app, address, result.value);
     } catch {
-      // Preserve App.analyzeFunctionAt's historical UI contract: callers such as
-      // goToFunction intentionally fire-and-forget and expect analysis failure to
-      // resolve to null rather than create an unhandled rejection. Direct
-      // AnalysisQueryAPI callers still receive fail-closed errors.
+      // App.analyzeFunctionAt is a fire-and-forget UI compatibility entry point.
+      // Direct AnalysisQueryAPI callers keep the fail-closed error contract.
       return null;
     }
   };
@@ -193,19 +191,25 @@ export function createAppAnalysisQueryAdapter(app) {
       abortIfNeeded(options.signal);
       const fileInfo = storeValue(app, 'fileInfo');
       const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.activeProject ?? app?.project ?? null;
-      let binaryId = app?.backend?.binaryId
-        ?? fileInfo?.binaryId
-        ?? fileInfo?.sha256
-        ?? fileInfo?.hash
-        ?? project?.binaryHash
-        ?? project?.binary?.hash
-        ?? null;
+      const backend = app?.backend ?? null;
+      let binaryId = backend?.binaryId ?? null;
 
-      if (!binaryId && typeof app?.backend?.ensureBinaryId === 'function') {
-        binaryId = await app.backend.ensureBinaryId({
+      // When a real Backend is present, its content-derived binary ID is the
+      // canonical authority. Parser/project metadata is only a compatibility
+      // fallback for adapter-shaped consumers that cannot derive content ID.
+      if (!binaryId && typeof backend?.ensureBinaryId === 'function') {
+        binaryId = await backend.ensureBinaryId({
           signal: options.signal ?? null,
           onProgress: options.onIdentityProgress ?? options.onProgress,
         });
+      }
+      if (!binaryId) {
+        binaryId = fileInfo?.binaryId
+          ?? fileInfo?.sha256
+          ?? fileInfo?.hash
+          ?? project?.binaryHash
+          ?? project?.binary?.hash
+          ?? null;
       }
       if (!binaryId && typeof app?.ensureAnalysisIdentity === 'function') {
         binaryId = await app.ensureAnalysisIdentity(options);
@@ -226,7 +230,7 @@ export function createAppAnalysisQueryAdapter(app) {
         ),
         artifactVersions: artifactVersionsFor(app),
         analysisEpoch: nonNegativeSafeInteger(
-          app?.backend?.gen ?? app?.analysisEpoch,
+          backend?.gen ?? app?.analysisEpoch,
           0,
           'analysis-query-epoch-invalid',
         ),
@@ -253,6 +257,6 @@ export function createAppAnalysisQueryAdapter(app) {
     },
   };
 
-  installLiveFunctionQueryRoute(app, producer);
+  installLiveFunctionQueryRoute(app);
   return adapter;
 }
