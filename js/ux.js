@@ -1,5 +1,6 @@
 /* Compatibility bootstrap only. Canonical product UI lives under js/ui/*. */
 import { installProductUI } from './ui/product.js';
+import { installViewerDragReturnGuard } from './ui/viewer-gesture-guard.js';
 import { closeMenu } from './ui.js';
 
 const LEGACY_ACTION_IDS = [
@@ -30,45 +31,6 @@ function installTransientMenuViewportGuard() {
 
 installTransientMenuViewportGuard();
 
-/*
- * WebKit can report a drag that crosses the viewer's movement threshold and then
- * returns almost exactly to its starting point before pointerup. The viewer cancels
- * its long-press timer when the excursion happens, but final-coordinate-only tap
- * detection could otherwise reinterpret the completed drag as a tap. A capture-phase
- * guard remembers the whole pointer gesture and prevents only that moved pointerup
- * from reaching the viewer. Normal taps, long presses and range selection are untouched.
- */
-function installViewerDragReturnGuard(app) {
-  const viewer = app?.viewer;
-  const viewport = viewer?.vp;
-  if (!viewer || !viewport || viewer.__dragReturnGuardInstalled) return;
-  const MOVE_TOLERANCE = 10;
-  let gesture = null;
-
-  viewport.addEventListener('pointerdown', (event) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    const row = event.target?.closest?.('.row');
-    if (!row || row._row == null || row._row < 0) { gesture = null; return; }
-    gesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
-  }, { capture: true, passive: true });
-
-  viewport.addEventListener('pointermove', (event) => {
-    if (!gesture || event.pointerId !== gesture.pointerId || gesture.moved) return;
-    if (Math.abs(event.clientX - gesture.x) > MOVE_TOLERANCE ||
-        Math.abs(event.clientY - gesture.y) > MOVE_TOLERANCE) gesture.moved = true;
-  }, { capture: true, passive: true });
-
-  viewport.addEventListener('pointerup', (event) => {
-    if (!gesture || event.pointerId !== gesture.pointerId) return;
-    const moved = gesture.moved;
-    gesture = null;
-    if (moved) event.stopImmediatePropagation();
-  }, { capture: true, passive: true });
-
-  viewport.addEventListener('pointercancel', () => { gesture = null; }, { capture: true, passive: true });
-  Object.defineProperty(viewer, '__dragReturnGuardInstalled', { value: true });
-}
-
 function retireLegacyActionDom() {
   /* app.js has already bound its compatibility handlers by the time this module boots.
      Canonical UI never delegates through these nodes, so remove them from the live DOM
@@ -98,7 +60,7 @@ function migrateRootControls(ui) {
 
 function boot() {
   if (!window.__app) return;
-  installViewerDragReturnGuard(window.__app);
+  installViewerDragReturnGuard(window.__app.viewer);
   retireLegacyActionDom();
   const ui = installProductUI(window.__app);
   if (ui) migrateRootControls(ui);
