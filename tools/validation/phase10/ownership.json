@@ -39,6 +39,7 @@
     ".github/workflows/invariant-gates.yml",
     "docs/SUPPORT_MATRIX.md",
     "js/platform/capability-maturity.js",
+    "js/platform/stage2-capability-maturity.js",
     "js/platform/physical-ipad-evidence.js",
     "js/managed/runtime-binding.js",
     "js/managed/index.js",
