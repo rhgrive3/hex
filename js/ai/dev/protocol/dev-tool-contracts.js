@@ -77,21 +77,6 @@ function validatePageSnapshotBatchArguments(args) {
   assertBatchFinite(args.maxHtmlChars, 'maxHtmlChars');
 }
 
-function validatePageScriptSourceBatchArguments(args) {
-  assertBatchObject(args);
-  assertBatchKeys(args, ['index', 'src', 'offset', 'maxChars', 'needle', 'contextChars', 'maxMatches']);
-  const hasIndex = args.index != null && args.index !== '';
-  const hasSrc = args.src != null && args.src !== '';
-  if (!hasIndex && !hasSrc) throw new TypeError('script_source requires an index or src.');
-  if (hasIndex) assertBatchFinite(args.index, 'index');
-  if (hasSrc) assertBatchString(args.src, 'src', /^[^\u0000\r\n]{1,4096}$/);
-  assertBatchFinite(args.offset, 'offset');
-  assertBatchFinite(args.maxChars, 'maxChars');
-  assertBatchFinite(args.contextChars, 'contextChars');
-  assertBatchFinite(args.maxMatches, 'maxMatches');
-  if (args.needle != null) assertBatchString(args.needle, 'needle', /^[^\u0000\r\n]{0,160}$/);
-}
-
 function validateSkillDescribeBatchArguments(args) {
   assertBatchObject(args);
   assertBatchKeys(args, ['skillId']);
@@ -156,7 +141,10 @@ const ENTRIES = [
 
   entry('chatgpt.page.snapshot', DEV_TOOL_SURFACE.ADMIN, 'pageSnapshot', OBSERVATION, DEV_TOOL_OWNER.CHATGPT_PAGE, '{"selectors":["<CSS selector>"],"includeHtml":false,"htmlSelector":"<CSS selector>","maxNodes":96,"maxHtmlChars":16384}', { rpcName: 'dev.admin.page_snapshot', batchPolicy: BATCHABLE, batchArgumentValidator: validatePageSnapshotBatchArguments }),
   entry('chatgpt.page.scripts', DEV_TOOL_SURFACE.ADMIN, 'pageScripts', OBSERVATION, DEV_TOOL_OWNER.CHATGPT_PAGE, '{}', { rpcName: 'dev.admin.page_scripts', batchPolicy: BATCHABLE, batchArgumentValidator: validateEmptyBatchArguments }),
-  entry('chatgpt.page.script_source', DEV_TOOL_SURFACE.ADMIN, 'pageScriptSource', OBSERVATION, DEV_TOOL_OWNER.CHATGPT_PAGE, '{"index":0,"offset":0,"maxChars":24576,"needle":"<optional literal>","contextChars":768,"maxMatches":5}', { rpcName: 'dev.admin.page_script_source', batchPolicy: BATCHABLE, batchArgumentValidator: validatePageScriptSourceBatchArguments }),
+  // Script-source safety depends on whether the selected script is inline or
+  // external, so its normal handler must inspect the page before validating
+  // the needle. That target is intentionally never batchable.
+  entry('chatgpt.page.script_source', DEV_TOOL_SURFACE.ADMIN, 'pageScriptSource', OBSERVATION, DEV_TOOL_OWNER.CHATGPT_PAGE, '{"index":0,"offset":0,"maxChars":24576,"needle":"<optional literal>","contextChars":768,"maxMatches":5}', { rpcName: 'dev.admin.page_script_source', batchPolicy: NEVER }),
 
   entry('chatgpt.skill.list', DEV_TOOL_SURFACE.ADMIN, 'skillList', OBSERVATION, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{}', { rpcName: 'dev.skill.list', batchPolicy: BATCHABLE, batchArgumentValidator: validateEmptyBatchArguments }),
   entry('chatgpt.skill.describe', DEV_TOOL_SURFACE.ADMIN, 'skillDescribe', OBSERVATION, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{"skillId":"<skill id>"}', { rpcName: 'dev.skill.describe', batchPolicy: BATCHABLE, batchArgumentValidator: validateSkillDescribeBatchArguments }),
