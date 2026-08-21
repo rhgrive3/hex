@@ -28,6 +28,7 @@ async function queuedCancellationRollsBackEstablishedClaim() {
   controller.abort('cancel-during-claim');
   harness.coordinator.resolveHeldClaim();
   await assert.rejects(second, isCancelled);
+  await waitUntil(() => harness.coordinator.releaseCount >= 2, 'cancelled claim rollback did not settle');
   assert.equal(harness.coordinator.claimed, null, 'cancelled ownership must be released in the Worker frame');
   assert.equal(harness.pool.status().claimedCount, 0, 'cancelled claim must not fabricate a local lease');
   assert.equal(harness.pool.status().slots[0].error, null, 'successful rollback keeps the frame reusable');
@@ -50,6 +51,7 @@ async function failedRollbackQuarantinesFrame() {
   controller.abort('cancel-with-cleanup-failure');
   harness.coordinator.resolveHeldClaim();
   await assert.rejects(second, isCancelled);
+  await waitUntil(() => harness.coordinator.releaseCount >= 2, 'failed cancelled claim rollback did not settle');
 
   const status = harness.pool.status();
   assert.equal(status.claimedCount, 0, 'failed rollback must not create a local lease');
@@ -313,6 +315,7 @@ function controlledCoordinator({ holdSecondClaim = false, failSecondRelease = fa
   return {
     get claimed() { return claimed; },
     get claimCount() { return claimCount; },
+    get releaseCount() { return releaseCount; },
     async claim(args) {
       claimCount += 1;
       claimed = { runId: String(args.runId), workerId: String(args.workerId) };
@@ -345,6 +348,13 @@ function controlledCoordinator({ holdSecondClaim = false, failSecondRelease = fa
 
 function isCancelled(error) { return error?.name === 'AbortError' && error?.code === 'cancelled'; }
 function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
+async function waitUntil(predicate, message) {
+  for (let index = 0; index < 20; index++) {
+    if (predicate()) return;
+    await tick();
+  }
+  assert.fail(message);
+}
 
 await preAbortedFreeSlotNeverClaims();
 await queuedCancellationRollsBackEstablishedClaim();
