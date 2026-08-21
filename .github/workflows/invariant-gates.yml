@@ -84,6 +84,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve current main for ownership proof
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Set up Node
         uses: actions/setup-node@v4

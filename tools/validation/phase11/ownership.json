@@ -18,6 +18,7 @@
   "allowedExact": [
     ".github/workflows/phase11-release-validation.yml",
     ".github/workflows/phase12-release-validation.yml",
+    ".github/workflows/invariant-gates.yml",
     ".github/workflows/generated-sync.yml",
     ".github/workflows/generated-userscript-autofix.yml",
     ".github/workflows/userscript-host.yml",

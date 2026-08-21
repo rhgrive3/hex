@@ -29,6 +29,7 @@
     "tools/validation/generated-output-policy.mjs",
     "tools/validation/phase11/ownership.json",
     ".github/workflows/phase12-release-validation.yml",
+    ".github/workflows/invariant-gates.yml",
     "docs/SUPPORT_MATRIX.md",
     "js/platform/capability-maturity.js",
     "userscript/hex.user.template.js",

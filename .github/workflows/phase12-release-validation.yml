@@ -32,6 +32,8 @@ jobs:
         with:
           ref: ${{ inputs.expect_sha || github.sha }}
           fetch-depth: 0
+      - name: Resolve current main for ownership proof
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
       - uses: actions/setup-node@v4
         with:
           node-version: 22

@@ -23,6 +23,8 @@ for (const prefix of ['js/collaboration/', 'js/knowledge/phase12-', 'js/pattern/
 }
 assert.ok(phase10Ownership.allowedExact.includes('.github/workflows/phase12-release-validation.yml'));
 assert.ok(phase11Ownership.allowedExact.includes('.github/workflows/phase12-release-validation.yml'));
+assert.ok(phase10Ownership.allowedExact.includes('.github/workflows/invariant-gates.yml'));
+assert.ok(phase11Ownership.allowedExact.includes('.github/workflows/invariant-gates.yml'));
 
 const componentViolation = validateFiles(['js/collaboration/operation.js'], 'p12-k', manifest);
 assert.equal(componentViolation.ok, false);
