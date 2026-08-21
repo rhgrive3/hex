@@ -1,21 +1,29 @@
+import { stableDigest } from "../../core/identity/index.js";
 import { assertAnalysisSnapshot, createAnalysisSnapshot, AnalysisSnapshotStaleError } from "./snapshot.js";
 
+const COMPLETENESS = new Set(["complete", "partial", "truncated", "unsupported"]);
+
 function artifactVersionsEqual(left = {}, right = {}) {
-  const a = Object.keys(left || {}).sort();
-  const b = Object.keys(right || {}).sort();
-  if (a.length !== b.length) return false;
-  for (let index = 0; index < a.length; index++) {
-    const key = a[index];
-    if (key !== b[index] || String(left[key]) !== String(right[key])) return false;
+  try {
+    return stableDigest(left || {}) === stableDigest(right || {});
+  } catch {
+    return false;
   }
-  return true;
+}
+
+function safeNonNegativeInteger(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
 }
 
 function sameSnapshotIdentity(snapshot, current) {
-  return String(current.binaryId) === String(snapshot.binaryId)
-    && Number(current.projectRevision ?? 0) === Number(snapshot.projectRevision ?? 0)
-    && Number(current.analysisEpoch) === Number(snapshot.analysisEpoch)
-    && artifactVersionsEqual(current.artifactVersions, snapshot.artifactVersions);
+  const currentRevision = safeNonNegativeInteger(current?.projectRevision ?? 0);
+  const currentEpoch = safeNonNegativeInteger(current?.analysisEpoch);
+  if (currentRevision == null || currentEpoch == null) return false;
+  return String(current?.binaryId ?? "") === String(snapshot.binaryId)
+    && currentRevision === snapshot.projectRevision
+    && currentEpoch === snapshot.analysisEpoch
+    && artifactVersionsEqual(current?.artifactVersions, snapshot.artifactVersions);
 }
 
 function aborted(options) {
@@ -35,6 +43,19 @@ function unavailable(method) {
   };
 }
 
+function completenessOf(result) {
+  const raw = result?.status?.completeness ?? result?.completeness;
+  if (typeof raw === "string") return COMPLETENESS.has(raw) ? raw : "partial";
+  if (raw && typeof raw === "object") {
+    if (raw.complete === true) return result?.truncated === true ? "truncated" : "complete";
+    if (raw.complete === false) return raw.reason === "unsupported" ? "unsupported" : "partial";
+  }
+  if (result?.unsupported === true) return "unsupported";
+  if (result?.truncated === true) return "truncated";
+  if (result?.partial === true || result?.complete === false) return "partial";
+  return "partial";
+}
+
 export class AnalysisQueryAPI {
   constructor(adapter) {
     if (!adapter || typeof adapter.currentIdentity !== "function") {
@@ -46,6 +67,7 @@ export class AnalysisQueryAPI {
   async snapshot(options = {}) {
     aborted(options);
     const id = await this.adapter.currentIdentity(options);
+    aborted(options);
     return createAnalysisSnapshot(id);
   }
 
@@ -53,11 +75,12 @@ export class AnalysisQueryAPI {
     assertAnalysisSnapshot(snapshot);
     aborted(options);
     const current = await this.adapter.currentIdentity(options);
+    aborted(options);
     if (!sameSnapshotIdentity(snapshot, current)) {
       throw new AnalysisSnapshotStaleError("Snapshot is stale before query", {
         snapshotId: snapshot.snapshotId,
         expectedEpoch: snapshot.analysisEpoch,
-        currentEpoch: current.analysisEpoch,
+        currentEpoch: current?.analysisEpoch,
       });
     }
   }
@@ -67,15 +90,16 @@ export class AnalysisQueryAPI {
     const result = await executeFn();
     aborted(options);
     const currentAfter = await this.adapter.currentIdentity(options);
+    aborted(options);
     if (!sameSnapshotIdentity(snapshot, currentAfter)) {
       throw new AnalysisSnapshotStaleError("Snapshot became stale during query", {
         snapshotId: snapshot.snapshotId,
         expectedEpoch: snapshot.analysisEpoch,
-        currentEpoch: currentAfter.analysisEpoch,
+        currentEpoch: currentAfter?.analysisEpoch,
       });
     }
 
-    const completeness = result?.status?.completeness ?? result?.completeness ?? "partial";
+    const completeness = completenessOf(result);
     const value = result?.value !== undefined ? result.value : result;
     const status = Object.freeze({
       ...(result?.status && typeof result.status === "object" ? result.status : {}),
