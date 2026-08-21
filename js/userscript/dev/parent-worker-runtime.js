@@ -54,7 +54,14 @@ async function claimWithCancellationCleanup(coordinator,args,signal) {
   if (signal?.aborted) throw abortError(signal.reason);
   const result = await coordinator.claim(args);
   if (!signal?.aborted) return result;
-  try { await coordinator.release(args); } catch {}
+  try {
+    await coordinator.release(args);
+  } catch (error) {
+    const cleanup = new Error('Cancelled Worker claim could not be released.');
+    cleanup.code = DEV_WORKER_FAILURE.TRANSPORT_FAILURE;
+    cleanup.cause = error;
+    throw cleanup;
+  }
   throw abortError(signal.reason);
 }
 

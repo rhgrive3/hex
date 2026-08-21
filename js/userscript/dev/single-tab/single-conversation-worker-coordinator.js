@@ -16,6 +16,9 @@ export class SingleConversationWorkerCoordinator {
     this.controller = controller;
     this.tabNodeId = String(tabNodeId);
     this.now = now;
+    this.closed = false;
+    this.generation = 0;
+    this.claiming = null;
     this.claimed = null;
     this.lastResult = null;
     this.events = [];
@@ -43,6 +46,8 @@ export class SingleConversationWorkerCoordinator {
   async claim({ runId, workerId } = {}) {
     const normalizedRun = required(runId, 'runId');
     const normalizedWorker = required(workerId, 'workerId');
+    if (this.closed) throw workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Single-tab Worker coordinator is closed.');
+    if (this.claiming) throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The single-tab Worker slot is already being claimed.');
     if (this.claimed) {
       if (this.claimed.runId === normalizedRun && this.claimed.workerId === normalizedWorker) {
         return this.withIdentity({
@@ -53,25 +58,34 @@ export class SingleConversationWorkerCoordinator {
       }
       throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The single-tab Worker slot is already claimed.');
     }
-    const supervisorConversation = await waitFor(() => {
-      if (typeof this.controller.adoptCurrentConversation === 'function') {
-        return this.controller.adoptCurrentConversation() || null;
+    const generation = this.generation;
+    this.claiming = Object.freeze({ runId: normalizedRun, workerId: normalizedWorker, generation });
+    try {
+      const supervisorConversation = await waitFor(() => {
+        if (typeof this.controller.adoptCurrentConversation === 'function') {
+          return this.controller.adoptCurrentConversation() || null;
+        }
+        return this.controller.currentConversation() || null;
+      }, SUPERVISOR_CLAIM_TIMEOUT_MS);
+      if (this.closed || generation !== this.generation) {
+        throw workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Single-tab Worker coordinator closed while a claim was settling.');
       }
-      return this.controller.currentConversation() || null;
-    }, SUPERVISOR_CLAIM_TIMEOUT_MS);
-    if (!supervisorConversation?.id) {
-      throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'Supervisor ChatGPT conversation identity is unavailable.');
+      if (!supervisorConversation?.id) {
+        throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'Supervisor ChatGPT conversation identity is unavailable.');
+      }
+      this.claimed = {
+        runId: normalizedRun,
+        workerId: normalizedWorker,
+        supervisorConversation,
+        supervisorAnchor: null,
+        workerConversation: null,
+      };
+      this.refreshSupervisorAnchor();
+      this.lastResult = null;
+      return this.withIdentity({ state: DEV_WORKER_STATE.STARTING, claimed: true });
+    } finally {
+      if (this.claiming?.generation === generation) this.claiming = null;
     }
-    this.claimed = {
-      runId: normalizedRun,
-      workerId: normalizedWorker,
-      supervisorConversation,
-      supervisorAnchor: null,
-      workerConversation: null,
-    };
-    this.refreshSupervisorAnchor();
-    this.lastResult = null;
-    return this.withIdentity({ state: DEV_WORKER_STATE.STARTING, claimed: true });
   }
 
   async createChat(args = {}) {
@@ -134,11 +148,21 @@ export class SingleConversationWorkerCoordinator {
   }
 
   async release(args = {}) {
-    this.assertClaim(args);
+    const claim = this.assertClaim(args);
     if (this.controller.isActive()) {
       throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'Cannot release the single-tab Worker while it is generating.');
     }
+    /* A terminal controller event may already have stopped generation while
+       finishTerminal() is still restoring the Supervisor surface. Do not clear
+       the claim underneath that async fence: doing so would make
+       finishTerminal() return before resolving runWorkerTurn(). */
+    const pending = this.pendingTerminal;
+    if (pending) await pending.promise.catch(() => null);
+    if (this.closed) throw workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Single-tab Worker coordinator is closed.');
+    if (this.claimed !== claim) return this.advertisement();
     await this.restoreSupervisor();
+    if (this.closed) throw workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Single-tab Worker coordinator closed while releasing.');
+    if (this.claimed !== claim) return this.advertisement();
     this.claimed = null;
     this.lastResult = null;
     return this.advertisement();
@@ -162,6 +186,10 @@ export class SingleConversationWorkerCoordinator {
   }
 
   close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.generation += 1;
+    this.claiming = null;
     this.unsubscribe?.();
     for (const waiter of this.waiters) {
       waiter.signal?.removeEventListener?.('abort', waiter.onAbort);
@@ -217,6 +245,7 @@ export class SingleConversationWorkerCoordinator {
 
   async finishTerminal(event) {
     const claim = this.claimed;
+    const generation = this.generation;
     if (!claim) return;
     const workerConversation = this.controller.workerConversation();
     if (workerConversation?.id) claim.workerConversation = workerConversation;
@@ -242,6 +271,7 @@ export class SingleConversationWorkerCoordinator {
         restoreError: DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,
       });
     }
+    if (this.closed || generation !== this.generation || this.claimed !== claim) return;
     this.enqueue(normalized);
     const pending = this.pendingTerminal;
     this.pendingTerminal = null;

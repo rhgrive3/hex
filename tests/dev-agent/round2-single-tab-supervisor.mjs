@@ -8,10 +8,12 @@ import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor
 import { SingleConversationWorkerCoordinator } from '../../js/userscript/dev/single-tab/single-conversation-worker-coordinator.js';
 
 await testSingleTabWorkerLoopReleasesClaim();
+await testConcurrentSingleTabClaimsReserveOwnership();
 await testUnavailableToolFeedbackAllowsReplan();
 await testRuntimeRejectsWorkerIdentityOverride();
 await testAmbiguousClaimFailureCleansUpAndFailsRun();
 await testWaitingHumanResumesSameSupervisorRun();
+await testReleaseWaitsForTerminalSettlement();
 await testClosingSingleTabCoordinatorSettlesInFlightSend();
 await testSupervisorRestoreAcceptsPartialHistoryHydration();
 console.log('Round 2 single-tab Supervisor loop passed');
@@ -61,6 +63,27 @@ async function testSingleTabWorkerLoopReleasesClaim() {
   assert.match(send.instruction, /ASSIGNED TASK\nReturn one line\./);
   assert.equal(workerOps.filter((item) => item.op === 'release').length, 1, 'final completion must release the logical Worker claim');
   assert.deepEqual(workerOps.find((item) => item.op === 'release')?.args, { runId: 'run-1', workerId: 'worker-1' });
+}
+
+async function testConcurrentSingleTabClaimsReserveOwnership() {
+  let allowClaim = false;
+  const supervisorConversation = { id: 'single-claim-supervisor', url: 'https://chatgpt.com/c/single-claim-supervisor' };
+  const controller = {
+    on() { return () => {}; },
+    currentConversation() { return supervisorConversation; },
+    adoptCurrentConversation() { return allowClaim ? supervisorConversation : null; },
+  };
+  const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: 'single-claim-test' });
+  const first = coordinator.claim({ runId: 'single-claim-run-1', workerId: 'single-claim-worker-1' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await assert.rejects(
+    coordinator.claim({ runId: 'single-claim-run-2', workerId: 'single-claim-worker-2' }),
+    (error) => error?.code === 'worker-busy',
+    'a second single-tab claim must be rejected while the first claim is still discovering the conversation',
+  );
+  allowClaim = true;
+  await first;
+  coordinator.close();
 }
 
 async function testUnavailableToolFeedbackAllowsReplan() {
@@ -202,6 +225,9 @@ async function testWaitingHumanResumesSameSupervisorRun() {
       if (requests.length === 2) {
         return { text: JSON.stringify({ type: 'human', question: 'Proceed with the material decision?', blocking: true }) };
       }
+      if (requests.length === 3) {
+        return { text: JSON.stringify({ type: 'tool', tool: 'worker.discover', arguments: {}, purpose: 'recheck after human response' }) };
+      }
       return { text: JSON.stringify({ type: 'final', answer: 'continued after human response', completedTasks: [], remaining: [] }) };
     },
   };
@@ -218,6 +244,56 @@ async function testWaitingHumanResumesSameSupervisorRun() {
   assert.equal(requests[2].options.sessionKey, 'human-supervisor-session', 'human resume must retain the same Supervisor ChatGPT conversation');
   assert.match(requests[2].prompt, /human-response/);
   assert.match(requests[2].prompt, /yes, proceed/);
+  const resumedDelta = JSON.parse(requests[3].prompt.match(/<HEX_DEV_DATA>\n([\s\S]*?)\n<\/HEX_DEV_DATA>/)[1]).history;
+  assert.equal(resumedDelta.some((entry) => entry.kind === 'human-response'), false, 'a resumed multi-step loop must send the human response only once');
+  assert.equal(resumedDelta.filter((entry) => entry.kind === 'tool-result').length, 1, 'the next resumed step receives only its new history delta');
+}
+
+async function testReleaseWaitsForTerminalSettlement() {
+  const supervisor = { id: 'release-race-supervisor', url: 'https://chatgpt.com/c/release-race-supervisor' };
+  const worker = { id: 'release-race-worker', url: 'https://chatgpt.com/c/release-race-worker' };
+  const listeners = new Set();
+  let sendStarted;
+  const sendStartedPromise = new Promise((resolve) => { sendStarted = resolve; });
+  let restoreStarted;
+  const restoreStartedPromise = new Promise((resolve) => { restoreStarted = resolve; });
+  let finishRestore;
+  const restoreGate = new Promise((resolve) => { finishRestore = resolve; });
+  let page = supervisor;
+  let navigationCount = 0;
+  const controller = {
+    on(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    currentConversation() { return page; },
+    observe() { return { state: 'QUIET' }; },
+    isActive() { return false; },
+    workerConversation() { return worker; },
+    async send() { sendStarted(); return { status: 'COMPLETED' }; },
+    result() { return { status: 'COMPLETED', responseText: 'done' }; },
+    async navigateToConversation(expected) {
+      navigationCount += 1;
+      if (navigationCount === 1) {
+        restoreStarted();
+        await restoreGate;
+      }
+      page = expected;
+      return page;
+    },
+  };
+  const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: 'release-race-test' });
+  await coordinator.claim({ runId: 'release-race-run', workerId: 'release-race-worker' });
+  page = worker;
+  const pendingSend = coordinator.send({ runId: 'release-race-run', workerId: 'release-race-worker', instruction: 'complete once' });
+  await sendStartedPromise;
+  for (const listener of listeners) listener({ kind: 'completed', data: {} });
+  await restoreStartedPromise;
+
+  const pendingRelease = coordinator.release({ runId: 'release-race-run', workerId: 'release-race-worker' });
+  finishRestore();
+  const [sendResult, releaseResult] = await Promise.all([pendingSend, pendingRelease]);
+  assert.equal(sendResult.status, 'COMPLETED', 'terminal send must settle even when release races restoration');
+  assert.equal(releaseResult.role, 'available', 'release must clear ownership only after terminal settlement');
+  assert.equal(navigationCount, 1, 'release must observe the terminal restore instead of racing a second navigation');
+  coordinator.close();
 }
 
 async function testClosingSingleTabCoordinatorSettlesInFlightSend() {

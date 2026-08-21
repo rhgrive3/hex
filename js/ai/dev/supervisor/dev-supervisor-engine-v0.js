@@ -268,8 +268,14 @@ export class DevSupervisorEngineV0 {
         return;
       }
       if (!workerClaimAttempted) return;
-      try { run = await this.releaseWorker(run); }
-      catch { /* the ambiguous claim held nothing; a good run must not fail for it */ }
+      try {
+        run = await this.releaseWorker(run);
+      } catch (error) {
+        /* A definitive no-lease response proves that the ambiguous claim never
+           established ownership. Transport/unknown failures remain blocking:
+           they cannot be treated as proof that reuse is safe. */
+        if (!['no-lease', 'worker-not-claimed'].includes(String(error?.code || ''))) throw error;
+      }
       workerClaimAttempted = false;
     };
 
@@ -282,7 +288,7 @@ export class DevSupervisorEngineV0 {
           run.supervisorSessionKey,
           promptTools,
           history,
-          { freshHistory: !!resumedHumanRun },
+          { freshHistory: !!resumedHumanRun && step === 0 },
         );
         const contextSelection = this.selectSupervisorContext(run, suppliedContextPacket, expandEvidenceRefs);
         let response;

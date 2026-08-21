@@ -107,6 +107,50 @@ async function testClosedPoolRejectsLateClaimWithoutResurrectingLease() {
   );
 }
 
+async function testClosedPoolSettlesAStuckClaim() {
+  let claimStarted;
+  const claimStartedPromise = new Promise((resolve) => { claimStarted = resolve; });
+  const pool = newPool(new FakeFrameFactory(), {
+    createWorkerRuntime: ({ slot, document }) => {
+      const runtime = fakeWorkerRuntime(slot, document);
+      runtime.coordinator.claim = async () => {
+        claimStarted();
+        return new Promise(() => {});
+      };
+      return runtime;
+    },
+  });
+  await pool.provision({ size: 1, timeoutMs: 2000 });
+  const pending = pool.claim({ taskId: 'stuck-claim', wait: false });
+  await claimStartedPromise;
+  pool.close();
+  const outcome = await Promise.race([
+    pending.then(() => ({ kind: 'resolved' }), (error) => ({ kind: 'rejected', error })),
+    new Promise((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 100)),
+  ]);
+  assert.equal(outcome.kind, 'rejected', 'closing a pool must settle a claim even when the remote claim never answers');
+  assert.equal(outcome.error?.code, 'transport-failure');
+}
+
+async function testClosedPoolDoesNotResurrectProvisioning() {
+  let releaseFrame;
+  const frameReady = new Promise((resolve) => { releaseFrame = resolve; });
+  const frames = new FakeFrameFactory();
+  const pool = newPool(frames, {
+    createFrame: async (args) => {
+      await frameReady;
+      return frames.create(args);
+    },
+  });
+  const pending = pool.provision({ size: 1, timeoutMs: 2000 });
+  await tick();
+  pool.close();
+  releaseFrame();
+  await pending;
+  assert.equal(pool.status().slots.length, 0, 'an in-flight provision cannot resurrect a retired slot');
+  assert.equal(frames.created.every((frame) => frame.removed), true, 'a frame created for a retired generation is closed');
+}
+
 async function testDedicatedCoordinatorCloseSettlesInFlightSend() {
   const listeners = new Set();
   let sendStarted;
@@ -656,6 +700,8 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 await testSixFramesSeventhWaitsAndReuse();
 await testConcurrentClaimReservesSlotBeforeSettling();
 await testClosedPoolRejectsLateClaimWithoutResurrectingLease();
+await testClosedPoolSettlesAStuckClaim();
+await testClosedPoolDoesNotResurrectProvisioning();
 await testDedicatedCoordinatorCloseSettlesInFlightSend();
 await testRejectedClaimRollsBackBeforeReuse();
 await testRejectedClaimQuarantinesWhenRollbackFails();
