@@ -17,6 +17,8 @@
   box-shadow: var(--ui-shadow);
   cursor: pointer;
   transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 .ai-launcher:hover { background: var(--ui-surface-2); }
@@ -25,14 +27,20 @@
 
 .ai-launcher-mark { width: 26px; height: 26px; }
 
-/* Working: a quiet ring, never a colour flash. */
+/* Working: a complete inset ring. A brighter segment conveys motion without
+   rotating a visibly missing/clipped border on WebKit. */
 .ai-launcher[data-state="running"]::after {
   content: "";
   position: absolute;
-  inset: -3px;
-  border: 2px solid color-mix(in srgb, var(--ui-accent) 55%, transparent);
-  border-top-color: transparent;
-  border-radius: 17px;
+  inset: 2px;
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 2px solid color-mix(in srgb, var(--ui-accent) 34%, var(--ui-surface));
+  border-top-color: var(--ui-accent-strong);
+  border-right-color: color-mix(in srgb, var(--ui-accent) 78%, var(--ui-surface));
+  border-radius: 11px;
+  transform-origin: center;
+  will-change: transform;
   animation: ai-launcher-spin 1.1s linear infinite;
 }
 

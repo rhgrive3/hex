@@ -109,8 +109,31 @@ await run(async ({ browser }) => {
     await stubEngine(page, { answer: 'background answer' }, { hang: true });
     await page.click('#ai-launcher');
     await page.waitForTimeout(150);
-    await ask(page, 'これは何？');
-    await page.keyboard.press('Escape');
+  await ask(page, 'これは何？');
+  await page.waitForTimeout(120);
+  const runningRing = await page.evaluate(() => {
+    const launcher = document.getElementById('ai-launcher');
+    const ring = getComputedStyle(launcher, '::after');
+    return {
+      state: launcher.dataset.state,
+      busy: launcher.getAttribute('aria-busy'),
+      top: parseFloat(ring.top),
+      right: parseFloat(ring.right),
+      bottom: parseFloat(ring.bottom),
+      left: parseFloat(ring.left),
+      borderTopWidth: parseFloat(ring.borderTopWidth),
+      borderTopStyle: ring.borderTopStyle,
+      animationName: ring.animationName,
+      pointerEvents: ring.pointerEvents,
+    };
+  });
+  check('running launcher uses a complete inset ring instead of a clipped missing segment',
+    runningRing.state === 'running' && runningRing.busy === 'true' &&
+    runningRing.top >= 0 && runningRing.right >= 0 && runningRing.bottom >= 0 && runningRing.left >= 0 &&
+    runningRing.borderTopWidth > 0 && runningRing.borderTopStyle === 'solid' &&
+    runningRing.animationName === 'ai-launcher-spin' && runningRing.pointerEvents === 'none',
+    JSON.stringify(runningRing));
+  await page.keyboard.press('Escape');
     await page.waitForTimeout(150);
     await page.evaluate(() => window.__hexStub.resolve());
     await page.waitForTimeout(300);

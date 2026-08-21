@@ -21,6 +21,13 @@ await run(async ({ browser }) => {
   });
   check('the sample provides a function to report on', !!address, String(address));
   if (!address) { await context.close(); return state.failures + 1; }
+  const viewerLifecycle = await page.evaluate(() => ({
+    chunkArrived: typeof window.__app.viewer.chunkArrived,
+    dispose: typeof window.__app.viewer.dispose,
+  }));
+  check('viewer lifecycle hooks survive pointer-wiring changes',
+    viewerLifecycle.chunkArrived === 'function' && viewerLifecycle.dispose === 'function',
+    JSON.stringify(viewerLifecycle));
 
   /* ── the function report ─────────────────────────────────── */
   await page.evaluate(async (addr) => {
@@ -48,6 +55,7 @@ await run(async ({ browser }) => {
   check('the result is broken into named sections rather than one block of text', sections >= 3, String(sections));
 
   /* ── the wiring itself ───────────────────────────────────── */
+  const routeBeforePseudo = await page.evaluate(() => location.hash);
   await page.evaluate(() => {
     const button = [...document.querySelectorAll('#overlays .sheet .next-views .action-btn')]
       .find((node) => /疑似C/.test(node.textContent));
@@ -67,6 +75,14 @@ await run(async ({ browser }) => {
     text: (document.querySelector('.ui-pseudocode')?.textContent || '').slice(0, 40),
   }));
   check('the pseudo-C view actually renders for that function', rendered.code, rendered.text);
+  const sharedHistory = await page.evaluate(() => window.__hexUi.router.canBack());
+  check('direct function navigation participates in the shared navigation history',
+    sharedHistory === true, String(sharedHistory));
+  await page.evaluate(() => window.__hexUi.router.back());
+  await page.waitForTimeout(300);
+  const routeAfterBack = await page.evaluate(() => location.hash);
+  check('Back returns to the workspace that was open before the function view',
+    routeAfterBack === routeBeforePseudo, JSON.stringify({ before: routeBeforePseudo, after: routeAfterBack }));
 
   /* ── text placement on a sheet that writes prose directly ── */
   await page.evaluate(() => { window.__hexUi.router.navigate('/code'); });
@@ -145,11 +161,10 @@ await run(async ({ browser }) => {
     await new Promise((resolve) => setTimeout(resolve, 400));
     const sheet = document.querySelector('#overlays .sheet:not(.parked)');
     if (!sheet) return { error: 'no sheet' };
-    const rows = [...sheet.querySelectorAll('.blk .list li')].map((node) => node.textContent);
     return {
+      primaryRoute: sheet.querySelectorAll('.answer-primary-route').length,
       views: [...sheet.querySelectorAll('.next-views .action-btn .action-label')].map((n) => n.textContent),
-      tappableNext: [...sheet.querySelectorAll('.blk .list li')].filter((n) => n.matches('.tappable, [role="button"]') || n.querySelector('button')).length,
-      nextRows: rows.length,
+      duplicateNext: /次に見るなら|What to look at next/.test(sheet.textContent || ''),
       inSheet: sheet.querySelectorAll('.in-sheet-actions .chip').length,
     };
   }, address);
@@ -157,9 +172,60 @@ await run(async ({ browser }) => {
   check('a settled answer offers pseudo-C and the diagram for its routine',
     !!pinned.views && pinned.views.some((label) => /疑似C/.test(label)) && pinned.views.some((label) => /図/.test(label)),
     JSON.stringify(pinned.views));
-  check('"what to look at next" is a set of rows you can press, not a paragraph',
-    pinned.nextRows >= 2 && pinned.tappableNext === pinned.nextRows, JSON.stringify({ rows: pinned.nextRows, tappable: pinned.tappableNext }));
+  check('a settled answer has one direct route to the exact function', pinned.primaryRoute === 1, String(pinned.primaryRoute));
+  check('alternate views do not duplicate the primary overview route',
+    !pinned.views.some((label) => /関数の概要|Function overview/.test(label)), JSON.stringify(pinned.views));
+  check('duplicate "what to look at next" wiring is removed', pinned.duplicateNext === false, String(pinned.duplicateNext));
   check('moving inside the result stays separate from leaving it', pinned.inSheet >= 2, String(pinned.inSheet));
+
+  await page.click('#overlays .sheet:not(.parked) .answer-primary-route');
+  await page.waitForTimeout(500);
+  const settledDirect = await page.evaluate(() => ({
+    hash: location.hash,
+    sheets: document.querySelectorAll('#overlays .sheet:not(.parked)').length,
+  }));
+  check('one tap from a settled answer opens that exact function workspace',
+    settledDirect.hash === '#/function/' + address + '/overview', settledDirect.hash);
+  check('the settled result sheet closes only after navigation succeeds', settledDirect.sheets === 0, String(settledDirect.sheets));
+
+  await page.evaluate((addr) => window.__hexUi.router.navigate('/code/' + addr), address);
+  await page.waitForTimeout(700);
+  await closeSheets(page);
+  const point = await page.evaluate((addr) => {
+    const target = BigInt(addr);
+    const row = [...document.querySelectorAll('#rows .row')].find((node) =>
+      node._row != null && window.__app.viewer.rowAddress(node._row) === target);
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    return { x: r.left + Math.min(80, r.width / 2), y: r.top + r.height / 2 };
+  }, address);
+  check('the function-start row is visible for the long-press regression', !!point, JSON.stringify(point));
+  if (point) {
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    await page.waitForTimeout(620);
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+    const held = await page.evaluate(() => ({
+      menus: document.querySelectorAll('#overlays .menu').length,
+      sheets: document.querySelectorAll('#overlays .sheet:not(.parked)').length,
+      text: document.querySelector('#overlays .menu')?.textContent || '',
+    }));
+    check('long press opens only the shortcut menu, never the normal detail sheet',
+      held.menus === 1 && held.sheets === 0, JSON.stringify(held));
+    check('the long-press menu exposes the canonical function overview route',
+      /関数の概要を開く|Open function overview/.test(held.text), held.text.slice(0, 120));
+    await page.evaluate(() => {
+      const item = [...document.querySelectorAll('#overlays .menu button, #overlays .menu [role="button"], #overlays .menu .menu-item')]
+        .find((node) => /関数の概要を開く|Open function overview/.test(node.textContent || ''));
+      if (!item) throw new Error('canonical function menu item missing');
+      item.click();
+    });
+    await page.waitForTimeout(400);
+    const longPressRoute = await page.evaluate(() => location.hash);
+    check('the long-press shortcut lands on the same canonical function workspace',
+      longPressRoute === '#/function/' + address + '/overview', longPressRoute);
+  }
 
   /* ── the same bar on the quick function summary ──────────── */
   await closeSheets(page);
