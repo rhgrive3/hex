@@ -124,3 +124,5 @@ export async function openManagedImage(bytes, options = {}) {
   const frontend = MANAGED_FRONTENDS[probe.frontendId];
   return frontend.open(bytes, options);
 }
+
+export * from './runtime-binding.js';

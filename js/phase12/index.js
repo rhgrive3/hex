@@ -5,5 +5,8 @@ export * from './provider-boundary.js';
 export * from '../knowledge/phase12-recognition.js';
 export * from '../knowledge/phase12-rules.js';
 export * from '../collaboration/index.js';
+export * from '../collaboration/remote-authority.js';
+export * from '../collaboration/remote-delivery.js';
 export * from '../pattern/index.js';
 export * from '../rebuild/index.js';
+export * from '../rebuild/transaction-v2.js';

@@ -1,0 +1,106 @@
+name: Stage 2 authority runtime rebuild validation
+
+on:
+  pull_request:
+    paths:
+      - 'js/runtime/authority.js'
+      - 'js/runtime/stage2.js'
+      - 'js/managed/runtime-binding.js'
+      - 'js/managed/index.js'
+      - 'js/rebuild/**'
+      - 'js/collaboration/**'
+      - 'js/phase12/index.js'
+      - 'js/platform/physical-ipad-evidence.js'
+      - 'js/platform/stage2-capability-maturity.js'
+      - 'tests/stage2/**'
+      - 'tools/validation/stage2/**'
+      - 'tools/validation/phase10/ownership.json'
+      - 'tools/validation/phase11/ownership.json'
+      - 'tools/validation/phase12/ownership.json'
+      - '.github/workflows/stage2-release-validation.yml'
+  workflow_dispatch:
+    inputs:
+      expect_sha:
+        description: Exact candidate or post-merge commit SHA
+        required: true
+        type: string
+      physical_evidence_path:
+        description: Repository path to physical iPad evidence JSON for final COMPLETE proof
+        required: false
+        type: string
+      build_identity:
+        description: Exact build identity expected by the physical evidence record
+        required: false
+        type: string
+      final:
+        description: Require physical iPad evidence and emit COMPLETE only when all final gates pass
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  head:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Verify exact Stage 2 head with full repository gate
+        env:
+          VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA" --full
+
+  candidate-merge-tree:
+    if: github.event_name == 'pull_request'
+    needs: head
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Verify exact candidate merge tree
+        env:
+          VERIFY_SHA: ${{ github.sha }}
+        run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA"
+
+  final-exact-product:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expect_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Verify exact Stage 2 product
+        shell: bash
+        run: |
+          args=(--expect-sha "${{ inputs.expect_sha }}" --full)
+          if [[ "${{ inputs.final }}" == "true" ]]; then
+            args+=(--final --physical-evidence "${{ inputs.physical_evidence_path }}")
+            if [[ -n "${{ inputs.build_identity }}" ]]; then args+=(--build-identity "${{ inputs.build_identity }}"); fi
+          fi
+          node tools/validation/stage2/verify.mjs "${args[@]}"

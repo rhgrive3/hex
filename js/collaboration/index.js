@@ -75,7 +75,7 @@ export class ChangeLog {
     this.binaryIdentity = options.binaryIdentity == null ? null : required(options.binaryIdentity, 'changelog-binary-identity-invalid');
     this.state = cloneState(options.state || emptyState(this.projectIdentity, this.binaryIdentity));
     this.operations = new Map((options.operations || []).map((operation) => [operation.operationId, operation]));
-    this.pending = new Map();
+    this.pending = new Map(options.pending || []);
     this.allowRemote = options.allowRemote === true;
     this.authorizedAuthors = new Set((options.authorizedAuthors || []).map(String));
   }
@@ -88,7 +88,7 @@ export class ChangeLog {
       if (!this.allowRemote) return { status: 'rejected', reason: 'remote-transport-security-gate-required' };
       if (!operation.authorIdentity || !this.authorizedAuthors.has(operation.authorIdentity)) return { status: 'rejected', reason: 'unauthorized-remote-actor' };
     }
-    if (operation.causalParents.some((parent) => !this.operations.has(parent) && !this.pending.has(parent))) return { status: 'unresolved', reason: 'missing-causal-parent' };
+    if (operation.causalParents.some((parent) => !this.operations.has(parent))) return { status: 'unresolved', reason: 'missing-causal-parent' };
     return null;
   }
 
@@ -138,6 +138,7 @@ export class ChangeLog {
     const operation = input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input);
     const result = this.#applyOne(operation);
     if (result.status === 'unresolved') this.pending.set(operation.operationId, operation);
+    else this.pending.delete(operation.operationId);
     return Object.freeze({ ...result, operationId: operation.operationId, stateDigest: this.digest() });
   }
 
@@ -145,17 +146,20 @@ export class ChangeLog {
     const operations = inputs.map((input) => input?.schemaVersion === CHANGELOG_SCHEMA_VERSION ? input : createProjectOperation(input));
     const ordered = orderOperations(operations, new Set(this.operations.keys()));
     if (ordered.unresolved.length) return Object.freeze({ status: 'unresolved', reason: 'missing-causal-parent', operationIds: ordered.unresolved.map((operation) => operation.operationId), stateDigest: this.digest() });
-    const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
+    const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
     const results = [];
     for (const operation of ordered.ordered) {
       const result = working.#applyOne(operation);
       results.push(result);
       if (result.status === 'rejected') return Object.freeze({ status: 'rejected', reason: result.reason, operationId: operation.operationId, results, stateDigest: this.digest() });
+      if (result.status === 'unresolved') working.pending.set(operation.operationId, operation);
+      else working.pending.delete(operation.operationId);
     }
     this.state = working.state;
     this.operations = working.operations;
     this.pending = working.pending;
-    return Object.freeze({ status: 'applied', results, stateDigest: this.digest() });
+    const unresolved = [...this.pending.keys()].sort();
+    return Object.freeze({ status: unresolved.length ? 'applied-with-unresolved' : 'applied', results, unresolvedOperationIds: unresolved, stateDigest: this.digest() });
   }
 
   checkpoint() {
@@ -171,7 +175,7 @@ export function replayOperations({ projectIdentity, binaryIdentity = null, opera
   const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) : [] });
   const filtered = checkpoint ? operations.filter((operation) => !checkpoint.operationIds.includes(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
-  return Object.freeze({ ...result, state: log.snapshot(), digest: log.digest(), unresolved: result.status === 'unresolved' ? result.operationIds : [] });
+  return Object.freeze({ ...result, state: log.snapshot(), digest: log.digest(), unresolved: result.status === 'unresolved' ? result.operationIds : result.unresolvedOperationIds || [] });
 }
 
 export function createCheckpoint(log) { if (!(log instanceof ChangeLog)) throw new TypeError('ChangeLog required'); return log.checkpoint(); }
