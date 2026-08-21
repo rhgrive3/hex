@@ -88,8 +88,6 @@ export class ChangeLog {
       if (!this.allowRemote) return { status: 'rejected', reason: 'remote-transport-security-gate-required' };
       if (!operation.authorIdentity || !this.authorizedAuthors.has(operation.authorIdentity)) return { status: 'rejected', reason: 'unauthorized-remote-actor' };
     }
-    // A pending parent is not an applied parent. Causal effects become visible
-    // only after every parent exists in the canonical applied operation set.
     if (operation.causalParents.some((parent) => !this.operations.has(parent))) return { status: 'unresolved', reason: 'missing-causal-parent' };
     return null;
   }
@@ -168,7 +166,7 @@ export class ChangeLog {
     return deepFreeze({ schemaVersion: CHECKPOINT_SCHEMA_VERSION, projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: cloneState(this.state), operationIds: [...this.operations.keys()].sort(), digest: this.digest() });
   }
 
-  digest() { return payloadDigest({ state: this.state, operationIds: [...this.operations.keys()].sort()); }
+  digest() { return payloadDigest({ state: this.state, operationIds: [...this.operations.keys()].sort() }); }
   snapshot() { return deepFreeze(cloneState(this.state)); }
   appliedOperationIds() { return Object.freeze([...this.operations.keys()].sort()); }
 }
