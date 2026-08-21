@@ -23,7 +23,9 @@
     "tools/validation/phase11/ownership.json",
     "userscript/hex.user.template.js",
     "userscript/release-version.json",
-    "package.json"
+    "package.json",
+    "js/ai/dev/protocol/dev-supervisor-prompt.js",
+    "tests/dev-agent/tool-contract-parity.mjs"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",
