@@ -311,16 +311,29 @@ export class IframeWorkerPool {
     const leaseId = randomId('lease', this.cryptoRef);
     const runId = randomId('poolrun', this.cryptoRef);
     const workerId = randomId('worker', this.cryptoRef);
+    let claimRollbackCompleted = false;
     try {
       await slot.client.claim({ runId, workerId });
       if (signal?.aborted) {
         await this.rollbackCancelledClaim(slot, { runId, workerId });
+        claimRollbackCompleted = true;
         throw abortError(signal.reason);
       }
       slot.claimed = true; slot.leaseId = leaseId; slot.runId = runId; slot.workerId = workerId;
       slot.taskId = taskId == null ? null : String(taskId);
       this.leases.set(leaseId, slot.index);
       return { leaseId, ...this.publicSlot(slot) };
+    } catch (error) {
+      // A rejected claim RPC may have reached the Worker before its response
+      // was lost. Roll back that remote claim before making the local slot
+      // available again; if rollback is ambiguous, quarantine the slot.
+      if (!claimRollbackCompleted) {
+        await this.rollbackClaim(slot, { runId, workerId }, {
+          code: 'worker-claim-cleanup-failed',
+          label: 'Worker claim',
+        });
+      }
+      throw error;
     } finally {
       slot.reserving = false;
       if (!slot.claimed) this.flushWaiters();
@@ -328,12 +341,19 @@ export class IframeWorkerPool {
   }
 
   async rollbackCancelledClaim(slot, identity) {
+    return this.rollbackClaim(slot, identity, {
+      code: 'worker-claim-cancel-cleanup-failed',
+      label: 'Cancelled Worker claim',
+    });
+  }
+
+  async rollbackClaim(slot, identity, { code, label } = {}) {
     try { await slot.client.release(identity); }
     catch (error) {
       if (String(error?.code || '') === 'worker-not-claimed') return;
       slot.error = {
-        code: 'worker-claim-cancel-cleanup-failed',
-        message: `Cancelled Worker claim cleanup failed: ${String(error?.message || error).slice(0, 384)}`,
+        code: String(code || 'worker-claim-cleanup-failed'),
+        message: `${String(label || 'Worker claim')} cleanup failed: ${String(error?.message || error).slice(0, 384)}`,
       };
     }
   }

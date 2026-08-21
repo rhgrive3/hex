@@ -61,6 +61,79 @@ async function testConcurrentClaimReservesSlotBeforeSettling() {
   pool.close();
 }
 
+async function testRejectedClaimRollsBackBeforeReuse() {
+  const calls = [];
+  let rejectFirstClaim = true;
+  const pool = newPool(new FakeFrameFactory(), {
+    createWorkerRuntime: ({ slot, document }) => {
+      const runtime = fakeWorkerRuntime(slot, document);
+      const claim = runtime.coordinator.claim.bind(runtime.coordinator);
+      const release = runtime.coordinator.release.bind(runtime.coordinator);
+      runtime.coordinator.claim = async (args) => {
+        calls.push('claim');
+        const result = await claim(args);
+        if (rejectFirstClaim) {
+          rejectFirstClaim = false;
+          throw Object.assign(new Error('claim response lost after remote acceptance'), { code: 'transport-failure' });
+        }
+        return result;
+      };
+      runtime.coordinator.release = async (args) => {
+        calls.push('release');
+        return release(args);
+      };
+      return runtime;
+    },
+  });
+  await pool.provision({ size: 1, timeoutMs: 2000 });
+
+  await assert.rejects(
+    pool.claim({ taskId: 'ambiguous-claim', wait: false }),
+    (error) => error?.code === 'transport-failure',
+  );
+  assert.deepEqual(calls, ['claim', 'release'], 'a rejected claim must attempt remote rollback before reuse');
+  assert.equal(publicSlot(pool, 1).error, null, 'a successful rollback keeps the slot reusable');
+
+  const replacement = await pool.claim({ taskId: 'reclaimed-after-rollback', wait: false });
+  assert.equal(replacement.slot, 1);
+  await pool.release({ leaseId: replacement.leaseId });
+  pool.close();
+}
+
+async function testRejectedClaimQuarantinesWhenRollbackFails() {
+  const calls = [];
+  const pool = newPool(new FakeFrameFactory(), {
+    createWorkerRuntime: ({ slot, document }) => {
+      const runtime = fakeWorkerRuntime(slot, document);
+      const claim = runtime.coordinator.claim.bind(runtime.coordinator);
+      runtime.coordinator.claim = async (args) => {
+        calls.push('claim');
+        await claim(args);
+        throw Object.assign(new Error('claim response lost after remote acceptance'), { code: 'transport-failure' });
+      };
+      runtime.coordinator.release = async () => {
+        calls.push('release');
+        throw Object.assign(new Error('release response lost'), { code: 'transport-failure' });
+      };
+      return runtime;
+    },
+  });
+  await pool.provision({ size: 1, timeoutMs: 2000 });
+
+  await assert.rejects(
+    pool.claim({ taskId: 'quarantine-ambiguous-claim', wait: false }),
+    (error) => error?.code === 'transport-failure',
+  );
+  assert.deepEqual(calls, ['claim', 'release']);
+  assert.equal(publicSlot(pool, 1).error?.code, 'worker-claim-cleanup-failed');
+  await assert.rejects(
+    pool.claim({ taskId: 'must-not-reuse-ambiguous-slot', wait: false }),
+    (error) => error?.code === 'worker-pool-full',
+    'a claim whose rollback is ambiguous must quarantine the slot from reuse',
+  );
+  pool.close();
+}
+
 async function testBlockedEmbeddingIsReportedExactly() {
   const blocked = new FakeFrameFactory({ crossOrigin: true });
   const blockedPool = newPool(blocked);
@@ -506,6 +579,8 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
 await testSixFramesSeventhWaitsAndReuse();
 await testConcurrentClaimReservesSlotBeforeSettling();
+await testRejectedClaimRollsBackBeforeReuse();
+await testRejectedClaimQuarantinesWhenRollbackFails();
 await testBlockedEmbeddingIsReportedExactly();
 await testNavigationDocumentReplacementRebindsRuntime();
 await testCrossOriginProjectUrlFailsClosed();
