@@ -34,6 +34,27 @@ test('session timeout properly returns TIMEOUT without hanging', async () => {
 
   assert.equal(res.status, SOLVER_STATUS.TIMEOUT);
   assert.ok(res.reason.includes('timed out'));
+  assert.equal(res.lifecycle.publishable, false);
+  assert.equal(res.lifecycle.timedOut, true);
+});
+
+test('stale provider completion is discarded after a newer query token', async () => {
+  const backend = new FakeSolverBackend({
+    handler: async (query) => {
+      await new Promise((resolve) => setTimeout(resolve, query.queryHash === 'first' ? 30 : 1));
+      return { status: SOLVER_STATUS.UNSAT };
+    },
+  });
+  const session = backend.createSession();
+  const first = session.check({ queryHash: 'first' });
+  const second = session.check({ queryHash: 'second' });
+  const firstResult = await first;
+  const secondResult = await second;
+  assert.equal(firstResult.status, SOLVER_STATUS.CANCELLED);
+  assert.equal(firstResult.lifecycle.stale, true);
+  assert.equal(firstResult.lifecycle.publishable, false);
+  assert.equal(secondResult.status, SOLVER_STATUS.UNSAT);
+  assert.equal(secondResult.lifecycle.publishable, true);
 });
 
 test('session cancellation is idempotent and rejects in-flight / subsequent queries', async () => {

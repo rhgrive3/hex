@@ -1,3 +1,5 @@
+import { validatePluginManifest, checkManifestCompatibility, PluginCompatibilityError } from './plugin-manifest.js';
+
 const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider', 'signatureProvider', 'recognitionProvider', 'viewContribution', 'goalProvider']);
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_READ_CALL_BYTES = 1024 * 1024;
@@ -50,10 +52,14 @@ function normalizeRanges(value) {
   return out;
 }
 
-function makeReadCapability(context) {
+function makeReadCapability(context, pluginScope = null, record = null) {
   if (typeof context.read !== 'function') return undefined;
   const policy = context.pluginPolicy || context.pluginPermissions || {};
-  const allowed = policy.binaryRead === true || policy.readBinary === true;
+  let manifestPerm = true;
+  if (record?.manifest?.permissions) {
+    manifestPerm = Boolean(record.manifest.permissions.binaryRead);
+  }
+  const allowed = manifestPerm && (policy.binaryRead === true || policy.readBinary === true);
   const ranges = normalizeRanges(policy.readRanges || policy.ranges || context.binary?.readRanges);
   if (!allowed && !ranges.length) return async () => { throw new Error('plugin binary read permission denied'); };
   const perCall = Math.floor(finitePositive(policy.maxReadBytes, DEFAULT_READ_CALL_BYTES));
@@ -65,6 +71,9 @@ function makeReadCapability(context) {
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > perCall) throw new RangeError(`plugin read exceeds per-call limit (${perCall} bytes)`);
     if (total + bytes > totalLimit) throw new RangeError(`plugin read exceeds total budget (${totalLimit} bytes)`);
     if (ranges.length && !ranges.some((r) => at >= r.start && at + BigInt(bytes) <= r.end)) throw new RangeError('plugin read is outside permitted ranges');
+    if (pluginScope && typeof pluginScope.consume === 'function') {
+      pluginScope.consume('bytesRead', bytes);
+    }
     total += bytes;
     const value = await context.read(at, bytes);
     return safeSnapshot(value);
@@ -84,15 +93,109 @@ function settleWithin(promise, timeoutMs, signal) {
 }
 
 export class PlatformPluginRegistry {
-  constructor(options = {}) { this.entries = new Map([...TYPES].map((type) => [type, new Map()])); this.failures = []; this.timeoutMs = finitePositive(options.timeoutMs, DEFAULT_TIMEOUT_MS); }
+  constructor(options = {}) {
+    this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
+    this.plugins = new Map();
+    this.failures = [];
+    this.timeoutMs = finitePositive(options.timeoutMs, DEFAULT_TIMEOUT_MS);
+  }
+
   registerFormat(id, contribution) { return this.#register('format', id, contribution); }
   registerArchitecture(id, contribution) { return this.#register('architecture', id, contribution); }
-  registerAnalyzer(id, contribution) { return this.#register('analyzer', id, contribution); }
+
+  registerAnalyzer(id, contribution) {
+    if (!contribution || typeof contribution !== 'object') throw new TypeError('plugin contribution must be an object');
+    if (!/^[a-z0-9][a-z0-9._-]{1,127}$/i.test(String(id || ''))) throw new TypeError('plugin contribution id must be stable and non-empty');
+    const legacyManifest = {
+      id: `legacy.analyzer.${id}`,
+      name: `Legacy analyzer ${id}`,
+      version: '1.0.0',
+      apiVersion: '2.0.0',
+      isLegacy: true,
+      permissions: { binaryRead: true },
+      supportedTargets: ['*'],
+      contributions: [{
+        type: 'analyzer',
+        id: String(id),
+        contractVersion: '1.0.0',
+        capabilities: [],
+      }],
+    };
+    return this.registerPlugin(legacyManifest, { [id]: contribution });
+  }
+
   registerKnowledgeProvider(id, contribution) { return this.#register('knowledgeProvider', id, contribution); }
   registerSignatureProvider(id, contribution) { return this.#register('signatureProvider', id, contribution); }
   registerRecognitionProvider(id, contribution) { return this.#register('recognitionProvider', id, contribution); }
   registerViewContribution(id, contribution) { return this.#register('viewContribution', id, contribution); }
   registerGoalProvider(id, contribution) { return this.#register('goalProvider', id, contribution); }
+
+  registerPlugin(rawManifest, implementations = {}) {
+    const manifest = validatePluginManifest(rawManifest);
+    checkManifestCompatibility(manifest);
+
+    if (this.plugins.has(manifest.id)) {
+      throw new Error(`plugin already registered: ${manifest.id}`);
+    }
+
+    for (const contrib of manifest.contributions) {
+      if (this.entries.get(contrib.type)?.has(contrib.id)) {
+        throw new Error(`plugin contribution already registered: ${contrib.type}:${contrib.id}`);
+      }
+      const impl = implementations[contrib.id];
+      if (!impl || typeof impl !== 'object') {
+        throw new TypeError(`missing implementation for contribution: ${contrib.id}`);
+      }
+      if (contrib.type === 'analyzer' && typeof impl.analyze !== 'function') {
+        throw new TypeError(`analyzer implementation must have analyze(): ${contrib.id}`);
+      }
+    }
+
+    const registered = [];
+    for (const contrib of manifest.contributions) {
+      const impl = implementations[contrib.id];
+      const record = Object.freeze({
+        id: contrib.id,
+        type: contrib.type,
+        contribution: Object.freeze({ ...impl }),
+        pluginId: manifest.id,
+        manifest,
+        contractVersion: contrib.contractVersion,
+        capabilities: contrib.capabilities,
+      });
+      this.entries.get(contrib.type).set(contrib.id, record);
+      registered.push({ type: contrib.type, id: contrib.id });
+    }
+
+    const pluginRecord = Object.freeze({
+      id: manifest.id,
+      name: manifest.name,
+      version: manifest.version,
+      apiVersion: manifest.apiVersion,
+      contributionIds: Object.freeze(manifest.contributions.map((c) => c.id)),
+      manifest,
+    });
+    this.plugins.set(manifest.id, pluginRecord);
+
+    return () => {
+      for (const { type, id } of registered) {
+        this.entries.get(type)?.delete(id);
+      }
+      this.plugins.delete(manifest.id);
+    };
+  }
+
+  listPlugins() {
+    return [...this.plugins.values()]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((p) => Object.freeze({
+        id: p.id,
+        name: p.name,
+        version: p.version,
+        apiVersion: p.apiVersion,
+        contributionIds: p.contributionIds,
+      }));
+  }
 
   #register(type, id, contribution) {
     if (!TYPES.has(type)) throw new Error(`unsupported plugin contribution type: ${type}`);
@@ -116,10 +219,22 @@ export class PlatformPluginRegistry {
     const rawOptions = args.at(-1) && typeof args.at(-1) === 'object' ? args.at(-1) : {};
     const timeoutMs = finitePositive(rawOptions.timeoutMs, this.timeoutMs);
     const signal = rawOptions.signal;
+
+    let pluginScope = null;
+    if (context.resourceBudget && typeof context.resourceBudget.scope === 'function') {
+      const sanitized = `${type}.${id}.${method}`.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+      try {
+        pluginScope = context.resourceBudget.scope(sanitized);
+      } catch {
+        pluginScope = context.resourceBudget;
+      }
+    }
+
     try {
       const safeContext = Object.freeze({
         binary: safeSnapshot(context.binary), capability: safeSnapshot(context.capability), project: safeSnapshot(context.project),
-        read: makeReadCapability(context),
+        read: makeReadCapability(context, pluginScope, record),
+        resourceBudget: pluginScope || context.resourceBudget,
         reportProgress: typeof context.reportProgress === 'function' ? (...progressArgs) => context.reportProgress(...progressArgs.map((x) => safeSnapshot(x))) : undefined,
       });
       const safeArgs = args.map((arg) => safeSnapshot(arg));
@@ -155,3 +270,5 @@ export const registerSignatureProvider = (...args) => platformPlugins.registerSi
 export const registerRecognitionProvider = (...args) => platformPlugins.registerRecognitionProvider(...args);
 export const registerViewContribution = (...args) => platformPlugins.registerViewContribution(...args);
 export const registerGoalProvider = (...args) => platformPlugins.registerGoalProvider(...args);
+export { PluginCompatibilityError };
+

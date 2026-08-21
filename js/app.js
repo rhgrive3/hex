@@ -39,6 +39,7 @@ import { showTools, prettyName } from './tools.js';
 import { NavigationHistory } from './navigation.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
 import { ProductWorkspace } from './workspace.js';
+import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/query/index.js';
 
 const $ = (id) => document.getElementById(id);
 const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
@@ -175,6 +176,7 @@ class App {
     });
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
     this.workspace = new ProductWorkspace(this);
+    this.analysisQueries = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(this));
     this.activeProject = null;
 
     this.applyTheme(this.prefs.theme || 'system');

@@ -1,7 +1,7 @@
 const ARCHITECTURES = new Map();
 
-function canonicalId(value) { return String(value || '').trim().toLowerCase(); }
-function positiveInteger(value, name, { nullable = false } = {}) {
+export function canonicalArchitectureId(value) { return String(value || '').trim().toLowerCase(); }
+export function normalizeArchitecturePositiveInteger(value, name, { nullable = false } = {}) {
   if (nullable && value == null) return null;
   const n = Number(value);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) throw new TypeError(`${name} must be a finite positive integer`);
@@ -10,7 +10,7 @@ function positiveInteger(value, name, { nullable = false } = {}) {
 
 export class ArchitecturePluginV2 {
   constructor(definition = {}) {
-    const id = canonicalId(definition.id);
+    const id = canonicalArchitectureId(definition.id);
     if (!id) throw new TypeError('architecture id is required');
     this.id = id;
     this.semanticVersion = String(definition.semanticVersion || '1');
@@ -21,20 +21,15 @@ export class ArchitecturePluginV2 {
     this.decodeProvider = definition.decodeProvider || null;
     this.liftExact = definition.liftExact || null;
     this.classifyControlFlow = definition.classifyControlFlow || (() => null);
-    // Direct (PC-relative or absolute-immediate) control-transfer target of a
-    // decoded instruction, as a BigInt virtual address, or null when the target
-    // is not a decode-time constant. Architectures own this because the encoding
-    // of a direct target is architecture-specific; generic callers must not
-    // inspect operand shapes or disassembly text to recover it.
     this.directControlTarget = definition.directControlTarget || (() => null);
     this.assemble = definition.assemble || null;
     this.validateEncoding = definition.validateEncoding || null;
     this.supportedMemoryEndianness = Object.freeze([...new Set(
       (Array.isArray(definition.supportedMemoryEndianness) ? definition.supportedMemoryEndianness : [])
-        .map((value) => canonicalId(value)).filter(Boolean)
+        .map((value) => canonicalArchitectureId(value)).filter(Boolean)
     )]);
-    this.instructionAlignment = positiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');
-    this.fixedInstructionSize = positiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize', { nullable:true });
+    this.instructionAlignment = normalizeArchitecturePositiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');
+    this.fixedInstructionSize = normalizeArchitecturePositiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize', { nullable:true });
     this.viewerCompatible = !!definition.viewerCompatible;
     this.capabilities = Object.freeze({
       decode: definition.capabilities?.decode || (this.decode ? 'native' : this.decodeProvider ? 'external' : 'unsupported'),
@@ -53,7 +48,7 @@ export function registerArchitecturePlugin(definition, { replace = false } = {})
 }
 
 export function architecturePluginV2(id) {
-  return ARCHITECTURES.get(canonicalId(id)) || ARCHITECTURES.get('unknown') || null;
+  return ARCHITECTURES.get(canonicalArchitectureId(id)) || ARCHITECTURES.get('unknown') || null;
 }
 
 export function architecturePluginsV2() { return Object.freeze(Array.from(ARCHITECTURES.values())); }

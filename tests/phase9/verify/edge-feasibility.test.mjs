@@ -10,6 +10,7 @@ import {
 } from '../../../js/symbolic/expr/factory.js';
 import { SOLVER_STATUS } from '../../../js/symbolic/solver/result.js';
 import { FakeSolverBackend } from '../../../js/symbolic/solver/fake-backend.js';
+import { ExhaustiveBvBackend } from '../../../js/symbolic/solver/exhaustive-backend.js';
 import { VERDICT, CLAIM_KIND } from '../../../js/symbolic/verify/query.js';
 import { verifyConditionalEdgeFeasibility } from '../../../js/symbolic/verify/edge-feasibility.js';
 
@@ -64,18 +65,11 @@ test('edge feasibility: rejects invalid SAT model as provider failure', async ()
 });
 
 test('edge feasibility: proves infeasible edge under satisfiable preconditions', async () => {
-  const x = createFreshSymbol(bvSort(64), 'arg_x0');
-  const edgeCond = createCompare(BV_COMPARE_OP.EQ, x, createBv(64, 0n));
-  const preconditions = createCompare(BV_COMPARE_OP.UGT, x, createBv(64, 10n));
+  const x = createFreshSymbol(bvSort(4), 'arg_x0');
+  const edgeCond = createCompare(BV_COMPARE_OP.EQ, x, createBv(4, 0n));
+  const preconditions = createCompare(BV_COMPARE_OP.UGT, x, createBv(4, 10n));
 
-  const backend = new FakeSolverBackend({
-    handler: async (query) => {
-      if (query.targetEntity === 'preconditions') {
-        return { status: SOLVER_STATUS.SAT, model: { arg_x0: 20n } };
-      }
-      return { status: SOLVER_STATUS.UNSAT };
-    },
-  });
+  const backend = new ExhaustiveBvBackend();
 
   const res = await verifyConditionalEdgeFeasibility({
     fromBlock: 'B0',

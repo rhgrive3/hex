@@ -27,10 +27,10 @@ test('support matrix correctly classifies exact, exact-with-assumptions, and uns
     TRANSLATION_STATUS.EXACT
   );
 
-  // Stack/field load without reaching store is exact-with-assumptions
+  // A named location without a unique reaching store is not proof-safe.
   assert.equal(
     classifyOpSupport(OP.LOAD, { loc: { kind: MK.STACK, key: 'sp+8' } }),
-    TRANSLATION_STATUS.EXACT_WITH_ASSUMPTIONS
+    TRANSLATION_STATUS.UNSUPPORTED
   );
 
   // Unknown memory location load is unsupported

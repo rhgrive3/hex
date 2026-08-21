@@ -9,9 +9,19 @@ import {
   VERIFIER_FINGERPRINT_SCHEMA_VERSION,
 } from '../../../js/symbolic/evidence/cache-policy.js';
 import { SOLVER_STATUS } from '../../../js/symbolic/solver/result.js';
+import { ExhaustiveBvBackend } from '../../../js/symbolic/solver/exhaustive-backend.js';
 import { COMPLETENESS_STATUS, createCompleteness } from '../../../js/symbolic/translate/support-matrix.js';
 import { ToolRegistry } from '../../../js/ai/tools/registry.js';
 import { ObservationStore } from '../../../js/ai/tools/storage/observation-store.js';
+
+const exactBackend = new ExhaustiveBvBackend();
+const exactCacheIdentity = {
+  proofAuthority: exactBackend.proofAuthority,
+  capabilityFingerprint: exactBackend.capabilityFingerprint(),
+  backendId: exactBackend.id,
+  backendVersion: exactBackend.version,
+  preconditionStatus: 'satisfiable',
+};
 
 test('computeVerifierFingerprint produces deterministic toolchain binding', () => {
   const baseConfig = {
@@ -19,8 +29,15 @@ test('computeVerifierFingerprint produces deterministic toolchain binding', () =
     exprSchemaVersion: '1.0.0',
     exprDagVersion: '1.0.0',
     translatorVersion: '1.0.0',
-    backendId: 'z3',
-    backendVersion: '4.12.2',
+    semanticIrVersion: '2.0.0',
+    backendId: exactBackend.id,
+    backendVersion: exactBackend.version,
+    proofAuthority: exactBackend.proofAuthority,
+    capabilityFingerprint: exactBackend.capabilityFingerprint(),
+    architecture: 'x86_64',
+    bitWidth: 8,
+    assumptionsFingerprint: 'assumptions:v1',
+    proofScope: { pathCoverage: 'complete' },
     solverOptions: { timeoutMs: 5000, randomSeed: 42 },
   };
 
@@ -55,6 +72,15 @@ test('computeVerifierFingerprint produces deterministic toolchain binding', () =
   // Sensitive to backendVersion
   assert.notEqual(fp1, computeVerifierFingerprint({ ...baseConfig, backendVersion: '4.13.0' }));
 
+  // Proof authority and capability contract are part of cache identity.
+  assert.notEqual(fp1, computeVerifierFingerprint({ ...baseConfig, proofAuthority: 'heuristic', capabilityFingerprint: null }));
+  assert.notEqual(fp1, computeVerifierFingerprint({ ...baseConfig, capabilityFingerprint: 'different-capability' }));
+  assert.notEqual(fp1, computeVerifierFingerprint({ ...baseConfig, semanticIrVersion: '2.1.0' }));
+  assert.notEqual(fp1, computeVerifierFingerprint({ ...baseConfig, architecture: 'arm64' }));
+  assert.notEqual(fp1, computeVerifierFingerprint({ ...baseConfig, bitWidth: 16 }));
+  assert.notEqual(fp1, computeVerifierFingerprint({ ...baseConfig, proofScope: { pathCoverage: 'partial' } }));
+  assert.notEqual(fp1, computeVerifierFingerprint({ ...baseConfig, assumptionsFingerprint: 'assumptions:v2' }));
+
   // Sensitive to solverOptions values
   assert.notEqual(
     fp1,
@@ -84,6 +110,7 @@ test('isCacheableProof allows only clean PROVED and REFUTED results', () => {
       solverStatus: SOLVER_STATUS.UNSAT,
       completeness: completeCompleteness,
       hasUnresolvedUnknowns: false,
+      ...exactCacheIdentity,
     }),
     true
   );
@@ -96,6 +123,7 @@ test('isCacheableProof allows only clean PROVED and REFUTED results', () => {
       completeness: completeCompleteness,
       hasUnresolvedUnknowns: false,
       validationStatus: 'validated',
+      ...exactCacheIdentity,
     }),
     true
   );
@@ -124,9 +152,10 @@ test('isCacheableProof allows only clean PROVED and REFUTED results', () => {
   for (const status of failureStatuses) {
     assert.equal(
       isCacheableProof({
-        verdict: 'proved',
-        solverStatus: status,
-        completeness: completeCompleteness,
+      verdict: 'proved',
+      solverStatus: status,
+      completeness: completeCompleteness,
+      ...exactCacheIdentity,
       }),
       false,
       `Failure status ${status} must not be cacheable`
@@ -140,6 +169,7 @@ test('isCacheableProof allows only clean PROVED and REFUTED results', () => {
       solverStatus: SOLVER_STATUS.UNSAT,
       completeness: completeCompleteness,
       hasUnresolvedUnknowns: true,
+      ...exactCacheIdentity,
     }),
     false
   );
@@ -150,6 +180,7 @@ test('isCacheableProof allows only clean PROVED and REFUTED results', () => {
       verdict: 'proved',
       solverStatus: SOLVER_STATUS.UNSAT,
       completeness: { translation: COMPLETENESS_STATUS.UNSUPPORTED },
+      ...exactCacheIdentity,
     }),
     false
   );
@@ -158,6 +189,7 @@ test('isCacheableProof allows only clean PROVED and REFUTED results', () => {
       verdict: 'proved',
       solverStatus: SOLVER_STATUS.UNSAT,
       completeness: { translation: COMPLETENESS_STATUS.PARTIAL },
+      ...exactCacheIdentity,
     }),
     false
   );
@@ -167,6 +199,7 @@ test('isCacheableProof allows only clean PROVED and REFUTED results', () => {
     isCacheableProof({
       verdict: 'proved',
       solverStatus: SOLVER_STATUS.UNSAT,
+      ...exactCacheIdentity,
       preconditionStatus: 'inconsistent',
     }),
     false
@@ -175,6 +208,7 @@ test('isCacheableProof allows only clean PROVED and REFUTED results', () => {
     isCacheableProof({
       verdict: 'proved',
       solverStatus: SOLVER_STATUS.UNSAT,
+      ...exactCacheIdentity,
       preconditionStatus: 'unknown',
     }),
     false
@@ -186,6 +220,7 @@ test('isCacheableProof allows only clean PROVED and REFUTED results', () => {
       verdict: 'refuted',
       solverStatus: SOLVER_STATUS.SAT,
       validationStatus: 'rejected',
+      ...exactCacheIdentity,
     }),
     false
   );
@@ -278,6 +313,15 @@ test('computeProofCacheKey binds base, identity, revision, verifier fingerprint,
     analysisRevision: 'rev_10',
   });
   assert.notEqual(key1, keyDiffQuery);
+
+  const fakeKey = computeProofCacheKey({
+    baseKey: 'proof:edge',
+    queryHash: 'query_hash_123',
+    verifierFingerprint: 'fake-capability-fingerprint',
+    binaryIdentity: 'binary_bin1',
+    analysisRevision: 'rev_10',
+  });
+  assert.notEqual(key1, fakeKey, 'fake and exact backend identities must not share proof cache keys');
 
   // Rejection of missing required fields
   assert.throws(() => computeProofCacheKey({ queryHash: '' }), TypeError);

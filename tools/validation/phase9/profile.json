@@ -49,6 +49,11 @@
       "id": "GATE-P9-EVIDENCE-CACHE",
       "description": "SymbolicEvidence schema and verifier fingerprint cache isolation",
       "mandatory": true
+    },
+    {
+      "id": "GATE-P9-BROWSER",
+      "description": "Chromium and WebKit iPad-viewport module Worker runtime smoke path",
+      "mandatory": true
     }
   ]
 }

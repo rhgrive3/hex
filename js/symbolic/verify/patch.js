@@ -36,7 +36,15 @@ export async function verifyPatchEquivalence({
     memoryRegions,
     backend,
     session,
-    options,
+    options: {
+      ...options,
+      proofScope: options.proofScope || {
+        kind: 'patch-equivalence',
+        originalBinaryId: String(originalBinaryId),
+        patchedPatchSetId: String(patchedPatchSetId),
+        memoryRegions,
+      },
+    },
   });
 
   return Object.freeze({

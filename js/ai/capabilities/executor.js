@@ -37,6 +37,13 @@ export class CapabilityExecutor {
   executeTool(entry, args, options) {
     const record = this.toolRegistry?.get?.(entry.agentTool);
     if (!record) throw new AIError('invalid_tool_call', `Analysis tool is unavailable: ${entry.agentTool}`);
+    const scope = options?.scope || 'auto';
+    if (scope !== 'auto') {
+      const allowedScopes = record.scopeSupport || entry.scopeSupport || [];
+      if (!allowedScopes.includes(scope)) {
+        throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+      }
+    }
     return typeof this.toolRegistry.execute === 'function'
       ? this.toolRegistry.execute(entry.agentTool, args, options)
       : record.execute(args, options);

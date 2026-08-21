@@ -2,6 +2,7 @@ import { DebugAdapterError } from '../debug/adapter.js';
 import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
 import { InterventionLedger } from './evidence-bridge.js';
+import { normalizeRuntimeModuleBinding } from './module-binding.js';
 
 function requiredMethod(backend, method, capability) {
   if (typeof backend?.[method] !== 'function') throw new DebugAdapterError('unsupported', `instrumentation backend does not support ${capability || method}`);
@@ -102,21 +103,8 @@ export class InstrumentationProvider {
         for (let i = 0; i < (Array.isArray(modules) ? modules.length : 0); i++) {
           const module = modules[i] || {};
           if ((module.runtimeBase ?? module.base) == null || (module.runtimeSize ?? module.size) == null) continue;
-          const identityEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
-          const hasProvenStaticIdentity = module.binaryId != null && (module.identityState === 'exact' || module.identityState === 'resolved' || identityEvidenceIds.length > 0);
-          session.modules.load({
-            bindingKey: moduleKey(module, i),
-            runtimeBase: module.runtimeBase ?? module.base,
-            runtimeSize: module.runtimeSize ?? module.size,
-            staticBase: module.staticBase ?? module.imageBase ?? null,
-            pathHint: module.pathHint ?? module.path ?? module.name ?? null,
-            binaryId: hasProvenStaticIdentity ? module.binaryId : null,
-            sliceId: hasProvenStaticIdentity ? (module.sliceId ?? null) : null,
-            imageId: hasProvenStaticIdentity ? (module.imageId ?? null) : null,
-            buildIdentity: module.buildIdentity ?? module.uuid ?? null,
-            identityState: hasProvenStaticIdentity ? (module.identityState ?? 'resolved') : 'unresolved',
-            identityEvidenceIds,
-          });
+          const bindingKey = moduleKey(module, i);
+          session.modules.load(normalizeRuntimeModuleBinding(module, { bindingKey }));
         }
       }
     } catch (error) {

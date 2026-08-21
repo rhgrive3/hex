@@ -224,7 +224,10 @@ export function fuseFunctionCandidates(evidence, options = {}) {
     }));
   }
 
-  const reconciled = reconcileOverlaps(candidates);
+  const reconciled = reconcileOverlaps(candidates, { signal: options.signal });
+  if (options.signal?.aborted) {
+    return { candidates: [], status: status('partial', 'cancelled') };
+  }
   return {
     candidates: reconciled,
     status: status('complete', null),
@@ -237,39 +240,90 @@ export function fuseFunctionCandidates(evidence, options = {}) {
  * A region that swallows another function's start is either a false merge or a
  * genuinely shared range (a shared epilogue, a tail-merged block). The fusion
  * cannot tell which, so it records the conflict and withdraws the extent claim
- * instead of picking one owner (§12.3).
+ * symmetrically instead of picking one owner (§12.3).
  */
-function reconcileOverlaps(candidates) {
-  const starts = candidates.map((candidate) => BigInt(candidate.start));
-  return candidates.map((candidate, index) => {
-    if (candidate.regions.length === 0) return candidate;
-    const swallowed = [];
-    for (let other = 0; other < candidates.length; other += 1) {
-      if (other === index) continue;
-      const otherStart = starts[other];
-      if (candidate.regions.some((region) => BigInt(region.start) < otherStart && otherStart < BigInt(region.end))) {
-        swallowed.push(candidates[other].start);
+function reconcileOverlaps(candidates, { signal = null } = {}) {
+  const n = candidates.length;
+  if (n <= 1) return candidates;
+
+  const swallowed = Array.from({ length: n }, () => []);
+  const overlapping = Array.from({ length: n }, () => []);
+
+  const regions = [];
+  for (let i = 0; i < n; i++) {
+    for (const r of candidates[i].regions) {
+      regions.push({
+        candidateIndex: i,
+        start: BigInt(r.start),
+        end: BigInt(r.end),
+      });
+    }
+  }
+
+  const starts = candidates.map((c, i) => ({ candidateIndex: i, start: BigInt(c.start) }));
+  starts.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+
+  for (const reg of regions) {
+    if (signal?.aborted) break;
+    let left = 0;
+    let right = starts.length;
+    while (left < right) {
+      const mid = (left + right) >> 1;
+      if (starts[mid].start <= reg.start) left = mid + 1;
+      else right = mid;
+    }
+    for (let k = left; k < starts.length && starts[k].start < reg.end; k++) {
+      const otherIdx = starts[k].candidateIndex;
+      if (otherIdx !== reg.candidateIndex) {
+        swallowed[reg.candidateIndex].push(candidates[otherIdx].start);
       }
     }
-    const overlapping = [];
-    for (let other = index + 1; other < candidates.length; other += 1) {
-      const shared = candidate.regions.some((region) => candidates[other].regions.some((rhs) => regionsOverlap(region, rhs)));
-      if (shared) overlapping.push(candidates[other].start);
+  }
+
+  const events = [];
+  for (const reg of regions) {
+    events.push({ point: reg.start, type: 'start', reg });
+    events.push({ point: reg.end, type: 'end', reg });
+  }
+  events.sort((a, b) => {
+    if (a.point < b.point) return -1;
+    if (a.point > b.point) return 1;
+    if (a.type === 'end' && b.type === 'start') return -1;
+    if (a.type === 'start' && b.type === 'end') return 1;
+    return 0;
+  });
+
+  const active = new Set();
+  for (const ev of events) {
+    if (signal?.aborted) break;
+    if (ev.type === 'start') {
+      for (const act of active) {
+        if (act.candidateIndex !== ev.reg.candidateIndex) {
+          overlapping[ev.reg.candidateIndex].push(candidates[act.candidateIndex].start);
+          overlapping[act.candidateIndex].push(candidates[ev.reg.candidateIndex].start);
+        }
+      }
+      active.add(ev.reg);
+    } else {
+      active.delete(ev.reg);
     }
-    if (swallowed.length === 0 && overlapping.length === 0) return candidate;
+  }
+
+  return candidates.map((candidate, index) => {
+    const sw = [...new Set(swallowed[index])].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+    const ov = [...new Set(overlapping[index])].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+    if (sw.length === 0 && ov.length === 0) return candidate;
 
     const conflicts = [...candidate.conflicts];
-    if (swallowed.length) {
-      conflicts.push({ kind: 'extent', detail: 'claimed extent contains another function start', alternatives: swallowed });
+    if (sw.length) {
+      conflicts.push({ kind: 'extent', detail: 'claimed extent contains another function start', alternatives: sw });
     }
-    if (overlapping.length) {
-      conflicts.push({ kind: 'extent', detail: 'claimed extent overlaps another candidate', alternatives: overlapping });
+    if (ov.length) {
+      conflicts.push({ kind: 'extent', detail: 'claimed extent overlaps another candidate', alternatives: ov });
     }
     return createFunctionCandidate({
       start: candidate.start,
       name: candidate.name,
-      // Withdraw the extent claim; the start survives untouched because start
-      // and extent are independent facts.
       regions: [],
       startEvidence: candidate.startEvidence,
       extentEvidence: candidate.extentEvidence,

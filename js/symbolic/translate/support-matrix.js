@@ -90,18 +90,20 @@ export function classifyOpSupport(op, inst = null) {
 
     case OP.CMP:
     case OP.SEL:
+      return TRANSLATION_STATUS.EXACT;
+
     case OP.BFX:
     case OP.BFI:
-      return TRANSLATION_STATUS.EXACT;
+      return TRANSLATION_STATUS.UNSUPPORTED;
 
     case OP.LOAD: {
       if (!inst?.loc) return TRANSLATION_STATUS.UNSUPPORTED;
       if (inst.loc.kind === MK.UNKNOWN) return TRANSLATION_STATUS.UNSUPPORTED;
       if (inst.reachingStore) return TRANSLATION_STATUS.EXACT;
-      if (inst.loc.kind === MK.STACK || inst.loc.kind === MK.FIELD || inst.loc.kind === MK.GLOBAL) {
-        return TRANSLATION_STATUS.EXACT_WITH_ASSUMPTIONS;
-      }
-      return TRANSLATION_STATUS.PARTIAL;
+      // A location name is not a reaching definition. Without a unique
+      // MemorySSA/alias proof, treating the load as a fresh stable symbol
+      // would turn incomplete memory semantics into an exact proof.
+      return TRANSLATION_STATUS.UNSUPPORTED;
     }
 
     case OP.PHI:
