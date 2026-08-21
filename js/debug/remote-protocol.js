@@ -207,7 +207,7 @@ export class RemoteProtocolClient {
     if (this.closed) return Promise.reject(new DebugAdapterError('disconnected', 'remote protocol is closed'));
     if (BLOCKED_METHODS.test(String(method))) return Promise.reject(new DebugAdapterError('blocked-method', 'host command execution is prohibited'));
     if (this.pending.size >= this.maxPending) return Promise.reject(new DebugAdapterError('backpressure', 'too many pending remote requests'));
-    if (options.signal && options.signal.aborted) return Promise.reject(new DebugAdapterError('cancelled', String(options.signal.reason || 'cancelled')));
+    if (options.signal && options.signal.aborted) return Promise.reject(new DebugAdapterError('cancelled', String(options.signal.reason ?? 'cancelled')));
     const id = this._allocateId();
     const epoch = options.epoch == null ? this.epoch : Number(options.epoch);
     if (!Number.isSafeInteger(epoch) || epoch < 0) return Promise.reject(new DebugAdapterError('invalid-epoch', 'epoch must be a non-negative safe integer'));
@@ -224,7 +224,7 @@ export class RemoteProtocolClient {
         this.sendPacket({ version:DEBUG_PROTOCOL_VERSION, type:'cancel', id, epoch:this.epoch, requestEpoch:epoch, reason:'timeout' }).catch(() => {});
       }, timeoutMs);
       if (pending.signal) {
-        pending.abortHandler = () => this.cancel(id, String(pending.signal.reason || 'cancelled'));
+        pending.abortHandler = () => this.cancel(id, String(pending.signal.reason ?? 'cancelled'));
         pending.signal.addEventListener('abort', pending.abortHandler, { once:true });
       }
       this.pending.set(id, pending);
