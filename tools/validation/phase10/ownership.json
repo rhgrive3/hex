@@ -55,7 +55,8 @@
     "tests/ai-tool-registry-module-boundary.mjs",
     "tests/architecture-compat-live-view.mjs",
     "tests/phase-runner-contract.mjs",
-    "tests/runtime-module-binding-contract.mjs"
+    "tests/runtime-module-binding-contract.mjs",
+    "tests/core-identity-contracts.mjs"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",
