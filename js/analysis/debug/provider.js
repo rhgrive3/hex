@@ -59,6 +59,13 @@ function nonEmpty(value, code) {
   return text;
 }
 
+function optionalSizeBytes(value) {
+  if (value == null) return null;
+  const size = Number(value);
+  if (!Number.isSafeInteger(size) || size < 0) fail('debug-record-invalid-size');
+  return size;
+}
+
 /**
  * The identity verdict for one debug source.
  *
@@ -113,7 +120,7 @@ export function createDebugRecord(input = {}) {
     entityId: nonEmpty(input.entityId, 'debug-record-entity-required'),
     name: input.name == null ? null : String(input.name),
     address: input.address == null ? null : String(input.address),
-    sizeBytes: input.sizeBytes == null ? null : Number(input.sizeBytes),
+    sizeBytes: optionalSizeBytes(input.sizeBytes),
     descriptor: input.descriptor ?? null,
     // Provenance is not optional. A debug-derived fact that cannot say which
     // provider and which matched build produced it cannot be invalidated

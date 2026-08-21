@@ -5,8 +5,8 @@ export class LRU {
     this.map = new Map();
   }
   get(key) {
+    if (!this.map.has(key)) return undefined;
     const v = this.map.get(key);
-    if (v === undefined) return undefined;
     this.map.delete(key);
     this.map.set(key, v);
     return v;

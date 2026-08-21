@@ -125,7 +125,9 @@ export function createPhase7ArtifactDescriptor(input = {}) {
     architectureId: classes.includes('architecture') || classes.includes('semantic')
       ? nonEmpty(input.architectureId, 'phase7-artifact-architecture-required')
       : optional(input.architectureId),
-    abiId: classes.includes('abi') ? optional(input.abiId) : optional(input.abiId),
+    abiId: classes.includes('abi')
+      ? nonEmpty(input.abiId, 'phase7-artifact-abi-required')
+      : optional(input.abiId),
     platformId: optional(input.platformId),
     snapshotId: nonEmpty(input.snapshotId, 'phase7-artifact-snapshot-required'),
     cfgVersion: classes.includes('cfg') ? nonEmpty(input.cfgVersion, 'phase7-artifact-cfg-version-required') : null,

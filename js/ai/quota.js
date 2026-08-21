@@ -70,6 +70,7 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
   const state = normalizeQuotaState(raw, now, config);
   const sessionId = normalizeQuotaSessionId(request.sessionId);
   const session = normalizedSession(state.sessions[sessionId], state.windowStarted);
+  const windowMs = finiteInt(config.windowMs, AI_QUOTA.windowMs) || AI_QUOTA.windowMs;
   const ipRateLimit = finiteInt(config.ipRateLimit, AI_QUOTA.ipRateLimit);
   const sessionRateLimit = finiteInt(config.sessionRateLimit, AI_QUOTA.sessionRateLimit);
   const ipConcurrencyLimit = finiteInt(config.ipConcurrencyLimit, AI_QUOTA.ipConcurrencyLimit);
@@ -79,7 +80,7 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
   const sessionActive = activeForSession(state.leases, sessionId);
 
   if (state.count >= ipRateLimit || session.count >= sessionRateLimit) {
-    const retryAfterMs = Math.max(1, state.windowStarted + config.windowMs - now);
+    const retryAfterMs = Math.max(1, state.windowStarted + windowMs - now);
     return { state, result: { allowed: false, reason: 'rate', retryAfterMs, active, sessionActive } };
   }
   if (active >= ipConcurrencyLimit || sessionActive >= sessionConcurrencyLimit) {
@@ -100,6 +101,19 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
 
   const token = String(request.token || '').trim();
   if (!token) throw new TypeError('quota acquisition requires a lease token');
+  const existingLease = state.leases[token];
+  if (existingLease) {
+    return {
+      state,
+      result: {
+        allowed: false,
+        reason: 'concurrency',
+        retryAfterMs: Math.max(1, existingLease.expiresAt - now),
+        active,
+        sessionActive,
+      },
+    };
+  }
   state.count++;
   session.count++;
   state.sessions[sessionId] = session;

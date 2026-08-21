@@ -22,9 +22,13 @@ const DEFAULTS = {
   theme: 'system',       // 'system' | 'light' | 'dark'
 };
 
+function defaultState() {
+  return { ...DEFAULTS, regions: [] };
+}
+
 export class Store {
   constructor() {
-    this.state = Object.assign({}, DEFAULTS);
+    this.state = defaultState();
     this.listeners = new Set();
   }
   get(key) { return this.state[key]; }
@@ -36,7 +40,7 @@ export class Store {
     if (changed) for (const fn of this.listeners) fn(this.state, patch);
   }
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
-  reset() { this.set(Object.assign({}, DEFAULTS)); }
+  reset() { this.set(defaultState()); }
 }
 
 /* ── Persisted preferences (theme, hex grouping) ─────────────── */

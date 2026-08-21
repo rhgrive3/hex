@@ -60,16 +60,23 @@ function nonNegativeOffset(value) {
   return Number.isSafeInteger(n) && n >= 0 ? n : 0;
 }
 
-function pageRows(value, limit, offset = 0) {
+export function pageRows(value, limit, offset = 0) {
   const meta = !Array.isArray(value) && value && typeof value === 'object' ? value : {};
   const rows = Array.isArray(value) ? value : (Array.isArray(meta.results) ? meta.results : []);
   const start = nonNegativeOffset(offset);
   const reportedRaw = meta.offset ?? meta.pageOffset ?? meta.pagination?.offset;
   const reported = Number.isSafeInteger(Number(reportedRaw)) ? Number(reportedRaw) : null;
-  // A bounded adapter response (<= one requested page) is treated as an
-  // already-offset page unless it explicitly reports a different offset.
-  // Prefix responses are sliced locally only when they contain more than a page.
-  const sourceStart = reported === start || start === 0 ? 0 : (rows.length > limit ? Math.min(start, rows.length) : 0);
+  let sourceStart;
+  if (reported === start) {
+    sourceStart = 0;
+  } else if (reported != null && reported !== start) {
+    const rel = start - reported;
+    sourceStart = rel >= 0 && rel < rows.length ? rel : rows.length;
+  } else if (start === 0) {
+    sourceStart = 0;
+  } else {
+    sourceStart = rows.length > limit ? Math.min(start, rows.length) : 0;
+  }
   const results = rows.slice(sourceStart, sourceStart + limit);
   const explicitTotal = Number.isFinite(Number(meta.total ?? meta.completeness?.total)) ? Number(meta.total ?? meta.completeness?.total) : null;
   const returned = results.length;
@@ -155,7 +162,7 @@ export function compactFact(f) {
     originalCondition: f.originalCondition || null, operator: f.operator || null, swapped: f.swapped === true,
     subject: f.subject || null, other: f.other || null, operands: f.operands || null, bound: f.bound || null,
     candidate: f.candidate || null, clampKind: f.clampKind || null, compare: f.compare || null,
-    source: f.source || null, sink: f.sink || null, value: f.value || null,
+    source: f.source || null, sink: f.sink || null, value: f.value ?? null,
     confidence: f.confidence, confidenceSource: f.confidenceSource,
     evidence: (f.evidence || []).map((e) => e.id).filter(Boolean),
   };

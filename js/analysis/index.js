@@ -86,9 +86,14 @@ export function createAnalysisSurface({
 
   /** This function's summary, built on demand. */
   function functionSummary(summaryOptions = {}) {
+    if (Object.keys(summaryOptions).length > 0) {
+      return buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, {
+        snapshotId, resolveRegion, ...options, ...summaryOptions,
+      });
+    }
     if (localSummary == null) {
       localSummary = buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, {
-        snapshotId, resolveRegion, ...options, ...summaryOptions,
+        snapshotId, resolveRegion, ...options,
       });
     }
     return localSummary;

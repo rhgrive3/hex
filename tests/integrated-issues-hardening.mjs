@@ -335,4 +335,310 @@ console.log('Testing integrated PRs and issue fixes...');
   console.log('  ok #1022 / #1021 extraApiInfo div_t and modf write effect');
 }
 
+// Issue #1105: scanSourceStrings executable fallback
+{
+  const { scanSourceStrings } = await import('../js/bytesource/strings.js');
+  const raw = new Uint8Array(100);
+  const img = new BinaryImage(raw);
+  img.addSection({ name: '.text', address: 0x1000n, size: 100n, fileOffset: 0n, fileSize: 100n, perms: { execute: true } });
+  // With includeExecutable: false and all sections executable, it should NOT fallback to whole file
+  const res = await scanSourceStrings(img, raw, { includeExecutable: false });
+  assert.equal(res.results.length, 0);
+  console.log('  ok #1105 scanSourceStrings executable fallback');
+}
+
+// Issue #1103: discovery candidate region sorting
+{
+  const { createFunctionCandidate } = await import('../js/analysis/discovery/candidates.js');
+  const c1 = createFunctionCandidate({
+    start: '0x1000',
+    extentState: 'exact',
+    regions: [
+      { start: '0x1000', end: '0x1020', ownership: 'exclusive' },
+      { start: '0x1000', end: '0x1010', ownership: 'exclusive' },
+      { start: '0x1000', end: '0x1010', ownership: 'shared' },
+    ],
+  });
+  assert.equal(c1.regions[0].end, '4112');
+  assert.equal(c1.regions[0].ownership, 'exclusive');
+  assert.equal(c1.regions[1].end, '4112');
+  assert.equal(c1.regions[1].ownership, 'shared');
+  assert.equal(c1.regions[2].end, '4128');
+  console.log('  ok #1103 discovery candidate region total ordering');
+}
+
+// Issue #1101: debug record sizeBytes validation
+{
+  const { createDebugRecord } = await import('../js/analysis/debug/provider.js');
+  assert.throws(() => {
+    createDebugRecord({
+      kind: 'symbol',
+      entityId: 'ent1',
+      providerId: 'p1',
+      providerVersion: '1.0',
+      sizeBytes: -5,
+    });
+  });
+  assert.throws(() => {
+    createDebugRecord({
+      kind: 'symbol',
+      entityId: 'ent1',
+      providerId: 'p1',
+      providerVersion: '1.0',
+      sizeBytes: NaN,
+    });
+  });
+  assert.throws(() => {
+    createDebugRecord({
+      kind: 'symbol',
+      entityId: 'ent1',
+      providerId: 'p1',
+      providerVersion: '1.0',
+      sizeBytes: Infinity,
+    });
+  });
+  const okRec = createDebugRecord({
+    kind: 'symbol',
+    entityId: 'ent1',
+    providerId: 'p1',
+    providerVersion: '1.0',
+    sizeBytes: 16,
+  });
+  assert.equal(okRec.sizeBytes, 16);
+  console.log('  ok #1101 debug record sizeBytes validation');
+}
+
+// Issue #1099: analysis surface functionSummary cache isolation
+{
+  const { createAnalysisSurface } = await import('../js/analysis/index.js');
+  const { buildFixture } = await import('./phase7/corpus/fixtures.mjs');
+  const built = buildFixture('stack-disjoint');
+  const surface = createAnalysisSurface({
+    ir: built.ir,
+    cfg: built.cfg,
+    ssa: built.ssa,
+    memorySsa: built.memorySsa,
+    resolveRegion: built.resolveRegion,
+  });
+  const s1 = surface.functionSummary();
+  const s2 = surface.functionSummary({ customOption: true });
+  const s3 = surface.functionSummary();
+  assert.equal(s1, s3);
+  assert.notEqual(s1, s2);
+  console.log('  ok #1099 analysis surface functionSummary cache isolation');
+}
+
+// Issue #1097: Phase 7 artifact descriptor requires abiId for ABI-dependent kinds
+{
+  const descriptorBase = {
+    kind: 'phase7.types.constraint-graph',
+    binaryId: 'binary_1',
+    functionId: 'function_1',
+    architectureId: 'arm64',
+    snapshotId: 'snapshot_1',
+    analyzerId: 'phase7.types.constraints',
+    analyzerVersion: '1.0.0',
+    semanticSchemaVersion: '2',
+    cfgVersion: '2.0.0',
+    ssaVersion: '2.0.0',
+    memorySsaVersion: '2.0.0',
+  };
+  assert.throws(() => {
+    createPhase7ArtifactDescriptor({ ...descriptorBase });
+  });
+  const valid = createPhase7ArtifactDescriptor({
+    ...descriptorBase,
+    abiId: 'darwin-aapcs64',
+  });
+  assert.ok(valid.artifactId);
+  console.log('  ok #1097 Phase 7 artifact descriptor abiId requirement');
+}
+
+// Issue #1096: decodeWireValue/encodeWireValue __proto__ prototype safety
+{
+  const wire = JSON.parse('{"__proto__":{"polluted":true},"normal":123}');
+  const decoded = decodeWireValue(wire);
+  assert.equal(Object.hasOwn(decoded, '__proto__'), true);
+  assert.equal(decoded.polluted, undefined);
+  assert.equal(Object.getPrototypeOf(decoded), Object.prototype);
+  assert.deepEqual(decoded.__proto__, { polluted: true });
+
+  const encoded = encodeWireValue(decoded);
+  assert.equal(Object.hasOwn(encoded, '__proto__'), true);
+  assert.equal(encoded.polluted, undefined);
+  console.log('  ok #1096 remote wire codec __proto__ prototype safety');
+}
+
+// Issue #1089: RemoteProtocolClient preserves falsy abort reason
+{
+  const { RemoteProtocolClient } = await import('../js/debug/remote-protocol.js');
+  const client = new RemoteProtocolClient({ send: async () => {} });
+  const ac = new AbortController();
+  ac.abort(false);
+  await assert.rejects(
+    async () => client.request('test', {}, { signal: ac.signal }),
+    (err) => err.code === 'cancelled' && err.message === 'false',
+  );
+  console.log('  ok #1089 RemoteProtocolClient preserves falsy abort reason');
+}
+
+// Issues #1086 & #1088: worker validation rejects malformed scalars
+{
+  const { checkedChunkIndex, regionSize } = await import('../js/platform/worker-validation.js');
+  assert.throws(() => checkedChunkIndex(null), RangeError);
+  assert.throws(() => checkedChunkIndex(true), RangeError);
+  assert.throws(() => checkedChunkIndex(false), RangeError);
+  assert.throws(() => checkedChunkIndex(''), RangeError);
+  assert.throws(() => checkedChunkIndex('   '), RangeError);
+  assert.equal(checkedChunkIndex(0), 0);
+  assert.equal(checkedChunkIndex('0'), 0);
+
+  assert.throws(() => regionSize(null), RangeError);
+  assert.throws(() => regionSize(true), RangeError);
+  assert.throws(() => regionSize(false), RangeError);
+  assert.throws(() => regionSize(''), RangeError);
+  assert.throws(() => regionSize('   '), RangeError);
+  assert.equal(regionSize(0), 0n);
+  assert.equal(regionSize('0'), 0n);
+  console.log('  ok #1086 / #1088 worker validation rejects malformed scalars');
+}
+
+// Issue #1084: content identity preserves falsy abort reason
+{
+  const { sha256BlobHex } = await import('../js/cache/content-identity.js');
+  const ac = new AbortController();
+  ac.abort('');
+  await assert.rejects(
+    async () => sha256BlobHex(new Blob([new Uint8Array([1, 2, 3])]), { signal: ac.signal }),
+    (err) => err === '',
+  );
+  console.log('  ok #1084 content identity preserves falsy abort reason');
+}
+
+// Issue #1082: Store.reset() allocates fresh regions array
+{
+  const { Store } = await import('../js/state.js');
+  const store = new Store();
+  store.state.regions.push({ name: 'r1' });
+  store.reset();
+  assert.equal(store.state.regions.length, 0);
+  store.state.regions.push({ name: 'r2' });
+  const store2 = new Store();
+  assert.equal(store2.state.regions.length, 0);
+  console.log('  ok #1082 Store.reset() allocates fresh regions array');
+}
+
+// Issue #1080: LRU.get() refreshes undefined-valued entries
+{
+  const { LRU } = await import('../js/lru.js');
+  const lru = new LRU(2);
+  lru.set('a', undefined);
+  lru.set('b', 2);
+  assert.equal(lru.get('a'), undefined); // should refresh 'a'
+  lru.set('c', 3); // should evict 'b', NOT 'a'!
+  assert.equal(lru.has('a'), true);
+  assert.equal(lru.has('b'), false);
+  assert.equal(lru.has('c'), true);
+  console.log('  ok #1080 LRU.get() refreshes undefined-valued entries');
+}
+
+// Issue #1079: base64ToBytes rejects non-canonical base64 padding
+{
+  const { decodeWireValue, WIRE_TAG } = await import('../js/debug/remote-protocol.js');
+  // 'YQ==' is canonical for 'a', 'YQ=' has non-canonical padding
+  assert.throws(() => {
+    decodeWireValue({ [WIRE_TAG]: 'bytes-base64', value: 'YQ=', length: 1 });
+  });
+  const decoded = decodeWireValue({ [WIRE_TAG]: 'bytes-base64', value: 'YQ==', length: 1 });
+  assert.equal(decoded.length, 1);
+  assert.equal(decoded[0], 0x61);
+  console.log('  ok #1079 base64ToBytes rejects non-canonical base64 padding');
+}
+
+// Issue #1078: pageRows does not relabel mismatched adapter page offset
+{
+  const { pageRows } = await import('../js/agent/tools.js');
+  const mismatched = { results: ['row0'], offset: 0, total: 100 };
+  const paged = pageRows(mismatched, 10, 50);
+  assert.equal(paged.offset, 50);
+  assert.equal(paged.returned, 0);
+  assert.deepEqual(paged.results, []);
+  console.log('  ok #1078 pageRows does not relabel mismatched adapter page');
+}
+
+// Issue #1077: compactFact preserves falsy values
+{
+  const { compactFact } = await import('../js/agent/tools.js');
+  const fZero = compactFact({ id: 'f1', kind: 'constant', value: 0, evidence: [] });
+  assert.equal(fZero.value, 0);
+  const fFalse = compactFact({ id: 'f2', kind: 'constant', value: false, evidence: [] });
+  assert.equal(fFalse.value, false);
+  const fEmpty = compactFact({ id: 'f3', kind: 'constant', value: '', evidence: [] });
+  assert.equal(fEmpty.value, '');
+  const fNull = compactFact({ id: 'f4', kind: 'constant', value: null, evidence: [] });
+  assert.equal(fNull.value, null);
+  console.log('  ok #1077 compactFact preserves falsy values');
+}
+
+// Issue #1074: HypothesisStore avoids generated hypothesis ID collisions
+{
+  const { HypothesisStore } = await import('../js/ai/hypothesis.js');
+  const store = new HypothesisStore();
+  store.upsert({ id: 'hyp_1', claim: 'restored' });
+  const auto1 = store.upsert({ claim: 'auto1' });
+  const auto2 = store.upsert({ claim: 'auto2' });
+  assert.notEqual(auto1.id, 'hyp_1');
+  assert.notEqual(auto2.id, 'hyp_1');
+  assert.equal(store.records.get('hyp_1').claim, 'restored');
+  console.log('  ok #1074 HypothesisStore avoids generated hypothesis ID collisions');
+}
+
+// Issues #1071 & #1073: AI quota rejects duplicate lease token & normalizes windowMs
+{
+  const { acquireQuotaState } = await import('../js/ai/quota.js');
+  const raw = { windowStarted: Date.now(), count: 0, sessions: {}, leases: {} };
+  const r1 = acquireQuotaState(raw, { token: 'tok_1', sessionId: 's1' });
+  assert.equal(r1.result.allowed, true);
+  // Reacquiring with same active token is denied for concurrency
+  const r2 = acquireQuotaState(r1.state, { token: 'tok_1', sessionId: 's1' });
+  assert.equal(r2.result.allowed, false);
+  assert.equal(r2.result.reason, 'concurrency');
+
+  // Rate limit retryAfterMs with non-standard config
+  const fullState = { windowStarted: Date.now(), count: 100, sessions: {}, leases: {} };
+  const r3 = acquireQuotaState(fullState, { token: 'tok_2', sessionId: 's2' }, { ipRateLimit: 10, windowMs: 60000 });
+  assert.equal(r3.result.allowed, false);
+  assert.equal(r3.result.reason, 'rate');
+  assert.ok(r3.result.retryAfterMs > 0 && r3.result.retryAfterMs <= 60000);
+  console.log('  ok #1071 / #1073 AI quota duplicate token rejection and retryAfterMs');
+}
+
+// Issue #1066: ArchitectureAdapter bounds checks for fixed-size instructions
+{
+  const { ArchitectureAdapter } = await import('../js/architecture/index.js');
+  const adapter = new ArchitectureAdapter({
+    id: 'test-arch',
+    name: 'Test Arch',
+    fixedInstructionSize: 4,
+    instructionAlignment: 4,
+  });
+  const region = { vmAddr: 0x1000n, size: 6n };
+  // rowForAddress
+  assert.equal(adapter.rowForAddress(region, 0x1000n), 0);
+  assert.equal(adapter.rowForAddress(region, 0x1004n), null); // 4 + 4 = 8 > 6
+
+  // addressForRow
+  assert.equal(adapter.addressForRow(region, 0), 0x1000n);
+  assert.equal(adapter.addressForRow(region, 1), null); // 0x1004 + 4 > 0x1006
+
+  // validateInstructionPlacement
+  const p1 = adapter.validateInstructionPlacement(region, 0x1000n, 4);
+  assert.equal(p1.ok, true);
+  const p2 = adapter.validateInstructionPlacement(region, 0x1004n, 4);
+  assert.equal(p2.ok, false);
+  assert.equal(p2.code, 'patch-range');
+  console.log('  ok #1066 ArchitectureAdapter fixedInstructionSize region boundary check');
+}
+
 console.log('\nAll integrated issue tests PASS!');
+

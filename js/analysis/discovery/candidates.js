@@ -117,7 +117,17 @@ export function createFunctionCandidate(input = {}) {
   if (extentState !== 'unknown' && !CANDIDATE_STATES.includes(extentState)) fail('discovery-candidate-invalid-extent-state');
 
   const regions = (input.regions ?? []).map((region) => createRegion(region));
-  regions.sort((left, right) => (BigInt(left.start) < BigInt(right.start) ? -1 : 1));
+  regions.sort((left, right) => {
+    const leftStart = BigInt(left.start);
+    const rightStart = BigInt(right.start);
+    if (leftStart < rightStart) return -1;
+    if (leftStart > rightStart) return 1;
+    const leftEnd = BigInt(left.end);
+    const rightEnd = BigInt(right.end);
+    if (leftEnd < rightEnd) return -1;
+    if (leftEnd > rightEnd) return 1;
+    return left.ownership.localeCompare(right.ownership);
+  });
   if (extentState === 'unknown' && regions.length > 0 && input.allowRegionsWithUnknownExtent !== true) {
     fail('discovery-candidate-unknown-extent-cannot-claim-regions');
   }
