@@ -122,6 +122,83 @@ async function testGraphValidationAndSupervisorRouting() {
   pool.close();
 }
 
+/* Characterization of the dispatch contract the Graph implements today: every
+   attempt claims its own lease and issues exactly one Pool start under it, and
+   SUCCEEDED reports Worker execution only. A Worker finishing is not verified
+   engineering completion, and the Graph surface must never imply otherwise. */
+async function testOneStartPerLeaseAttemptAndExecutionOnlySuccess() {
+  const harness = new WorkerHarness({ retry: { failTimes: 1 }, solo: {} });
+  const pool = harness.pool();
+  const observed = observedPool(pool);
+  const host = graphHost(observed);
+  await host.start({
+    graphId: 'one-start',
+    maxConcurrency: 2,
+    tasks: [{ ...task('retry'), maxAttempts: 2 }, task('solo')],
+  });
+  const status = await waitTerminal(host, 'one-start');
+  assert.equal(status.state, 'SUCCEEDED');
+  assert.equal(harness.attempts.get('retry'), 2, 'the fixture must exercise a real retry');
+  assert.equal(harness.attempts.get('solo'), 1);
+
+  assert.equal(observed.calls.starts.length, 3, 'three attempts issue three Pool starts');
+  assert.equal(observed.calls.claims.length, 3, 'every attempt claims its own lease');
+  assert.equal(new Set(observed.calls.starts).size, 3, 'no lease is started twice');
+  assert.deepEqual(
+    [...observed.calls.starts].sort(),
+    observed.calls.claims.map((claim) => claim.leaseId).sort(),
+    'every started lease is exactly the lease that attempt claimed',
+  );
+  const retryLeases = observed.calls.claims.filter((claim) => claim.taskId === 'retry').map((claim) => claim.leaseId);
+  assert.equal(retryLeases.length, 2);
+  assert.notEqual(retryLeases[0], retryLeases[1], 'a retry runs under a fresh lease, never the failed one');
+  assert.equal(pool.status().claimedCount, 0, 'no lease outlives its attempt');
+
+  const solo = host.taskResult({ graphId: 'one-start', taskId: 'solo' });
+  assert.equal(solo.state, 'SUCCEEDED');
+  assert.equal(solo.result.status, 'completed', 'SUCCEEDED reflects the Worker execution outcome only');
+  for (const claim of ['accepted', 'acceptance', 'approved', 'verified', 'supervisorAccepted', 'review', 'reviewed']) {
+    assert.equal(claim in solo, false, `task result must not assert ${claim}`);
+    assert.equal(claim in status, false, `graph status must not assert ${claim}`);
+  }
+
+  host.close();
+  pool.close();
+}
+
+/* Records the exact Pool calls the Graph makes without changing any of them. */
+function observedPool(pool) {
+  const calls = { claims: [], starts: [], results: [], releases: [] };
+  return {
+    calls,
+    provision: (args) => pool.provision(args),
+    status: () => pool.status(),
+    async claim(args) {
+      const lease = await pool.claim(args);
+      calls.claims.push({ leaseId: lease.leaseId, slot: lease.slot, taskId: args?.taskId ?? null });
+      return lease;
+    },
+    createChat: (args) => pool.createChat(args),
+    start(args) {
+      // Recorded when issued, not when it resolves: a refused duplicate start is
+      // still a second start against the same lease.
+      calls.starts.push(String(args?.leaseId || ''));
+      return pool.start(args);
+    },
+    async result(args) {
+      const value = await pool.result(args);
+      calls.results.push(String(args?.leaseId || ''));
+      return value;
+    },
+    stop: (args) => pool.stop(args),
+    async release(args) {
+      calls.releases.push(String(args?.leaseId || ''));
+      return pool.release(args);
+    },
+    discard: (args) => pool.discard(args),
+  };
+}
+
 function task(id, dependencies = []) {
   return { id, dependencies, instruction: id, timeoutMs: 500, maxAttempts: 1 };
 }
@@ -283,4 +360,5 @@ await testRetryAndDependencyFailurePropagation();
 await testTimeoutCancellationAndLeaseCleanup();
 await testCleanupFallsBackToFrameDiscard();
 await testGraphValidationAndSupervisorRouting();
+await testOneStartPerLeaseAttemptAndExecutionOnlySuccess();
 console.log('dynamic task graph: ok');
