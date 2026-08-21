@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  GENERATED_OUTPUT_MODE,
+  generatedOutputMode,
+  shouldEnforceGeneratedOutput,
+} from '../../tools/validation/generated-output-policy.mjs';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+
+const component = { eventName: 'pull_request', headRef: 'dev-agent-hardening/b-pool-wait-result' };
+const integration = { eventName: 'pull_request', headRef: 'dev-agent-hardening/integration/checkpoint-b' };
+
+assert.equal(generatedOutputMode(component), GENERATED_OUTPUT_MODE.EPHEMERAL);
+assert.equal(shouldEnforceGeneratedOutput(component), false);
+assert.equal(generatedOutputMode(integration), GENERATED_OUTPUT_MODE.ENFORCE);
+assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'feature/userscript-change' }), GENERATED_OUTPUT_MODE.ENFORCE);
+assert.equal(generatedOutputMode({ eventName: 'push', ref: 'refs/heads/main' }), GENERATED_OUTPUT_MODE.ENFORCE);
+assert.equal(generatedOutputMode({ eventName: 'workflow_dispatch' }), GENERATED_OUTPUT_MODE.ENFORCE);
+assert.equal(generatedOutputMode({ eventName: 'pull_request', headRef: 'dev-agent-hardening/' }), GENERATED_OUTPUT_MODE.EPHEMERAL);
+
+for (const workflow of [
+  '.github/workflows/generated-sync.yml',
+  '.github/workflows/generated-userscript-autofix.yml',
+  '.github/workflows/userscript-host.yml',
+]) {
+  const source = fs.readFileSync(path.join(ROOT, workflow), 'utf8');
+  assert.match(source, /tools\/validation\/generated-output-policy\.mjs/, `${workflow} must use the canonical policy`);
+  assert.match(source, /steps\.generated-policy\.outputs\.mode/, `${workflow} must honor the canonical policy result`);
+}
+console.log('generated output policy: ok');
