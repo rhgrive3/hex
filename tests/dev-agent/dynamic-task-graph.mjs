@@ -255,6 +255,128 @@ async function testLongTurnIsAwaitedNotPolled() {
   pool.close();
 }
 
+/* CARD E: a deadline is something a caller asks for, not something every task
+   silently inherits. A long model turn is not evidence of a stall, so an
+   ordinary task simply waits. */
+async function testDeadlineIsExplicitOrAbsent() {
+  const harness = new WorkerHarness({ unbounded: { hang: true }, bounded: { hang: true } });
+  const pool = harness.pool();
+  const host = graphHost(pool);
+  await host.start({
+    graphId: 'deadlines',
+    maxConcurrency: 2,
+    tasks: [
+      { id: 'unbounded', dependencies: [], instruction: 'unbounded', maxAttempts: 1 },
+      { id: 'bounded', dependencies: [], instruction: 'bounded', maxAttempts: 1, timeoutMs: 20 },
+    ],
+  });
+
+  // The bounded task proves the deadline mechanism still works in this very run,
+  // so the unbounded task staying RUNNING is the absence of a deadline, not a
+  // dead mechanism.
+  await waitFor(() => host.taskResult({ graphId: 'deadlines', taskId: 'bounded' }).state === 'FAILED');
+  assert.equal(host.taskResult({ graphId: 'deadlines', taskId: 'bounded' }).error.code, 'task-timeout');
+
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const unbounded = host.taskResult({ graphId: 'deadlines', taskId: 'unbounded' });
+  assert.equal(unbounded.state, 'RUNNING', 'a task with no explicit deadline must not be timed out');
+  assert.equal(unbounded.timeoutMs, null, 'no deadline is reported as null, not as a fabricated default');
+  assert.equal(host.taskResult({ graphId: 'deadlines', taskId: 'bounded' }).timeoutMs, 20);
+
+  harness.finish('unbounded', { status: 'completed', responseText: 'unbounded done' });
+  await waitTerminal(host, 'deadlines');
+  assert.equal(host.taskResult({ graphId: 'deadlines', taskId: 'unbounded' }).state, 'SUCCEEDED');
+  host.close();
+  pool.close();
+
+  // An explicit deadline is still normalized and bounded by the same policy.
+  const bounds = new WorkerHarness({ a: {} });
+  const boundsPool = bounds.pool();
+  const boundsHost = graphHost(boundsPool);
+  await boundsHost.start({
+    graphId: 'bounds',
+    tasks: [{ id: 'a', dependencies: [], instruction: 'a', maxAttempts: 1, timeoutMs: 99 * 60 * 1000 }],
+  });
+  assert.equal(boundsHost.taskResult({ graphId: 'bounds', taskId: 'a' }).timeoutMs, 30 * 60 * 1000, 'an explicit deadline stays under the maximum');
+  await waitTerminal(boundsHost, 'bounds');
+  await assert.rejects(
+    boundsHost.start({ graphId: 'bad', tasks: [{ id: 'a', dependencies: [], instruction: 'a', timeoutMs: 'soon' }] }),
+    (error) => error instanceof TypeError,
+    'a non-numeric deadline is rejected rather than silently defaulted',
+  );
+  boundsHost.close();
+  boundsPool.close();
+}
+
+/* The cooperative half of the same contract: when the Worker does answer stop,
+   quiescence is proven and the frame is released cleanly. Retiring a frame is
+   the fail-closed branch, not the ordinary cost of a deadline. */
+async function testDeadlineReleasesCleanlyWhenTheWorkerStops() {
+  const harness = new WorkerHarness({ polite: { hang: true }, after: {} });
+  const pool = harness.pool();
+  const host = graphHost(pool);
+  await host.start({
+    graphId: 'polite-deadline',
+    maxConcurrency: 1,
+    tasks: [
+      { id: 'polite', dependencies: [], instruction: 'polite', maxAttempts: 1, timeoutMs: 20 },
+      { id: 'after', dependencies: [], instruction: 'after', maxAttempts: 1 },
+    ],
+  });
+  const status = await waitTerminal(host, 'polite-deadline');
+  assert.equal(status.state, 'FAILED');
+  assert.equal(host.taskResult({ graphId: 'polite-deadline', taskId: 'polite' }).error.code, 'task-timeout');
+  assert.equal(host.taskResult({ graphId: 'polite-deadline', taskId: 'after' }).state, 'SUCCEEDED');
+
+  assert.equal(harness.events.includes('stop:polite'), true, 'the deadline asks the Worker to stop before releasing it');
+  assert.ok(
+    harness.events.indexOf('stop:polite') < harness.events.indexOf('start:after'),
+    'the next task starts only after the previous turn is quiescent',
+  );
+  assert.equal(harness.frames.length, 1, 'a Worker that answers stop is released cleanly, not retired');
+  assert.equal(harness.frames[0].removed, false);
+  assert.equal(pool.status().claimedCount, 0);
+  host.close();
+  pool.close();
+}
+
+/* A deadline or a cancellation is a decision to stop waiting. It is not proof
+   that the Worker stopped. Ownership must survive until the existing cleanup
+   transaction proves quiescence, or the frame must be retired. */
+async function testDeadlineDoesNotMakeAnActiveWorkerReusable() {
+  // One frame, so any premature reuse would be immediately visible.
+  const harness = new WorkerHarness({ stubborn: { hang: true, ignoresStop: true }, next: {} });
+  const pool = harness.pool();
+  const host = graphHost(pool);
+  await host.start({
+    graphId: 'quiescence',
+    maxConcurrency: 1,
+    tasks: [
+      { id: 'stubborn', dependencies: [], instruction: 'stubborn', maxAttempts: 1, timeoutMs: 20 },
+      { id: 'next', dependencies: [], instruction: 'next', maxAttempts: 1 },
+    ],
+  });
+  const status = await waitTerminal(host, 'quiescence');
+  assert.equal(status.state, 'FAILED', 'the stubborn task still fails');
+  assert.equal(host.taskResult({ graphId: 'quiescence', taskId: 'stubborn' }).error.code, 'task-timeout');
+  assert.equal(host.taskResult({ graphId: 'quiescence', taskId: 'next' }).state, 'SUCCEEDED');
+
+  // The deadline asked the Worker to stop, it refused, and the frame was retired
+  // rather than handed to the next task.
+  assert.equal(harness.events.includes('stop:stubborn'), true, 'the deadline issues the existing stop request');
+  assert.equal(harness.frames.length, 2, 'an ambiguously owned frame is replaced, never reused');
+  assert.equal(harness.frames[0].removed, true, 'the ambiguous frame is physically retired');
+  assert.equal(harness.frames[1].removed, false);
+  assert.ok(
+    harness.events.indexOf('stop:stubborn') < harness.events.indexOf('start:next'),
+    'the next task starts only after the stop/cleanup transaction ran',
+  );
+  assert.equal(pool.status().claimedCount, 0);
+  assert.equal(pool.status().readyCount, 1, 'the pool stays usable through fail-closed replacement');
+  host.close();
+  pool.close();
+}
+
 function task(id, dependencies = []) {
   return { id, dependencies, instruction: id, timeoutMs: 500, maxAttempts: 1 };
 }
@@ -378,6 +500,10 @@ class WorkerHarness {
       },
       async stop(args) {
         verify(args);
+        harness.events.push(`stop:${currentTask}`);
+        // A Worker that does not answer stop leaves quiescence ambiguous, which
+        // is exactly when the frame must be retired instead of reused.
+        if (harness.behaviors[currentTask]?.ignoresStop) return { outcome: 'still-working' };
         current?.finish({ status: 'cancelled', error: { code: 'cancelled', message: 'stopped' } });
         return { outcome: 'stopped' };
       },
@@ -430,4 +556,7 @@ await testCleanupFallsBackToFrameDiscard();
 await testGraphValidationAndSupervisorRouting();
 await testOneStartPerLeaseAttemptAndExecutionOnlySuccess();
 await testLongTurnIsAwaitedNotPolled();
+await testDeadlineIsExplicitOrAbsent();
+await testDeadlineReleasesCleanlyWhenTheWorkerStops();
+await testDeadlineDoesNotMakeAnActiveWorkerReusable();
 console.log('dynamic task graph: ok');
