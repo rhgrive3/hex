@@ -11,6 +11,16 @@ function git(args) {
   return result.status === 0 ? String(result.stdout).trim() : null;
 }
 
+export function phase10OwnershipViolation(file, input = manifest) {
+  const exact = new Set(input.allowedExact || []);
+  const prefixes = input.allowedPrefixes || [];
+  const forbidden = input.forbiddenPrefixes || [];
+  if (exact.has(file)) return null;
+  if (forbidden.some((prefix) => file.startsWith(prefix))) return `forbidden:${file}`;
+  if (!prefixes.some((prefix) => file.startsWith(prefix))) return `unowned:${file}`;
+  return null;
+}
+
 export function checkPhase10Ownership() {
   const mainRef = git(['rev-parse', '--verify', 'origin/main']) ? 'origin/main' : null;
   if (!mainRef) throw new Error('phase10 ownership: origin/main unavailable');
@@ -18,14 +28,7 @@ export function checkPhase10Ownership() {
   if (!base) throw new Error('phase10 ownership: merge-base unavailable');
   const names = git(['diff', '--name-only', `${base}..HEAD`]) ?? '';
   const files = names.split('\n').map((value) => value.trim()).filter(Boolean).sort();
-  const exact = new Set(manifest.allowedExact || []);
-  const prefixes = manifest.allowedPrefixes || [];
-  const forbidden = manifest.forbiddenPrefixes || [];
-  const violations = [];
-  for (const file of files) {
-    if (forbidden.some((prefix) => file.startsWith(prefix))) violations.push(`forbidden:${file}`);
-    else if (!exact.has(file) && !prefixes.some((prefix) => file.startsWith(prefix))) violations.push(`unowned:${file}`);
-  }
+  const violations = files.map((file) => phase10OwnershipViolation(file)).filter(Boolean);
   if (violations.length) throw new Error(`phase10 ownership violations: ${violations.join(', ')}`);
   console.log(`phase10 ownership: PASS (${files.length} files, base ${base})`);
   return Object.freeze({ base, files });
