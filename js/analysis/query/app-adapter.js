@@ -15,10 +15,18 @@ function unsupported(functionId, reason) {
   };
 }
 
+function completenessOf(value, fallbackCompleteness = 'complete') {
+  if (value?.status?.completeness != null) return value.status.completeness;
+  if (value?.completeness != null) return value.completeness;
+  if (value?.unsupported === true) return 'unsupported';
+  if (value?.truncated === true) return 'truncated';
+  if (value?.partial === true || value?.complete === false) return 'partial';
+  return fallbackCompleteness;
+}
+
 function wrappedValue(value, fallbackCompleteness = 'complete') {
   if (value == null) return null;
-  const completeness = value?.status?.completeness ?? value?.completeness ?? fallbackCompleteness;
-  return { value, status: { completeness } };
+  return { value, status: { completeness: completenessOf(value, fallbackCompleteness) } };
 }
 
 function semanticIRFromModel(model) {
@@ -93,7 +101,12 @@ export function createAppAnalysisQueryAdapter(app) {
         ?? project?.binary?.hash
         ?? null;
       if (!binaryId && typeof app?.ensureAnalysisIdentity === 'function') {
-        try { binaryId = await app.ensureAnalysisIdentity(); } catch { /* remain explicitly unbound */ }
+        try { binaryId = await app.ensureAnalysisIdentity(); } catch { /* handled below */ }
+      }
+      if (!binaryId) {
+        const error = new Error('analysis-query-binary-unbound');
+        error.code = 'ANALYSIS_QUERY_BINARY_UNBOUND';
+        throw error;
       }
       const projectRevision = Number(
         project?.revision
@@ -103,7 +116,7 @@ export function createAppAnalysisQueryAdapter(app) {
       );
       const analysisEpoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
       return {
-        binaryId: binaryId == null ? 'unbound' : String(binaryId),
+        binaryId: String(binaryId),
         projectRevision: Number.isFinite(projectRevision) ? projectRevision : 0,
         artifactVersions: artifactVersionsFor(app),
         analysisEpoch: Number.isFinite(analysisEpoch) ? analysisEpoch : 0,
@@ -122,7 +135,7 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       const model = await loadFunction(functionId, options);
       const ir = semanticIRFromModel(model);
-      return wrappedValue(ir) ?? unsupported(functionId, model ? 'semantic-ir-unavailable' : 'function-producer-unavailable');
+      return wrappedValue(ir, completenessOf(model)) ?? unsupported(functionId, model ? 'semantic-ir-unavailable' : 'function-producer-unavailable');
     },
 
     async cfg(snapshot, functionId, options = {}) {
@@ -132,7 +145,7 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       const model = await loadFunction(functionId, options);
       const cfg = cfgFromModel(model);
-      return wrappedValue(cfg) ?? unsupported(functionId, model ? 'cfg-unavailable' : 'function-producer-unavailable');
+      return wrappedValue(cfg, completenessOf(model)) ?? unsupported(functionId, model ? 'cfg-unavailable' : 'function-producer-unavailable');
     },
   };
 
