@@ -33,6 +33,7 @@
     "tests/semantic-v2/integration-userscript-sync.test.mjs",
     "tools/validation/generated-output-policy.mjs",
     "tools/validation/phase11/ownership.json",
+    "tools/validation/phase11/ownership-check.mjs",
     ".github/workflows/phase12-release-validation.yml",
     ".github/workflows/stage1-release-validation.yml",
     ".github/workflows/stage2-release-validation.yml",
