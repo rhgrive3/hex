@@ -42,6 +42,15 @@ test('release evidence deterministic payload is stable and binds exact authority
       capabilityFingerprint: 'cap-v1',
     },
     testExecution: { selected: 29, total: 29, allPassed: true },
+    browserExecution: {
+      selected: 2,
+      total: 2,
+      allPassed: true,
+      engines: [
+        { name: 'chromium', status: 'PASSED' },
+        { name: 'webkit', status: 'PASSED' },
+      ],
+    },
     capabilities: { realSolver: 'verified' },
     gates: [{ id: 'GATE', description: 'test', status: 'PASSED', ok: true, reason: null }],
   };
@@ -53,4 +62,6 @@ test('release evidence deterministic payload is stable and binds exact authority
   assert.equal(first.verifier.version, VERIFIER_VERSION);
   assert.equal(first.backend.proofAuthority, 'exact');
   assert.equal(first.backend.capabilityFingerprint, 'cap-v1');
+  assert.equal(first.browserRuntime.allPassed, true);
+  assert.deepEqual(first.browserRuntime.engines, args.browserExecution.engines);
 });

@@ -10,6 +10,7 @@
     "product",
     "backend",
     "testExecution",
+    "browserRuntime",
     "gates",
     "deterministicDigest",
     "capabilities",
@@ -53,6 +54,16 @@
         "selected": { "type": "integer", "minimum": 0 },
         "total": { "type": "integer", "minimum": 0 },
         "allPassed": { "type": "boolean" }
+      }
+    },
+    "browserRuntime": {
+      "type": "object",
+      "required": ["selected", "total", "allPassed", "engines"],
+      "properties": {
+        "selected": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "allPassed": { "type": "boolean" },
+        "engines": { "type": "array", "items": { "type": "object" } }
       }
     },
     "gates": { "type": "array", "items": { "type": "object", "required": ["id", "status", "ok"] } },

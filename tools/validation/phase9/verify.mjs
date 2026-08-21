@@ -28,6 +28,7 @@ import { validateSatModel } from '../../../js/symbolic/verify/validate-model.js'
 import { verifyConditionalEdgeFeasibility } from '../../../js/symbolic/verify/edge-feasibility.js';
 import { CLAIM_KIND, VERIFICATION_QUERY_KIND, VERDICT, createVerificationQuery } from '../../../js/symbolic/verify/query.js';
 import { runPhase9Tests, discoverPhase9Tests } from '../../../tests/phase9/run.mjs';
+import { runBrowserRuntime } from '../../../tests/phase9/browser/worker-runtime.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PROFILE_PATH = path.join(ROOT, 'tools/validation/phase9/profile.json');
@@ -175,7 +176,7 @@ async function runLiveImplementationGates(backendGate) {
   return { checks, ok: Object.values(checks).every(Boolean) };
 }
 
-function capabilityStatuses(backendGate, implementationGate, testsOk) {
+function capabilityStatuses(backendGate, implementationGate, testsOk, browserGate) {
   const all = testsOk && implementationGate.ok;
   return {
     proofAuthorityContract: backendGate.ok && testsOk ? 'verified' : 'blocked',
@@ -199,10 +200,18 @@ function capabilityStatuses(backendGate, implementationGate, testsOk) {
     patchVerification: testsOk ? 'verified' : 'blocked',
     symbolicEvidenceSchema: testsOk ? 'verified' : 'blocked',
     versionSafeCachePolicy: testsOk ? 'verified' : 'blocked',
+    browserWorkerRuntime: browserGate.ok ? 'verified' : 'blocked',
   };
 }
 
-export function buildDeterministicPayload({ product, backend, testExecution, capabilities, gates }) {
+export function buildDeterministicPayload({
+  product,
+  backend,
+  testExecution,
+  browserExecution = { selected: 0, total: 0, allPassed: false, engines: [] },
+  capabilities,
+  gates,
+}) {
   return {
     schemaVersion: SCHEMA_VERSION,
     phase: 9,
@@ -218,6 +227,12 @@ export function buildDeterministicPayload({ product, backend, testExecution, cap
       selected: Number(testExecution.selected) || 0,
       total: Number(testExecution.total) || 0,
       allPassed: testExecution.allPassed === true,
+    },
+    browserRuntime: {
+      selected: Number(browserExecution.selected) || 0,
+      total: Number(browserExecution.total) || 0,
+      allPassed: browserExecution.allPassed === true,
+      engines: Array.isArray(browserExecution.engines) ? browserExecution.engines : [],
     },
     capabilities,
     gates: gates.map((item) => ({
@@ -238,6 +253,8 @@ export function validateEvidence(report) {
   if (typeof report.deterministicDigest !== 'string' || !report.deterministicDigest) errors.push('missing deterministicDigest');
   if (typeof report.evidenceDigest !== 'string' || !report.evidenceDigest) errors.push('missing evidenceDigest');
   if (!Array.isArray(report.gates) || report.gates.some((item) => !['PASSED', 'FAILED'].includes(item.status))) errors.push('invalid gates');
+  if (!report.browserRuntime) errors.push('missing browser runtime evidence');
+  else if (report.verdict === 'READY' && report.browserRuntime.allPassed !== true) errors.push('browser runtime evidence is not green');
   return errors;
 }
 
@@ -267,19 +284,35 @@ export async function verifyPhase9() {
 
   const backendGate = await runLiveBackendGate();
   const implementationGate = await runLiveImplementationGates(backendGate);
+  let browserExecution = { selected: 2, total: 2, allPassed: false, engines: [], error: null };
+  try {
+    const engines = await runBrowserRuntime();
+    browserExecution = { selected: engines.length, total: 2, allPassed: engines.length === 2, engines, error: null };
+  } catch (error) {
+    browserExecution.error = String(error?.message || error);
+    console.error('[phase9-verifier] Browser runtime FAILED:', browserExecution.error);
+  }
   const testsOk = testExecution.allPassed === true;
   const gates = PROFILE.gates.map((profileGate) => {
-    const ok = testsOk && implementationGate.ok && backendGate.ok;
+    const baseOk = testsOk && implementationGate.ok && backendGate.ok;
+    const ok = profileGate.id === 'GATE-P9-BROWSER' ? baseOk && browserExecution.allPassed : baseOk;
     return gate(profileGate.id, profileGate.description, ok, {
-      reason: ok ? null : (!testsOk ? 'phase9-contract-tests-failed' : (!backendGate.ok ? backendGate.reason : 'live-implementation-gate-failed')),
+      reason: ok ? null : (!testsOk ? 'phase9-contract-tests-failed' : (!backendGate.ok ? backendGate.reason : (!implementationGate.ok ? 'live-implementation-gate-failed' : 'browser-runtime-failed'))),
     });
   });
-  const capabilities = capabilityStatuses(backendGate, implementationGate, testsOk);
+  const capabilities = capabilityStatuses(backendGate, implementationGate, testsOk, { ok: browserExecution.allPassed });
   const allGatesPass = gates.every((item) => item.ok);
   const ready = product.clean && testsOk && allGatesPass;
   const verdict = ready ? 'READY' : 'BLOCKING';
   const backend = backendGate.backend;
-  const payload = buildDeterministicPayload({ product, backend, testExecution, capabilities, gates });
+  const payload = buildDeterministicPayload({
+    product,
+    backend,
+    testExecution,
+    browserExecution,
+    capabilities,
+    gates,
+  });
   const deterministicDigest = stableDigest(payload);
   const finalReport = {
     ...payload,
@@ -290,6 +323,11 @@ export async function verifyPhase9() {
       ok: backendGate.ok,
       checks: backendGate.checks || null,
       reason: backendGate.reason || null,
+    },
+    browserGate: {
+      ok: browserExecution.allPassed,
+      engines: browserExecution.engines,
+      error: browserExecution.error,
     },
     implementationGate,
   };
@@ -312,6 +350,7 @@ export async function verifyPhase9() {
     evidenceDigest: finalReport.evidenceDigest,
     gatesPassed: gates.filter((item) => item.ok).length,
     testFiles: testExecution.total,
+    browserEngines: browserExecution.engines.map((item) => item.name),
   };
   let ledger = { phase: 9, checkpoints: [] };
   const ledgerPath = path.join(ROOT, CHECKPOINT_RELATIVE_PATH);
@@ -324,6 +363,7 @@ export async function verifyPhase9() {
   console.log(`[phase9-verifier] Verdict: ${verdict}`);
   console.log(`[phase9-verifier] Commit: ${product.commitSha}, Tree: ${product.treeSha}, Clean: ${product.clean}`);
   console.log(`[phase9-verifier] Backend: ${backend?.id || 'none'} ${backend?.version || ''} (${backend?.proofAuthority || 'none'})`);
+  console.log(`[phase9-verifier] Browser runtime: ${browserExecution.allPassed ? 'PASS' : 'BLOCKING'} (${browserExecution.engines.map((item) => item.name).join(', ') || 'none'})`);
   console.log(`[phase9-verifier] Deterministic digest: ${deterministicDigest}`);
   return Object.freeze(finalReport);
 }
