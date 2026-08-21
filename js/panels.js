@@ -1535,9 +1535,12 @@ function autoPhaseText(phase) {
  */
 function makeAccessScanner(app, region) {
   if (!region) return null;
-  return async (list) => {
+  return (list) => {
     const offsets = (list || []).map((x) => ({ offset: x.offset, size: x.size || 0 }));
-    if (!offsets.length) return new Map();
+    if (!offsets.length) return Promise.resolve(new Map());
+    // Keep Backend.fieldAccessMany's cancellable promise intact. An async
+    // wrapper would assimilate it and strip the custom cancel() hook used
+    // by the pinpoint timeout to settle the underlying Worker RPC.
     return app.backend.fieldAccessMany(region.id, offsets);
   };
 }
@@ -1710,7 +1713,7 @@ async function fillPurpose(app, region, program, strings, rows) {
 function makeAnalyzer(app, region) {
   if (!region || !app.store.get('canDisassemble')) return null;
   const totalRows = Number(region.size / 4n);
-  return async (addr, end) => {
+  return async (addr, end, options = {}) => {
     const startRow = Number((addr - region.vmAddr) / 4n);
     if (!(startRow >= 0) || startRow >= totalRows) return null;
     const endRow = end != null
@@ -1718,8 +1721,10 @@ function makeAnalyzer(app, region) {
       : Math.min(totalRows - 1, startRow + 512);
     if (endRow < startRow) return null;
     // 速さのために文字列は読まない。あとで開いたときに読み足される。
+    // Pinpoint injects AbortSignal through options; preserve it all the way
+    // into semantic analysis while keeping this lightweight path text-free.
     const res = await analyzeFunctionCached(app.backend, region, startRow, endRow,
-      app.symbols, null, { texts: false });
+      app.symbols, null, { ...(options || {}), texts: false });
     return res.model;
   };
 }
