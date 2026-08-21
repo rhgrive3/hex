@@ -29,6 +29,7 @@
       "tests/phase12/foundation/**",
       "tests/phase12/integration/**",
       ".github/workflows/phase12-release-validation.yml",
+      ".github/workflows/stage1-release-validation.yml",
       ".github/workflows/invariant-gates.yml",
       "package.json",
       "js/platform/capability-maturity.js",
@@ -42,6 +43,9 @@
       "js/userscript/dev/task-graph/dynamic-task-graph.js",
       "js/cache/analysis-cache.js",
       "js/cache/artifact-orchestration.js",
+      "js/targets/architecture/coverage.js",
+      "tools/validation/stage1/**",
+      "tests/stage1/**",
       "js/ai/dev/**",
       "tests/dev-agent/**"
     ]
@@ -59,8 +63,12 @@
     "tests/phase12/foundation/**",
     "tests/phase12/integration/**",
     ".github/workflows/invariant-gates.yml",
+    ".github/workflows/stage1-release-validation.yml",
     "tools/validation/phase10/ownership.json",
     "tools/validation/phase11/ownership.json",
+    "js/targets/architecture/coverage.js",
+    "tools/validation/stage1/**",
+    "tests/stage1/**",
     "package.json"
   ],
   "generatedPaths": [
