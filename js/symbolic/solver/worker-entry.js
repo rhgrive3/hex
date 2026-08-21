@@ -5,8 +5,12 @@
  */
 
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
+import { WORKER_BACKEND_ID, WORKER_BACKEND_VERSION } from './worker-backend.js';
 
-const backend = new ExhaustiveBvBackend();
+const backend = new ExhaustiveBvBackend({
+  id: WORKER_BACKEND_ID,
+  version: WORKER_BACKEND_VERSION,
+});
 const session = backend.createSession({ timeoutMs: 0 });
 
 self.onmessage = async (event) => {

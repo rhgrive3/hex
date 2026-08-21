@@ -38,11 +38,12 @@ async function checkBrowser(name, browserType, baseUrl) {
     const page = await context.newPage();
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     const result = await page.evaluate(async () => {
-      const [{ WorkerSolverBackend }, kinds, factory, queryApi] = await Promise.all([
+      const [{ WorkerSolverBackend }, kinds, factory, queryApi, edgeVerifier] = await Promise.all([
         import('/js/symbolic/solver/worker-backend.js'),
         import('/js/symbolic/expr/kinds.js'),
         import('/js/symbolic/expr/factory.js'),
         import('/js/symbolic/verify/query.js'),
+        import('/js/symbolic/verify/edge-feasibility.js'),
       ]);
       const { bvSort, BV_COMPARE_OP } = kinds;
       const { createBv, createCompare, createFreshSymbol } = factory;
@@ -57,10 +58,22 @@ async function checkBrowser(name, browserType, baseUrl) {
       const session = backend.createSession({ timeoutMs: 2000 });
       const sat = await session.check(makeQuery([5]), { timeoutMs: 2000 });
       const unsat = await session.check(makeQuery([1, 2]), { timeoutMs: 2000 });
+      const proof = await edgeVerifier.verifyConditionalEdgeFeasibility({
+        fromBlock: 'browser-entry',
+        toBlock: 'browser-dead',
+        edgeCondition: createCompare(BV_COMPARE_OP.EQ, x, createBv(3, 1n)),
+        preconditions: createCompare(BV_COMPARE_OP.EQ, x, createBv(3, 2n)),
+        backend,
+        options: { timeoutMs: 2000 },
+      });
       const summary = {
         sat: sat.status,
         satModel: sat.model ? String(sat.model.browser_x) : null,
         unsat: unsat.status,
+        satBackend: sat.backend,
+        unsatBackend: unsat.backend,
+        proofVerdict: proof.verdict,
+        proofBackend: proof.proofAuthority || null,
         proofAuthority: backend.proofAuthority,
         executionIsolation: backend.capabilities().executionIsolation,
         workerAvailable: typeof Worker === 'function',
@@ -69,6 +82,8 @@ async function checkBrowser(name, browserType, baseUrl) {
       return summary;
     });
     if (result.sat !== 'sat' || result.satModel !== '5' || result.unsat !== 'unsat' ||
+        result.satBackend !== 'hex-exhaustive-bv-worker' || result.unsatBackend !== 'hex-exhaustive-bv-worker' ||
+        result.proofVerdict !== 'proved' || result.proofBackend !== 'exact' ||
         result.proofAuthority !== 'exact' || result.executionIsolation !== 'dedicated-worker' ||
         result.workerAvailable !== true) {
       throw new Error(`${name}: invalid worker runtime result ${JSON.stringify(result)}`);
