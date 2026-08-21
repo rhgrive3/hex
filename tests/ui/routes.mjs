@@ -1,4 +1,4 @@
-import { matchRoute } from '../../js/ui/router.js';
+import { matchRoute, ProductRouter } from '../../js/ui/router.js';
 import {
   ROUTES, PRIMARY_NAV, EXPLORER_SCOPES, FUNCTION_TABS, LEGACY_MIGRATION,
 } from '../../js/ui/registry.js';
@@ -41,6 +41,40 @@ check('migration table contains exactly the audited 54 screens', Object.keys(LEG
 check('every audited legacy screen has a migration disposition', legacyRequired.every((name) => typeof LEGACY_MIGRATION[name] === 'string'));
 check('migration table has no un-audited screen names', Object.keys(LEGACY_MIGRATION).every((name) => legacyRequired.includes(name)));
 check('migration table has only explicit dispositions', Object.values(LEGACY_MIGRATION).every((value) => /^(merge|redirect|deprecated):/.test(value)));
+
+/* A render failure must not manufacture a browser-history entry. Result sheets
+   use navigate()'s boolean to decide whether they may close, so URL/history,
+   router.current and the visible view must commit together. */
+const previousWindow = globalThis.window;
+const previousHistory = globalThis.history;
+const pushes = [];
+try {
+  globalThis.window = {
+    location: { href: 'https://hex.test/#/code', hash: '#/code' },
+    addEventListener() {}, removeEventListener() {},
+  };
+  globalThis.history = {
+    state: { hexUi: true, key: 1, depth: 0, viewState: null },
+    pushState(state, _title, url) { pushes.push({ state, url }); this.state = state; },
+    replaceState(state) { this.state = state; },
+    back() {}, forward() {},
+  };
+  const current = matchRoute(ROUTES, '/code');
+  const router = new ProductRouter(ROUTES, {
+    defaultPath: '/code',
+    onRoute(next) {
+      if (next.route.id === 'function') throw new Error('synthetic-render-failure');
+      return null;
+    },
+  });
+  router.current = { ...current, fullPath: '/code', query: new URLSearchParams() };
+  router.depth = 0;
+  check('render failure returns false without committing history', router.navigate('/function/4096/pseudocode') === false && pushes.length === 0);
+  check('render failure preserves route and back depth', router.current.fullPath === '/code' && router.depth === 0 && window.location.hash === '#/code');
+} finally {
+  if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
+  if (previousHistory === undefined) delete globalThis.history; else globalThis.history = previousHistory;
+}
 
 if (failures) process.exit(1);
 console.log('Canonical route manifest checks passed');
