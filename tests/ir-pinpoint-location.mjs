@@ -2,6 +2,7 @@
 import { buildSemanticModel } from '../js/blocks.js';
 import { GOALS } from '../js/goals.js';
 import { pinpointLocation } from '../js/pinpoint.js';
+import { AMOUNT, SHAPE, foldShapes } from '../js/shapes.js';
 
 const BASE = 0x100000000n;
 function modelOf(lines) {
@@ -39,13 +40,15 @@ const model = modelOf([
 const goal = GOALS.find((g) => g.id === 'hp');
 ok(goal, 'hp goal exists');
 
+const program = {
+  functionRange: () => ({ start: BASE, end: BASE + 48n }),
+  functionStartOf: () => BASE,
+};
+
 const result = await pinpointLocation({
   goal,
   ranked: [{ addr: BASE, name: 'applyDamage', strings: ['damage', 'hp'] }],
-  program: {
-    functionRange: () => ({ start: BASE, end: BASE + 48n }),
-    functionStartOf: () => BASE,
-  },
+  program,
   analyze: async () => model,
   budget: { left: 12 },
   limit: 10,
@@ -61,4 +64,84 @@ ok(c.updates[0].steps.some((s) => s.op === 'sub'), 'arithmetic survives into pin
 ok(c.compares && c.compares.some((x) => x.value === 100n && x.engine === 'ir-ssa'),
   'SSA-propagated guard reaches pinpoint');
 
+// Automatic analysis has already paid for the whole-program value-shape pass.
+// The first pinpoint access request must expand to a superset and perform one
+// whole-region fieldAccessMany scan; later goals using the same scanner must be
+// served from that cache. The requested size contract is restored on readback.
+{
+  const shapes = foldShapes({
+    count: 2, capped: false,
+    disp: Int32Array.of(0x20, 0x40),
+    size: Uint8Array.of(4, 8),
+    flags: Uint8Array.of(
+      SHAPE.DECREASE | SHAPE.CLAMP | SHAPE.CROSS,
+      SHAPE.INCREASE,
+    ),
+    amtKind: Uint8Array.of(AMOUNT.FIELD, AMOUNT.IMM),
+    amtDisp: Int32Array.of(0x30, 0),
+    addr: BigUint64Array.of(BASE + 32n, BASE + 36n),
+    span: Int32Array.of(0x100, 0x100),
+    amtSize: Uint8Array.of(4, 0),
+    amtSpan: Int32Array.of(0x100, 0),
+  });
+  let scans = 0;
+  let batchedOffsets = 0;
+  const scanAccess = async (requested) => {
+    scans++;
+    batchedOffsets = requested.length;
+    const groups = new Map();
+    for (const item of requested) {
+      const key = BigInt(item.offset).toString();
+      const at = BigInt(item.offset) === 0x20n ? BASE + 32n : BASE + 36n;
+      groups.set(key, [{ addr: at, kind: 'store', size: BigInt(item.offset) === 0x20n ? 4 : 8 }]);
+    }
+    return groups;
+  };
+  const common = {
+    goal,
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: ['damage', 'hp'] }],
+    program,
+    analyze: async () => model,
+    shapes,
+    scanAccess,
+    budget: { left: 12 },
+    limit: 10,
+  };
+  const first = await pinpointLocation(common);
+  const second = await pinpointLocation({ ...common, budget: { left: 12 } });
+  eq(scans, 1, 'all pinpoint goals sharing a scanner must reuse one whole-region access pass');
+  ok(batchedOffsets >= 2, 'first access pass must include the shape-index superset, not only the current top value');
+  ok(first.changeSites.some((site) => site.first === BASE + 32n && site.stores > 0),
+    'batched access evidence must remain available as a grouped change site');
+  ok(second.changeSites.some((site) => site.first === BASE + 32n && site.stores > 0),
+    'cached access evidence must remain available to later goals');
+}
+
+// A direct/manual pinpoint call has no automatic shape index. It must preserve
+// the legacy scan request instead of broadening every requested displacement to
+// size=0 or scanning unrelated fields.
+{
+  let requested = null;
+  const direct = await pinpointLocation({
+    goal,
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: ['damage', 'hp'] }],
+    program,
+    analyze: async () => model,
+    scanAccess: async (items) => {
+      requested = items.map((item) => ({ offset: BigInt(item.offset), size: Number(item.size) || 0 }));
+      const groups = new Map();
+      for (const item of requested) groups.set(item.offset.toString(), [{ addr: BASE + 32n, kind: 'store', size: item.size || 4 }]);
+      return groups;
+    },
+    budget: { left: 12 },
+    limit: 10,
+  });
+  ok(requested?.length, 'direct pinpoint should still call its supplied scanner');
+  ok(requested.some((item) => item.offset === 0x20n && item.size === 4),
+    'direct pinpoint must preserve the legacy requested field size');
+  ok(direct.changeSites.length > 0, 'direct pinpoint scan evidence remains available');
+}
+
 process.stdout.write('  ok  pinpointLocation consumes SSA RMW + threshold\n');
+process.stdout.write('  ok  pinpoint access scanning batches once across goals\n');
+process.stdout.write('  ok  direct pinpoint preserves legacy scan requests\n');

@@ -5,6 +5,7 @@ import {
   supportsArm64SemanticAnalysis,
 } from '../js/analyze.js';
 import { analyzeModelAt, createHexAIContext } from '../js/ai/ui/hex-context.js';
+import { ToolRegistry } from '../js/ai/tools/registry-core.js';
 
 const CHUNK_ROWS=1024;
 function backendFor(totalRows){
@@ -154,6 +155,36 @@ assert.equal(supportsArm64SemanticAnalysis('x86_64'),false);
   assert.ok(model);
   assert.equal(model.instructions.length,5);
   assert.equal(model.truncated,true);
+}
+
+// ChatGPT Web intentionally has no model-response deadline, but local analysis
+// tools must never inherit that infinity. A tool that never settles is aborted
+// by its own finite deadline, and the registry returns a tool failure instead
+// of leaving get_function (or any other tool) permanently pending.
+{
+  const registry = new ToolRegistry();
+  let abortObserved = false;
+  registry.register({
+    name: 'hang',
+    cost: 'medium',
+    storeResult: false,
+    async execute(_args, { signal }) {
+      return new Promise((_, reject) => {
+        signal.addEventListener('abort', () => {
+          abortObserved = true;
+          reject(new Error('cancelled'));
+        }, { once: true });
+      });
+    },
+  });
+  const started = Date.now();
+  await assert.rejects(
+    () => registry.execute('hang', {}, { toolTimeoutMs: 25 }),
+    (error) => error?.type === 'tool_failed' && /hang timed out/i.test(error.message),
+  );
+  assert.equal(abortObserved, true, 'tool timeout must propagate an abort signal into the local analysis');
+  assert.ok(Date.now() - started < 1000, 'explicit regression timeout must settle promptly');
+  assert.equal(registry.executionSignal, null, 'registry must restore its execution signal after timeout');
 }
 
 console.log('ai semantic analysis boundary regressions: PASS');
