@@ -35,7 +35,9 @@
     "js/ai/dev/protocol/dev-supervisor-prompt.js",
     "tests/dev-agent/tool-contract-parity.mjs",
     "js/ai/tools/registry.js",
-    "tests/phase9/integration/late-result-boundary.test.mjs"
+    "tests/phase9/integration/late-result-boundary.test.mjs",
+    "package-lock.json",
+    "node_modules/.package-lock.json"
   ],
   "forbiddenPrefixes": [
     "js/binary/",
