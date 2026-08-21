@@ -261,17 +261,27 @@ export class DevSupervisorEngineV0 {
           ? Object.freeze([requiredBootstrapCapability])
           : this.availableTools();
         const transport = this.promptTransportFor(run.supervisorSessionKey, promptTools, history);
-        const response = await this.bridge.request(buildDevSupervisorPrompt({
-          run,
-          availableTools: promptTools,
-          history: transport.history,
-          mode: transport.mode,
-        }), {
-          signal: input.signal,
-          sessionKey: run.supervisorSessionKey,
-          model: input.model || null,
-          reasoning: input.reasoning || null,
-        });
+        let response;
+        try {
+          response = await this.bridge.request(buildDevSupervisorPrompt({
+            run,
+            availableTools: promptTools,
+            history: transport.history,
+            mode: transport.mode,
+          }), {
+            signal: input.signal,
+            sessionKey: run.supervisorSessionKey,
+            model: input.model || null,
+            reasoning: input.reasoning || null,
+          });
+        } catch (bridgeError) {
+          /* A transport/conversation failure means the model may no longer
+             possess the contract this runtime recorded. The next request on
+             this session must pay for a fresh BOOTSTRAP, even when the bridge
+             error is later recovered by the caller. */
+          this.invalidatePromptTransport(run.supervisorSessionKey);
+          throw bridgeError;
+        }
         const text = response && typeof response === 'object' ? response.text : response;
         let decision;
         try {
@@ -457,6 +467,11 @@ export class DevSupervisorEngineV0 {
       return;
     }
     this.supervisorPromptState.set(key, { signature: transport.signature, deliveredHistory });
+  }
+
+  invalidatePromptTransport(sessionKey) {
+    const key = String(sessionKey || '');
+    if (key) this.supervisorPromptState.delete(key);
   }
 
   supervisorSessionKeyFor(hexConversationId) {

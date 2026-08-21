@@ -76,6 +76,29 @@ async function anUnansweredBootstrapIsNotACompletedBootstrap() {
   );
 }
 
+async function bridgeContinuityLossForcesBootstrap() {
+  const { engine, requests } = newEngine([
+    { type: 'final', answer: 'first', completedTasks: [], remaining: [] },
+    { throw: Object.assign(new Error('conversation-unreachable'), { code: 'conversation-unreachable' }) },
+    { type: 'final', answer: 'recovered', completedTasks: [], remaining: [] },
+  ]);
+  const input = { mode: 'agent', question: 'continuity', conversationId: 'hex-continuity-loss' };
+
+  await engine.run(input);
+  await assert.rejects(() => engine.run(input), /conversation-unreachable/);
+  const recovered = await engine.run(input);
+
+  assert.equal(recovered.answer, 'recovered');
+  assert.equal(requests.length, 3);
+  assert.equal(modeOf(requests[0].prompt), DEV_PROMPT_MODE.BOOTSTRAP);
+  assert.equal(modeOf(requests[1].prompt), DEV_PROMPT_MODE.CONTINUATION);
+  assert.equal(
+    modeOf(requests[2].prompt),
+    DEV_PROMPT_MODE.BOOTSTRAP,
+    'a bridge continuity loss invalidates the recorded contract before retry',
+  );
+}
+
 function theContractSignatureCoversMoreThanToolNames() {
   const engine = newEngine([]).engine;
   const signature = devBootstrapContractSignature({ availableTools: ALL_TOOLS });
@@ -244,6 +267,7 @@ function newEngine(replies) {
     async request(prompt, options) {
       requests.push({ prompt, options });
       const reply = replies[index++];
+      if (reply?.throw) throw reply.throw;
       return { text: typeof reply === 'string' ? reply : JSON.stringify(reply) };
     },
   };
@@ -267,6 +291,7 @@ function workerClient() {
 await firstRequestIsBootstrapAndTheNextIsContinuation();
 await aNewSessionKeyOrANewRuntimeRebootstraps();
 await anUnansweredBootstrapIsNotACompletedBootstrap();
+await bridgeContinuityLossForcesBootstrap();
 theContractSignatureCoversMoreThanToolNames();
 anUnreproducibleSignatureFallsBackToBootstrap();
 continuationStillCarriesTheRulesThatMakeAnAnswerSafe();
