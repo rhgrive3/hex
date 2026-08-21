@@ -16,6 +16,12 @@ function boundedCount(value, fallback, max, code) {
   return n;
 }
 
+export function managedRuntimeTargetProfileId(frontendId) {
+  const id = required(frontendId, 'managed-runtime-frontend-required').toLowerCase();
+  if (!FRONTENDS.has(id)) throw new TypeError('managed-runtime-frontend-unsupported');
+  return `managed:${id}:m6`;
+}
+
 export function createManagedRuntimeBinding(input = {}) {
   const frontendId = required(input.frontendId, 'managed-runtime-frontend-required').toLowerCase();
   if (!FRONTENDS.has(frontendId)) throw new TypeError('managed-runtime-frontend-unsupported');
@@ -36,6 +42,7 @@ export function createManagedRuntimeBinding(input = {}) {
   const binding = {
     schemaVersion: MANAGED_RUNTIME_BINDING_SCHEMA,
     frontendId,
+    targetProfileId: managedRuntimeTargetProfileId(frontendId),
     runtimeImplementation: required(input.runtimeImplementation, 'managed-runtime-implementation-required'),
     runtimeVersion: required(input.runtimeVersion, 'managed-runtime-version-required'),
     staticModuleIdentity,
@@ -80,6 +87,7 @@ export function managedRuntimeProfileSupport({ binding, runtimeProfileProof = nu
   const runtimeBound = valid
     && runtimeProfileProof?.status === 'supported-for-exact-provider-profile'
     && runtimeProfileProof?.bindingId === binding.runtime.bindingId
+    && runtimeProfileProof?.targetProfileId === binding.targetProfileId
     && !!runtimeProfileProof?.providerProfileId;
   const proofComplete = proof.exactHead === true
     && proof.identityNegativeTests === true
@@ -90,6 +98,7 @@ export function managedRuntimeProfileSupport({ binding, runtimeProfileProof = nu
   const proven = valid && runtimeBound && proofComplete;
   return Object.freeze({
     frontendId: valid ? binding.frontendId : null,
+    targetProfileId: valid ? binding.targetProfileId : null,
     runtimeImplementation: valid ? binding.runtimeImplementation : null,
     runtimeVersion: valid ? binding.runtimeVersion : null,
     runtimeBindingId: valid ? binding.runtime.bindingId : null,
