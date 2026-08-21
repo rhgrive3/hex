@@ -1,0 +1,95 @@
+import assert from 'node:assert/strict';
+import { AnalysisQueryAPI, AnalysisSnapshotStaleError, createAppAnalysisQueryAdapter } from '../../../js/analysis/query/index.js';
+
+let epoch = 7;
+let revision = 3;
+let artifactVersions = { semantic: 'v2', cfg: 'v1' };
+let fetches = 0;
+const semanticIr = Object.freeze({ schemaVersion: 'semantic-ir/v2', nodes: [{ id: 'n1' }] });
+const canonicalCfg = Object.freeze({ schemaVersion: 'cfg/v2', blocks: [{ id: 'b0' }], edges: [] });
+const compatibilityIr = Object.freeze({ schemaVersion: 'legacy-ir/v1', instructions: [] });
+const compatibilityCfg = Object.freeze({ blocks: [{ id: 'legacy-b0' }], edges: [] });
+const app = {
+  store: {
+    get(key) {
+      if (key === 'fileInfo') return { hash: 'file-hash-that-must-not-win-over-backend-id' };
+      if (key === 'project') return { revision };
+      return null;
+    },
+  },
+  backend: {
+    binaryId: 'bin_live',
+    get gen() { return epoch; },
+  },
+  get analysisArtifactVersions() { return artifactVersions; },
+  async _fetchFunctionModel(address) {
+    fetches++;
+    assert.equal(address, 0x1000n);
+    return {
+      id: 'fn_1000',
+      startAddress: 0x1000n,
+      ir: compatibilityIr,
+      cfg: compatibilityCfg,
+      semanticAnalysis: { pipeline: { semanticIr, cfg: canonicalCfg } },
+    };
+  },
+};
+
+const api = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(app));
+const snapshot = await api.snapshot();
+assert.equal(snapshot.binaryId, 'bin_live');
+assert.equal(snapshot.projectRevision, revision);
+assert.equal(snapshot.analysisEpoch, epoch);
+assert.deepEqual(snapshot.artifactVersions, artifactVersions);
+
+const fn = await api.function(snapshot, '0x1000');
+assert.equal(fn.completeness, 'complete');
+assert.equal(fn.value.id, 'fn_1000');
+
+const ir = await api.semanticIR(snapshot, '0x1000');
+assert.equal(ir.completeness, 'complete');
+assert.equal(ir.value, semanticIr, 'query layer must prefer canonical semantic-v2 truth over compatibility projection');
+
+const cfg = await api.cfg(snapshot, '0x1000');
+assert.equal(cfg.completeness, 'complete');
+assert.equal(cfg.value, canonicalCfg, 'query layer must prefer canonical semantic CFG over compatibility projection');
+assert.equal(fetches, 3, 'each public query resolves through the live non-UI-mutating producer');
+
+revision++;
+await assert.rejects(() => api.function(snapshot, '0x1000'), (error) => error instanceof AnalysisSnapshotStaleError);
+revision--;
+
+const versionSnapshot = await api.snapshot();
+artifactVersions = { semantic: 'v3', cfg: 'v1' };
+await assert.rejects(() => api.cfg(versionSnapshot, '0x1000'), (error) => error instanceof AnalysisSnapshotStaleError);
+artifactVersions = { semantic: 'v2', cfg: 'v1' };
+
+const epochSnapshot = await api.snapshot();
+epoch++;
+await assert.rejects(() => api.semanticIR(epochSnapshot, '0x1000'), (error) => error instanceof AnalysisSnapshotStaleError);
+epoch--;
+
+const unavailableApp = {
+  store: { get: (key) => key === 'fileInfo' ? { hash: 'bin_unavailable' } : null },
+  backend: { gen: 0, binaryId: 'bin_unavailable' },
+};
+const unavailableApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(unavailableApp));
+const unavailableSnapshot = await unavailableApi.snapshot();
+for (const query of [
+  () => unavailableApi.function(unavailableSnapshot, '0x2000'),
+  () => unavailableApi.semanticIR(unavailableSnapshot, '0x2000'),
+  () => unavailableApi.cfg(unavailableSnapshot, '0x2000'),
+]) {
+  const result = await query();
+  assert.equal(result.completeness, 'unsupported');
+  assert.equal(result.value, null, 'missing producers must not fabricate empty complete analysis');
+}
+
+const derivedIdentityApi = new AnalysisQueryAPI(createAppAnalysisQueryAdapter({
+  store: { get: () => null },
+  backend: { gen: 2, binaryId: null },
+  async ensureAnalysisIdentity() { return 'bin_derived'; },
+}));
+assert.equal((await derivedIdentityApi.snapshot()).binaryId, 'bin_derived');
+
+console.log('phase4 AnalysisQueryAPI App wiring: PASS');
