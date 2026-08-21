@@ -27,7 +27,7 @@ export const DEV_TASK_GRAPH_STATE = Object.freeze({
 const TASK_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
 const GRAPH_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
 const MAX_TASKS = 128;
-const DEFAULT_TIMEOUT_MS = 180000;
+const MIN_TIMEOUT_MS = 10;
 const MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 5000;
 const DEFAULT_POLL_MS = 50;
@@ -283,7 +283,7 @@ export class DynamicTaskGraph {
 
   /* One await for the whole model turn. The Pool owns the turn and wakes us
      when it settles, so nothing re-reads it on a timer while the Worker
-     generates. Graph cancellation and the task deadline share one controller so
+     generates. Graph cancellation and any explicit deadline share one controller so
      that either simply aborts the wait; the Worker it may still be running stays
      owned by this lease until cleanupLease() completes the existing stop ->
      release -> discard transaction. */
@@ -293,7 +293,11 @@ export class DynamicTaskGraph {
     const onGraphCancel = () => controller.abort(this.cancelReason || 'cancelled');
     this.abortController.signal.addEventListener('abort', onGraphCancel, { once: true });
     let deadlineExpired = false;
-    const deadline = setTimeout(() => { deadlineExpired = true; controller.abort('task-timeout'); }, task.timeoutMs);
+    // No deadline is the ordinary case. A long model turn is not evidence that
+    // anything is wrong, so an unbounded turn simply waits for the Pool.
+    const deadline = task.timeoutMs == null
+      ? null
+      : setTimeout(() => { deadlineExpired = true; controller.abort('task-timeout'); }, task.timeoutMs);
     try {
       return await this.workerPool.waitResult({ leaseId }, { signal: controller.signal });
     } catch (error) {
@@ -301,7 +305,7 @@ export class DynamicTaskGraph {
       if (this.abortController.signal.aborted) throw graphError('cancelled', this.cancelReason || 'cancelled');
       throw error;
     } finally {
-      clearTimeout(deadline);
+      if (deadline) clearTimeout(deadline);
       this.abortController.signal.removeEventListener('abort', onGraphCancel);
     }
   }
@@ -414,7 +418,7 @@ function normalizeTasks(input, now) {
       dependencies: Object.freeze(normalizedDependencies),
       instruction,
       maxAttempts: boundedInt(source.maxAttempts, 1, 5, 1),
-      timeoutMs: boundedInt(source.timeoutMs, 10, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
+      timeoutMs: normalizeDeadline(source.timeoutMs),
       state: DEV_TASK_STATE.PENDING,
       owner: null,
       attempts: 0,
@@ -432,6 +436,17 @@ function normalizeTasks(input, now) {
     }
   }
   return tasks;
+}
+
+/* A task has a deadline only when its caller asked for one. There is no generic
+   wall clock: a model turn that takes a long time is not thereby a stalled turn,
+   and a default that says otherwise fails good work. An explicit deadline stays
+   bounded by the same maximum as before. */
+function normalizeDeadline(value) {
+  if (value == null) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new TypeError('Task timeoutMs must be a finite number of milliseconds, or null for no deadline.');
+  return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Math.floor(number)));
 }
 
 function assertAcyclic(tasks) {
