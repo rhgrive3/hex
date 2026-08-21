@@ -64,7 +64,7 @@ function mappedRanges(image, sourceSize, includeExecutable) {
     dedupe.add(key);
     ranges.push({ start, end: start + bounded, section: item.name || null });
   }
-  if (!ranges.length) ranges.push({ start: 0n, end: sourceSize, section: null });
+  if (!items.length && !ranges.length) ranges.push({ start: 0n, end: sourceSize, section: null });
   ranges.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
   return ranges;
 }
