@@ -3,11 +3,11 @@
   "checkpoints": [
     {
       "id": "P11-LIVING",
-      "timestamp": "2026-08-21T02:58:54.591Z",
+      "timestamp": "2026-08-21T03:12:16.004Z",
       "result": "accepted",
-      "integrationSha": "b7f62ba61491c2ec752d6ab7c1a37147bc33bd6b",
-      "integrationTreeSha": "794fc3e592733cfa01f315a15b33e71cce0afe0e",
-      "evidenceDigest": "142e6e6d0a6b050bbfd363cf86440ffb3caebdc80d92543cedbd2d409fb8cb8b",
+      "integrationSha": "73cdd208187a93a535d5fdfa7a4ab00728ed7f95",
+      "integrationTreeSha": "18dab371e5272d887680b81d47c8e6e1c5320162",
+      "evidenceDigest": "bcd6c95bc3a680db3cd2fe042180e350cb58972a1502e029ae56c84452e07c2b",
       "gatesPassed": 10
     }
   ]
