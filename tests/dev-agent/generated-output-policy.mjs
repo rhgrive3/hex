@@ -56,7 +56,17 @@ const resolverScript = resolverMatch[1]
 function runResolver(fakeNodeBody = null) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-generated-policy-'));
   const outputFile = path.join(directory, 'github-output');
-  const environment = { ...process.env, GITHUB_OUTPUT: outputFile };
+  // The workflow resolver test exercises its fail-closed default context. A
+  // PR checkout inherits the host's GitHub event variables, which would make
+  // the same valid command resolve to the component-lane `ephemeral` mode and
+  // turn this context-independent contract test into an environment leak.
+  const environment = {
+    ...process.env,
+    GITHUB_EVENT_NAME: '',
+    GITHUB_HEAD_REF: '',
+    GITHUB_REF: '',
+    GITHUB_OUTPUT: outputFile,
+  };
   if (fakeNodeBody != null) {
     const fakeBin = path.join(directory, 'bin');
     fs.mkdirSync(fakeBin);
