@@ -1,3 +1,5 @@
+const QUERY_ROUTED_FETCH = Symbol('analysis-query-routed-fetch');
+
 function storeValue(app, key) {
   try {
     if (typeof app?.store?.get === 'function') return app.store.get(key);
@@ -19,22 +21,6 @@ function wrappedValue(value, fallbackCompleteness = 'complete') {
   return { value, status: { completeness } };
 }
 
-async function functionModel(app, functionId, options = {}) {
-  if (typeof app?.analyzeFunction === 'function') {
-    const value = await app.analyzeFunction(functionId, options);
-    if (value != null) return value;
-  }
-  // App._fetchFunctionModel is deliberately non-UI-mutating: unlike
-  // analyzeFunctionAt(), it does not publish navigation/workspace state. It is
-  // therefore the compatibility bridge for the snapshot query layer until the
-  // public App producer is promoted.
-  if (typeof app?._fetchFunctionModel === 'function') {
-    const value = await app._fetchFunctionModel(BigInt(functionId), options);
-    if (value != null) return value;
-  }
-  return null;
-}
-
 function semanticIRFromModel(model) {
   return model?.semanticAnalysis?.pipeline?.semanticIr ?? model?.semanticIR ?? model?.ir ?? null;
 }
@@ -49,8 +35,48 @@ function artifactVersionsFor(app) {
   return {};
 }
 
+function installFunctionQueryRoute(app, directFetch) {
+  if (!app || typeof directFetch !== 'function') return;
+  const current = app._fetchFunctionModel;
+  if (current?.[QUERY_ROUTED_FETCH]) return;
+  const routed = async function routedFunctionModel(functionId, options = {}) {
+    const queries = app.analysisQueries;
+    if (!queries || typeof queries.snapshot !== 'function' || typeof queries.function !== 'function') {
+      return directFetch(BigInt(functionId), options);
+    }
+    const snapshot = await queries.snapshot(options);
+    const result = await queries.function(snapshot, functionId, options);
+    if (result.completeness === 'unsupported' || result.value == null) {
+      const error = new Error('analysis-query-function-unavailable');
+      error.code = 'ANALYSIS_QUERY_FUNCTION_UNAVAILABLE';
+      throw error;
+    }
+    return result.value;
+  };
+  Object.defineProperty(routed, QUERY_ROUTED_FETCH, { value: directFetch });
+  app._fetchFunctionModel = routed;
+}
+
 export function createAppAnalysisQueryAdapter(app) {
-  return {
+  const existingFetch = typeof app?._fetchFunctionModel === 'function' ? app._fetchFunctionModel : null;
+  const directFetch = existingFetch?.[QUERY_ROUTED_FETCH]
+    ?? (existingFetch ? existingFetch.bind(app) : null);
+
+  const loadFunction = async (functionId, options = {}) => {
+    if (typeof app?.analyzeFunction === 'function') {
+      const value = await app.analyzeFunction(functionId, options);
+      if (value != null) return value;
+    }
+    // Capture the producer before installing the query route. The adapter must
+    // terminate at the actual producer rather than recursively re-enter itself.
+    if (directFetch) {
+      const value = await directFetch(BigInt(functionId), options);
+      if (value != null) return value;
+    }
+    return null;
+  };
+
+  const adapter = {
     async currentIdentity(options = {}) {
       if (options.signal?.aborted) {
         const error = options.signal.reason instanceof Error ? options.signal.reason : new Error('AbortError');
@@ -58,7 +84,7 @@ export function createAppAnalysisQueryAdapter(app) {
         throw error;
       }
       const fileInfo = storeValue(app, 'fileInfo');
-      const project = storeValue(app, 'project') ?? app?.project ?? null;
+      const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
       let binaryId = app?.backend?.binaryId
         ?? fileInfo?.binaryId
         ?? fileInfo?.sha256
@@ -69,7 +95,12 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!binaryId && typeof app?.ensureAnalysisIdentity === 'function') {
         try { binaryId = await app.ensureAnalysisIdentity(); } catch { /* remain explicitly unbound */ }
       }
-      const projectRevision = Number(project?.revision ?? app?.projectRevision ?? 0);
+      const projectRevision = Number(
+        project?.revision
+        ?? app?.projectRevision
+        ?? app?.workspace?.bindingRevision
+        ?? 0
+      );
       const analysisEpoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
       return {
         binaryId: binaryId == null ? 'unbound' : String(binaryId),
@@ -80,7 +111,7 @@ export function createAppAnalysisQueryAdapter(app) {
     },
 
     async functionById(snapshot, functionId, options = {}) {
-      const model = await functionModel(app, functionId, options);
+      const model = await loadFunction(functionId, options);
       return wrappedValue(model) ?? unsupported(functionId, 'function-producer-unavailable');
     },
 
@@ -89,7 +120,7 @@ export function createAppAnalysisQueryAdapter(app) {
         const value = await app.getSemanticIR(functionId, options);
         if (value != null) return wrappedValue(value);
       }
-      const model = await functionModel(app, functionId, options);
+      const model = await loadFunction(functionId, options);
       const ir = semanticIRFromModel(model);
       return wrappedValue(ir) ?? unsupported(functionId, model ? 'semantic-ir-unavailable' : 'function-producer-unavailable');
     },
@@ -99,9 +130,16 @@ export function createAppAnalysisQueryAdapter(app) {
         const value = await app.getCFG(functionId, options);
         if (value != null) return wrappedValue(value);
       }
-      const model = await functionModel(app, functionId, options);
+      const model = await loadFunction(functionId, options);
       const cfg = cfgFromModel(model);
       return wrappedValue(cfg) ?? unsupported(functionId, model ? 'cfg-unavailable' : 'function-producer-unavailable');
     },
   };
+
+  // App constructs the adapter and query API together. Routing the existing
+  // non-mutating function producer here makes every current first-party
+  // Function Workspace read cross the immutable snapshot boundary without
+  // changing navigation/UI side effects or introducing a second analyzer.
+  installFunctionQueryRoute(app, directFetch);
+  return adapter;
 }
