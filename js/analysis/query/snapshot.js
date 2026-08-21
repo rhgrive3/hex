@@ -22,10 +22,15 @@ function nonNegativeSafeInteger(value, code) {
 function normalizeArtifacts(value) {
   if (value == null) return {};
   if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("analysis-snapshot-artifact-versions-invalid");
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError("analysis-snapshot-artifact-versions-invalid");
   const normalized = {};
   for (const key of Object.keys(value).sort()) {
     const cleanKey = String(key).trim();
     if (!cleanKey) throw new TypeError("analysis-snapshot-artifact-version-key-invalid");
+    if (Object.prototype.hasOwnProperty.call(normalized, cleanKey)) {
+      throw new TypeError("analysis-snapshot-artifact-version-key-ambiguous");
+    }
     normalized[cleanKey] = jsonSafe(value[key]);
   }
   return normalized;
@@ -45,6 +50,12 @@ function snapshotIdentity(tuple) {
   return `snapshot_${stableDigest(tuple)}`;
 }
 
+function normalizeCreatedAt(value) {
+  const timestamp = String(value ?? "").trim();
+  if (!timestamp || !Number.isFinite(Date.parse(timestamp))) throw new TypeError("analysis-snapshot-created-at-invalid");
+  return timestamp;
+}
+
 export function createAnalysisSnapshot({
   binaryId,
   projectRevision = 0,
@@ -55,13 +66,11 @@ export function createAnalysisSnapshot({
   const id = String(binaryId ?? "").trim();
   if (!id) throw new TypeError("analysis-snapshot-binary-id-required");
   const tuple = identityTuple({ binaryId: id, projectRevision, artifactVersions, analysisEpoch });
-  const timestamp = String(createdAt ?? "").trim();
-  if (!timestamp || !Number.isFinite(Date.parse(timestamp))) throw new TypeError("analysis-snapshot-created-at-invalid");
   return deepFreeze({
     ...tuple,
     snapshotId: snapshotIdentity(tuple),
     artifactVersions: deepFreeze(tuple.artifactVersions),
-    createdAt: timestamp,
+    createdAt: normalizeCreatedAt(createdAt),
   });
 }
 
@@ -70,6 +79,7 @@ export function assertAnalysisSnapshot(snapshot) {
   if (snapshot.schemaVersion !== ANALYSIS_SNAPSHOT_SCHEMA_VERSION) throw new TypeError("analysis-snapshot-version-mismatch");
   const id = String(snapshot.binaryId ?? "").trim();
   if (!id) throw new TypeError("analysis-snapshot-binary-id-required");
+  normalizeCreatedAt(snapshot.createdAt);
   const tuple = identityTuple({
     binaryId: id,
     projectRevision: snapshot.projectRevision,
