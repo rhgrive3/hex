@@ -169,7 +169,9 @@ export class SingleConversationWorkerCoordinator {
     }
     this.waiters.clear();
     this.events.length = 0;
-    this.pendingTerminal?.reject(workerError(DEV_WORKER_FAILURE.CANCELLED, 'Single-tab Worker coordinator closed.'));
+    const error = workerError(DEV_WORKER_FAILURE.CANCELLED, 'Single-tab Worker coordinator closed.');
+    this.pendingTerminal?.closeReject?.(error);
+    this.pendingTerminal?.reject(error);
     this.pendingTerminal = null;
     this.claimed = null;
   }
@@ -177,7 +179,7 @@ export class SingleConversationWorkerCoordinator {
   async runWorkerTurn(operation, { allowImmediate = false } = {}) {
     const pending = this.armTerminal();
     try {
-      const initial = await operation();
+      const initial = await Promise.race([Promise.resolve().then(operation), pending.closePromise]);
       if (allowImmediate && initial?.outcome === 'still-working') return this.withIdentity(initial);
       await pending.promise;
       return this.lastResult || this.withIdentity(this.controller.result());
@@ -195,9 +197,12 @@ export class SingleConversationWorkerCoordinator {
     }
     let resolve;
     let reject;
+    let closeReject;
     const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    const closePromise = new Promise((_, rej) => { closeReject = rej; });
     promise.catch(() => {});
-    this.pendingTerminal = { promise, resolve, reject };
+    closePromise.catch(() => {});
+    this.pendingTerminal = { promise, resolve, reject, closePromise, closeReject };
     return this.pendingTerminal;
   }
 

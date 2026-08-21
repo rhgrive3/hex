@@ -12,6 +12,7 @@ await testUnavailableToolFeedbackAllowsReplan();
 await testRuntimeRejectsWorkerIdentityOverride();
 await testAmbiguousClaimFailureCleansUpAndFailsRun();
 await testWaitingHumanResumesSameSupervisorRun();
+await testClosingSingleTabCoordinatorSettlesInFlightSend();
 await testSupervisorRestoreAcceptsPartialHistoryHydration();
 console.log('Round 2 single-tab Supervisor loop passed');
 
@@ -196,6 +197,9 @@ async function testWaitingHumanResumesSameSupervisorRun() {
     async request(prompt, options) {
       requests.push({ prompt, options });
       if (requests.length === 1) {
+        return { text: JSON.stringify({ type: 'tool', tool: 'worker.discover', arguments: {}, purpose: 'confirm the available Worker' }) };
+      }
+      if (requests.length === 2) {
         return { text: JSON.stringify({ type: 'human', question: 'Proceed with the material decision?', blocking: true }) };
       }
       return { text: JSON.stringify({ type: 'final', answer: 'continued after human response', completedTasks: [], remaining: [] }) };
@@ -211,9 +215,41 @@ async function testWaitingHumanResumesSameSupervisorRun() {
   assert.equal(second.devRunId, 'human-run', 'human response must resume the same DevRun');
   assert.equal(second.answer, 'continued after human response');
   assert.equal(settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
-  assert.equal(requests[1].options.sessionKey, 'human-supervisor-session', 'human resume must retain the same Supervisor ChatGPT conversation');
-  assert.match(requests[1].prompt, /human-response/);
-  assert.match(requests[1].prompt, /yes, proceed/);
+  assert.equal(requests[2].options.sessionKey, 'human-supervisor-session', 'human resume must retain the same Supervisor ChatGPT conversation');
+  assert.match(requests[2].prompt, /human-response/);
+  assert.match(requests[2].prompt, /yes, proceed/);
+}
+
+async function testClosingSingleTabCoordinatorSettlesInFlightSend() {
+  const listeners = new Set();
+  let sendStarted;
+  const sendStartedPromise = new Promise((resolve) => { sendStarted = resolve; });
+  let finishSend;
+  const controller = {
+    on(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    currentConversation() { return { id: 'single-close-supervisor', url: 'https://chatgpt.com/c/single-close-supervisor' }; },
+    currentUserAnchors() { return [{ id: 'single-close-user', text: 'close test' }]; },
+    observe() { return { state: 'WORKING' }; },
+    isActive() { return true; },
+    workerConversation() { return null; },
+    async send() {
+      sendStarted();
+      return new Promise((resolve) => { finishSend = resolve; });
+    },
+    result() { return { status: 'working' }; },
+  };
+  const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: 'single-close-test' });
+  await coordinator.claim({ runId: 'single-close-run', workerId: 'single-close-worker' });
+  const pending = coordinator.send({ runId: 'single-close-run', workerId: 'single-close-worker', instruction: 'never settles' });
+  await sendStartedPromise;
+  coordinator.close();
+  await assert.rejects(
+    pending,
+    (error) => error?.code === 'cancelled',
+    'closing the single-tab Worker must settle a send while the controller RPC is still pending',
+  );
+  finishSend({ status: 'completed' });
+  for (const listener of listeners) listeners({ kind: 'completed' });
 }
 
 async function testSupervisorRestoreAcceptsPartialHistoryHydration() {

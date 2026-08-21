@@ -51,13 +51,39 @@ export class DedicatedWorkerCoordinator {
       signal?.addEventListener?.('abort',waiter.onAbort,{once:true}); this.waiters.add(waiter);
     });
   }
-  close() { this.unsubscribe?.(); for(const w of this.waiters){w.signal?.removeEventListener?.('abort',w.onAbort);w.reject(workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE,'Dedicated Worker closed.'));} this.waiters.clear(); this.events=[]; this.claimed=null; }
+  close() {
+    this.unsubscribe?.();
+    const error = workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Dedicated Worker closed.');
+    for (const w of this.waiters) {
+      w.signal?.removeEventListener?.('abort', w.onAbort);
+      w.reject(error);
+    }
+    this.waiters.clear();
+    this.events = [];
+    this.pendingTerminal?.closeReject?.(error);
+    this.pendingTerminal?.reject?.(error);
+    this.pendingTerminal = null;
+    this.claimed = null;
+  }
   async runTurn(operation,{allowImmediate=false}={}) {
     const pending=this.armTerminal();
-    try { const initial=await operation(); if(allowImmediate&&initial?.outcome==='still-working') return this.withIdentity(initial); await pending.promise; return this.lastResult||this.withIdentity(this.controller.result()); }
+    try {
+      const initial=await Promise.race([Promise.resolve().then(operation), pending.closePromise]);
+      if(allowImmediate&&initial?.outcome==='still-working') return this.withIdentity(initial);
+      await pending.promise;
+      return this.lastResult||this.withIdentity(this.controller.result());
+    }
     catch(error){ if(this.pendingTerminal===pending)this.pendingTerminal=null; pending.reject(error); throw error; }
   }
-  armTerminal(){ if(this.pendingTerminal)throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY,'Worker completion already pending.'); let resolve,reject; const promise=new Promise((res,rej)=>{resolve=res;reject=rej;}); promise.catch(()=>{}); return this.pendingTerminal={promise,resolve,reject}; }
+  armTerminal(){
+    if(this.pendingTerminal)throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY,'Worker completion already pending.');
+    let resolve,reject,closeReject;
+    const promise=new Promise((res,rej)=>{resolve=res;reject=rej;});
+    const closePromise=new Promise((_,rej)=>{closeReject=rej;});
+    promise.catch(()=>{});
+    closePromise.catch(()=>{});
+    return this.pendingTerminal={promise,resolve,reject,closePromise,closeReject};
+  }
   onEvent(event){ if(!event?.kind||!this.claimed)return; const normalized=this.normalizeEvent(event); this.enqueue(normalized); if(TERMINAL.has(event.kind)){this.lastResult=this.withIdentity(this.controller.result()); const pending=this.pendingTerminal;this.pendingTerminal=null;pending?.resolve(normalized);} }
   normalizeEvent(event){return Object.freeze({type:`worker.${event.kind}`,data:Object.freeze({runId:this.claimed?.runId||null,workerId:this.claimed?.workerId||null,...(event.data||{})}),observedAt:String(event.observedAt||this.now())});}
   enqueue(event){for(const w of [...this.waiters]){if(!matches(event,w.wanted,w.runId))continue;this.waiters.delete(w);w.signal?.removeEventListener?.('abort',w.onAbort);w.resolve(event);return;}this.events.push(event);while(this.events.length>EVENT_QUEUE_LIMIT)this.events.shift();}

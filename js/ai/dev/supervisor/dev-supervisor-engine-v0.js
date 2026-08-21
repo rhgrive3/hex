@@ -278,7 +278,12 @@ export class DevSupervisorEngineV0 {
         const promptTools = requiredBootstrapCapability
           ? Object.freeze([requiredBootstrapCapability])
           : this.availableTools();
-        const transport = this.promptTransportFor(run.supervisorSessionKey, promptTools, history);
+        const transport = this.promptTransportFor(
+          run.supervisorSessionKey,
+          promptTools,
+          history,
+          { freshHistory: !!resumedHumanRun },
+        );
         const contextSelection = this.selectSupervisorContext(run, suppliedContextPacket, expandEvidenceRefs);
         let response;
         try {
@@ -486,7 +491,7 @@ export class DevSupervisorEngineV0 {
      a new runtime, a new session key, a changed tool/protocol contract, or a
      signature that cannot be reproduced -- costs a full BOOTSTRAP. Uncertainty
      must cost tokens, not correctness. */
-  promptTransportFor(sessionKey, availableTools, history) {
+  promptTransportFor(sessionKey, availableTools, history, { freshHistory = false } = {}) {
     const signature = devBootstrapContractSignature({ availableTools });
     const key = String(sessionKey || '');
     // An unreproducible signature is null, and markPromptTransportDelivered never
@@ -496,6 +501,10 @@ export class DevSupervisorEngineV0 {
     if (!state || state.signature !== signature) {
       return { mode: DEV_PROMPT_MODE.BOOTSTRAP, signature, history };
     }
+    /* A resumed human turn starts a new host-side history array. Its response
+       is fresh evidence even when the prior run had already delivered several
+       tool-result entries under the same Supervisor session. */
+    if (freshHistory) return { mode: DEV_PROMPT_MODE.CONTINUATION, signature, history };
     const delivered = Math.min(state.deliveredHistory, history.length);
     return { mode: DEV_PROMPT_MODE.CONTINUATION, signature, history: history.slice(delivered) };
   }
