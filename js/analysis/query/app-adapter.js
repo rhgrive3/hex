@@ -100,6 +100,19 @@ export function createAppAnalysisQueryAdapter(app) {
         ?? project?.binaryHash
         ?? project?.binary?.hash
         ?? null;
+      // Backend.open() intentionally clears binaryId and computes it lazily.
+      // The query snapshot is created before the function producer executes, so
+      // the adapter itself must cross the canonical identity boundary here.
+      if (!binaryId && typeof app?.backend?.ensureBinaryId === 'function') {
+        try {
+          binaryId = await app.backend.ensureBinaryId({
+            signal: options.signal ?? null,
+            onProgress: options.onIdentityProgress ?? options.onProgress,
+          });
+        } catch (error) {
+          if (options.signal?.aborted || error?.name === 'AbortError' || error?.stale) throw error;
+        }
+      }
       if (!binaryId && typeof app?.ensureAnalysisIdentity === 'function') {
         try { binaryId = await app.ensureAnalysisIdentity(); } catch { /* handled below */ }
       }
