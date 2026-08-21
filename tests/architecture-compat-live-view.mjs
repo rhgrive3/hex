@@ -143,7 +143,7 @@ console.log("  ok Case 2 control-flow projection parity");
 
 // Case 14 — no registry snapshot remains in js/architecture/index.js
 {
-  const code = fs.readFileSync("/workspaces/hex/js/architecture/index.js", "utf8");
+  const code = fs.readFileSync(new URL("../js/architecture/index.js", import.meta.url), "utf8");
   assert.ok(!code.includes("const BUILTINS = new Map"));
   assert.ok(!code.includes("for (const plugin of architecturePluginsV2()) registerArchitectureAdapter"));
   console.log("  ok Case 14 no registry snapshot in source");
