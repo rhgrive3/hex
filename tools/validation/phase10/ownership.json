@@ -21,6 +21,7 @@
   ],
   "allowedExact": [
     ".github/workflows/phase10-release-validation.yml",
+    ".github/workflows/phase11-release-validation.yml",
     ".github/workflows/generated-sync.yml",
     ".github/workflows/generated-userscript-autofix.yml",
     ".github/workflows/userscript-host.yml",
@@ -50,7 +51,11 @@
     "tests/dev-agent/context-contracts.mjs",
     "js/ai/dev/protocol/context-selection.js",
     "tests/dev-agent/context-selection.mjs",
-    "js/ai/dev/workers/contracts.js"
+    "js/ai/dev/workers/contracts.js",
+    "tests/ai-tool-registry-module-boundary.mjs",
+    "tests/architecture-compat-live-view.mjs",
+    "tests/phase-runner-contract.mjs",
+    "tests/runtime-module-binding-contract.mjs"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",

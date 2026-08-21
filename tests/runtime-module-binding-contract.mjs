@@ -269,9 +269,9 @@ console.log("Testing RuntimeModuleBinding contract and trust rules...");
 // Static guard
 {
   const files = [
-    "/workspaces/hex/js/runtime/provider.js",
-    "/workspaces/hex/js/runtime/debugger-provider.js",
-    "/workspaces/hex/js/runtime/instrumentation-provider.js",
+    new URL("../js/runtime/provider.js", import.meta.url),
+    new URL("../js/runtime/debugger-provider.js", import.meta.url),
+    new URL("../js/runtime/instrumentation-provider.js", import.meta.url),
   ];
   for (const f of files) {
     const src = fs.readFileSync(f, "utf8");
