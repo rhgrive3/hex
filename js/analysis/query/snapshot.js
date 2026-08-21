@@ -79,7 +79,10 @@ export function assertAnalysisSnapshot(snapshot) {
   if (snapshot.schemaVersion !== ANALYSIS_SNAPSHOT_SCHEMA_VERSION) throw new TypeError("analysis-snapshot-version-mismatch");
   const id = String(snapshot.binaryId ?? "").trim();
   if (!id) throw new TypeError("analysis-snapshot-binary-id-required");
-  normalizeCreatedAt(snapshot.createdAt);
+  // createdAt is not part of semantic identity. Older schema-v1 callers may
+  // omit it; validate it only when supplied while keeping identity fields
+  // strictly self-verifying.
+  if (snapshot.createdAt != null) normalizeCreatedAt(snapshot.createdAt);
   const tuple = identityTuple({
     binaryId: id,
     projectRevision: snapshot.projectRevision,
