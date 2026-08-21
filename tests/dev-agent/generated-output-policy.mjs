@@ -26,9 +26,12 @@ for (const workflow of [
   '.github/workflows/generated-sync.yml',
   '.github/workflows/generated-userscript-autofix.yml',
   '.github/workflows/userscript-host.yml',
+  'tests/semantic-v2/integration-userscript-sync.test.mjs',
 ]) {
   const source = fs.readFileSync(path.join(ROOT, workflow), 'utf8');
   assert.match(source, /tools\/validation\/generated-output-policy\.mjs/, `${workflow} must use the canonical policy`);
-  assert.match(source, /steps\.generated-policy\.outputs\.mode/, `${workflow} must honor the canonical policy result`);
+  if (workflow.startsWith('.github/')) {
+    assert.match(source, /steps\.generated-policy\.outputs\.mode/, `${workflow} must honor the canonical policy result`);
+  }
 }
 console.log('generated output policy: ok');
