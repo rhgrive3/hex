@@ -8,11 +8,15 @@
     "verdict",
     "verifier",
     "product",
+    "backend",
+    "testExecution",
+    "gates",
+    "deterministicDigest",
     "capabilities",
     "evidenceDigest"
   ],
   "properties": {
-    "schemaVersion": { "type": "string" },
+    "schemaVersion": { "type": "string", "const": "phase9-release-evidence/v2" },
     "phase": { "type": "integer", "const": 9 },
     "verdict": { "type": "string", "enum": ["READY", "BLOCKING", "NOT-INTEGRATED"] },
     "verifier": {
@@ -29,9 +33,30 @@
       "properties": {
         "commitSha": { "type": "string" },
         "treeSha": { "type": "string" },
-        "clean": { "type": "boolean" }
+        "clean": { "type": "boolean" },
+        "dirtyFiles": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "backend": {
+      "type": ["object", "null"],
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" },
+        "proofAuthority": { "type": "string", "enum": ["none", "test-only", "heuristic", "exact"] },
+        "capabilityFingerprint": { "type": "string" }
+      }
+    },
+    "testExecution": {
+      "type": "object",
+      "required": ["selected", "total", "allPassed"],
+      "properties": {
+        "selected": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "allPassed": { "type": "boolean" }
+      }
+    },
+    "gates": { "type": "array", "items": { "type": "object", "required": ["id", "status", "ok"] } },
+    "deterministicDigest": { "type": "string" },
     "capabilities": { "type": "object" },
     "evidenceDigest": { "type": "string" }
   },

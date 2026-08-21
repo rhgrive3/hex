@@ -47,6 +47,7 @@ export function createSolverResult({
   backend = 'unknown',
   backendVersion = '0.0.0',
   queryHash = null,
+  lifecycle = {},
 }) {
   if (!Object.values(SOLVER_STATUS).includes(status)) {
     throw new TypeError(`createSolverResult: invalid solver status '${status}'`);
@@ -62,6 +63,21 @@ export function createSolverResult({
     }
   }
 
+  const normalizedLifecycle = Object.freeze({
+    timedOut: lifecycle?.timedOut === true,
+    cancelled: lifecycle?.cancelled === true,
+    stale: lifecycle?.stale === true,
+    disposed: lifecycle?.disposed === true,
+    budgetExceeded: lifecycle?.budgetExceeded === true,
+    late: lifecycle?.late === true,
+    publishable: lifecycle?.publishable !== false &&
+      lifecycle?.timedOut !== true &&
+      lifecycle?.cancelled !== true &&
+      lifecycle?.stale !== true &&
+      lifecycle?.disposed !== true &&
+      lifecycle?.budgetExceeded !== true,
+  });
+
   return Object.freeze({
     status,
     model: normalizedModel,
@@ -75,5 +91,17 @@ export function createSolverResult({
     backend: String(backend),
     backendVersion: String(backendVersion),
     queryHash: queryHash ? String(queryHash) : null,
+    lifecycle: normalizedLifecycle,
   });
+}
+
+export function isValidSolverResult(result, { query = null, backend = null } = {}) {
+  if (!result || typeof result !== 'object' || !Object.values(SOLVER_STATUS).includes(result.status)) return false;
+  if (backend) {
+    if (result.backend !== String(backend.id) || result.backendVersion !== String(backend.version)) return false;
+  }
+  if (query?.queryHash && result.queryHash !== String(query.queryHash)) return false;
+  if (result.lifecycle?.publishable === false && (result.status === SOLVER_STATUS.SAT || result.status === SOLVER_STATUS.UNSAT)) return false;
+  if (result.status !== SOLVER_STATUS.SAT && result.model != null) return false;
+  return true;
 }

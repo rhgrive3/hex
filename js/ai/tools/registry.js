@@ -87,7 +87,9 @@ export class ToolRegistry {
       if (!record) {
         raw = await raceAbort(tool.execute(args, { ...options, context: this.context }), options.signal);
         if (tool.outputSchema) assertSchema(raw, tool.outputSchema, 'tool_failed');
-        if (tool.storeResult !== false) {
+        const lifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
+        const publishable = lifecycle.publishable !== false && lifecycle.late !== true;
+        if (publishable && tool.storeResult !== false) {
           record = this.observationStore.put({
             tool: name, arguments: jsonSafe(args), fullResult: raw,
             functionIdentity: args.functionAddress ?? args.address ?? null,
@@ -97,8 +99,10 @@ export class ToolRegistry {
       }
       const result = jsonSafe(raw);
       const sourceRef = record ? { detailRef: record.id, path: '$', bindingKey: record.binding.key } : null;
-      let evidence = record?.evidence || null;
-      if (!evidence) {
+      let evidence = record?.evidence || [];
+      const resultLifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
+      const resultPublishable = resultLifecycle.publishable !== false && resultLifecycle.late !== true;
+      if (resultPublishable && !evidence) {
         evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: tool.verifier === true, sourceRef }) : [];
         if (record) record.evidence = evidence;
       }
@@ -391,7 +395,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
     },
     required: ['fromBlock'],
     additionalProperties: false,
-  }, async ({ functionAddress, fromBlock, toBlock, edgeCondition, preconditions }) => {
+  }, async ({ functionAddress, fromBlock, toBlock, edgeCondition, preconditions }, callOptions = {}) => {
     const ir = functionAddress ? await legacy.get_function(functionAddress) : null;
     const backend = defaultSolverRegistry.getDefaultBackend();
     return verifyConditionalEdgeFeasibility({
@@ -401,6 +405,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
       edgeCondition,
       preconditions,
       backend,
+      options: { signal: callOptions.signal, timeoutMs: callOptions.timeoutMs },
     });
   }, {
     verifier: true,
@@ -422,7 +427,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
       preconditions: { type: 'object' },
     },
     additionalProperties: false,
-  }, async ({ beforeFunctionAddress, afterFunctionAddress, beforeTarget, afterTarget, preconditions }) => {
+  }, async ({ beforeFunctionAddress, afterFunctionAddress, beforeTarget, afterTarget, preconditions }, callOptions = {}) => {
     const beforeIr = beforeFunctionAddress ? await legacy.get_function(beforeFunctionAddress) : null;
     const afterIr = afterFunctionAddress ? await legacy.get_function(afterFunctionAddress) : null;
     const backend = defaultSolverRegistry.getDefaultBackend();
@@ -433,6 +438,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
       afterTarget,
       preconditions,
       backend,
+      options: { signal: callOptions.signal, timeoutMs: callOptions.timeoutMs },
     });
   }, {
     verifier: true,
@@ -453,7 +459,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
       patchedTarget: { type: 'object' },
     },
     additionalProperties: false,
-  }, async ({ originalBinaryId, patchedPatchSetId, originalTarget, patchedTarget }) => {
+  }, async ({ originalBinaryId, patchedPatchSetId, originalTarget, patchedTarget }, callOptions = {}) => {
     const backend = defaultSolverRegistry.getDefaultBackend();
     return verifyPatchEquivalence({
       originalBinaryId,
@@ -461,6 +467,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
       originalTarget,
       patchedTarget,
       backend,
+      options: { signal: callOptions.signal, timeoutMs: callOptions.timeoutMs },
     });
   }, {
     verifier: true,

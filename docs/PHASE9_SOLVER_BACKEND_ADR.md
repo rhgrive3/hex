@@ -1,6 +1,6 @@
 # ADR-0009: Solver Backend Provider Selection for Phase 9
 
-- **Status**: Proposed / Evaluation Baseline (P9-1)
+- **Status**: Accepted for the initial browser-safe exact scope; Z3 remains a future candidate
 - **Deciders**: Hex Architecture Team / Phase 9 Owner
 - **Date**: 2026-08-20
 - **Scope**: Master Architecture Phase 9 — Solver-backed Verification
@@ -84,7 +84,7 @@ We need to evaluate candidate solver providers for Hex's `SolverBackend` interfa
 ## 4. Decision Outcome
 
 1. **Local-first WASM Architecture**: Hex adopts a local-first WebAssembly solver architecture executing in an isolated WebWorker.
-2. **Primary Provider (Wave 1 Candidate)**: **Z3 WASM** is selected as the primary general-purpose solver backend for initial Wave 1 integration due to its proven stability, MIT license, and standard SMT-LIB compliance.
+2. **Primary Provider (historical Wave 1 candidate)**: **Z3 WASM** was selected for evaluation due to its proven stability, MIT license, and standard SMT-LIB compliance; the live implementation amendment below supersedes this as the production default.
 3. **Secondary / Specialized Candidate**: **Bitwuzla WASM** is designated as the preferred target for high-performance bitvector-only optimization in subsequent phases.
 4. **Remote Solver Policy**: Remote solvers are **strictly forbidden** as default or silent fallback. Any future remote solver interface will require explicit user opt-in, policy disclosure, and strict redaction of binary provenance.
 
@@ -98,3 +98,21 @@ We need to evaluate candidate solver providers for Hex's `SolverBackend` interfa
    - Hard cancellation via WebWorker `terminate()` if cooperative interrupt exceeds safety budget.
 3. Lowering from Hex solver-neutral Expr DAG to SMT-LIB 2.6 / Z3 AST within the worker.
 4. Model extraction and normalization into Hex `SolverResult.model`.
+
+## 6. Live implementation amendment (Phase 9 hardening)
+
+The candidate matrix above is an evaluation baseline, not evidence that a Z3
+bundle is present. The live implementation uses `hex-exhaustive-bv` as the
+initial exact provider. It is a deterministic finite-domain Bool/BV decision
+procedure with an explicit BV width/assignment budget, model extraction, and
+complete-enumeration UNSAT semantics. It runs directly in Node/CI and through
+`WorkerSolverBackend` in browser builds; its memory budget is reported as
+`measured-only`, never as an unenforceable hard cap.
+
+The currently available `z3-solver` browser package was not promoted as the
+production default because its browser integration requires cross-origin
+isolation (`SharedArrayBuffer`/COOP-COEP) and a worker asset lifecycle that is
+not guaranteed by Hex's iPad/userscript CSP path. A future Z3 adapter may be
+added only after those runtime requirements are independently verified. The
+finite backend therefore returns `RESOURCE_LIMIT`/`UNSUPPORTED` outside its
+explicit scope rather than pretending to be an unbounded SMT engine.

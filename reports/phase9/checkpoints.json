@@ -3,13 +3,19 @@
   "checkpoints": [
     {
       "id": "P9-FINAL",
-      "timestamp": "2026-08-21T03:12:19.904Z",
-      "result": "accepted",
-      "integrationSha": "73cdd208187a93a535d5fdfa7a4ab00728ed7f95",
-      "integrationTreeSha": "18dab371e5272d887680b81d47c8e6e1c5320162",
-      "evidenceDigest": "d67e754e370823a3ef3eb409c5af99ac337fa8a04482e3d6a0cda900e21a5877",
+      "result": "blocking",
+      "integrationSha": "ccb472477322ff3447e78e637ec66a06636bd7e0",
+      "integrationTreeSha": "a32126138ce96557fc4dcf9a8e2167273c935bf9",
+      "verifierId": "phase9.verifier",
+      "verifierVersion": "2.0.0",
+      "backendId": "hex-exhaustive-bv",
+      "backendVersion": "1.0.0",
+      "proofAuthority": "exact",
+      "capabilityFingerprint": "4ea05f339da8463fe444f472d8563dae",
+      "deterministicDigest": "94855d7a6678b5773976586030cfaf94",
+      "evidenceDigest": "a1c8805e106108f85b29b3fe9da53a27",
       "gatesPassed": 6,
-      "testFiles": 19
+      "testFiles": 25
     }
   ]
 }
