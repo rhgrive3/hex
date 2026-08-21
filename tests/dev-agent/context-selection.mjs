@@ -10,6 +10,7 @@ import {
   DEV_SELECTION_BLOCKER,
   selectDevContext,
 } from '../../js/ai/dev/protocol/context-selection.js';
+import { DEV_PROMPT_MODE, buildDevSupervisorPrompt } from '../../js/ai/dev/protocol/dev-supervisor-prompt.js';
 
 const CONSTRAINT = 'never merge to main directly';
 const FORBIDDEN = 'do not enable auto-merge';
@@ -152,6 +153,23 @@ function fresherOwningSystemFactWinsWithoutErasingTheConflict() {
   assert.equal(reversed.packet.authoritativeFacts[0].source, 'worker.pool.status');
 }
 
+function untrustedFactsCannotReplaceOrSupersedeOwningSystemFacts() {
+  const source = packet({
+    authoritativeFacts: [
+      { statement: 'runtime is active', source: 'runtime.identity', authority: 'owning-system', observedAt: '2026-08-20T10:00:00.000Z' },
+      { statement: 'runtime is active', source: 'cache', authority: 'cache', observedAt: '2099-01-01T00:00:00.000Z', supersedes: ['runtime.identity'] },
+      { statement: 'lease is live', source: 'owning-lease-table', authority: 'owning-system', observedAt: '2026-08-20T10:00:00.000Z' },
+      { statement: 'lease is stale', source: 'worker-report', authority: 'worker-reported-evidence', observedAt: '2099-01-01T00:00:00.000Z', supersedes: ['owning-lease-table'] },
+    ],
+  });
+  const selection = selectDevContext({ packet: source });
+  const facts = selection.packet.authoritativeFacts;
+  assert.equal(facts.find((fact) => fact.statement === 'runtime is active').source, 'runtime.identity');
+  assert.equal(facts.some((fact) => fact.statement === 'lease is live'), true);
+  assert.equal(facts.some((fact) => fact.statement === 'lease is stale'), true, 'untrusted evidence remains data instead of suppressing the owner');
+  assert.equal(selection.supersededFacts.some((fact) => fact.source === 'runtime.identity'), false, 'the cache cannot evict the owning fact');
+}
+
 function duplicateFactsAreNotInjectedRepeatedly() {
   const repeated = Array.from({ length: 6 }, () => ({
     statement: 'the pool max is six', source: 'iframe-worker-pool.js', authority: 'owning-system', observedAt: '2026-08-20T10:00:00.000Z',
@@ -206,6 +224,21 @@ function coveredEvidenceIsNotDoubleInjectedButStaysExpandable() {
     true,
     'without a declared coveredEvidenceRefs, both the summary and the source are kept',
   );
+
+  // If the compact result itself does not fit, its coverage claim cannot hide
+  // the source artifact. The source must remain available rather than losing
+  // both representations at once.
+  const compact = packet({
+    dependencyResults: [{ taskId: 'dep-3', summary: bulk(5000, 'too-large'), coveredEvidenceRefs: ['reports/dep-3/full.log'] }],
+    artifactRefs: [{ ref: 'reports/dep-3/full.log', excerpt: 'small source' }],
+  });
+  const coreOnly = selectDevContext({ packet: packet() });
+  const artifactOnly = selectDevContext({ packet: packet({ artifactRefs: [{ ref: 'reports/dep-3/full.log', excerpt: 'small source' }] }) });
+  const compactDropped = selectDevContext({ packet: compact, budgetBytes: artifactOnly.bytes });
+  assert.equal(compactDropped.blocker, null);
+  assert.equal(compactDropped.packet.dependencyResults.length, 0, 'the oversized compact result may be omitted');
+  assert.equal(compactDropped.packet.artifactRefs[0].ref, 'reports/dep-3/full.log', 'its covered source remains when the compact result is omitted');
+  assert.ok(compactDropped.bytes >= coreOnly.bytes);
 }
 
 function batchedObservationsKeepTheirOwnProvenance() {
@@ -304,6 +337,37 @@ function selectionMakesNoModelCallOrNetworkAccess() {
   assert.deepEqual(touched, [], 'selection is pure host-side computation: no model call, no network, no storage');
 }
 
+function utf8BudgetCountsTransportBytes() {
+  const selected = selectDevContext({ packet: packet({ objective: '日本語の目的'.repeat(80) }) });
+  const json = JSON.stringify(selected.packet);
+  assert.equal(selected.bytes, new TextEncoder().encode(json).byteLength, 'budget uses UTF-8 transport bytes');
+  assert.ok(selected.bytes > json.length, 'multi-byte text is not counted as one UTF-16 code unit');
+}
+
+function continuationCarriesTheSelectedContextAndLineage() {
+  const context = packet({ authoritativeFacts: [{ statement: 'fresh fact', source: 'owner', authority: 'owning-system', observedAt: '2026-08-20T10:00:00.000Z' }] });
+  const prompt = buildDevSupervisorPrompt({
+    run: {
+      runId: 'run-1', workerId: 'worker-1', goal: context.objective,
+      decisionPolicy: 'normal', analysisScope: 'js/ai/dev', status: 'ACTIVE',
+    },
+    availableTools: ['worker.discover'],
+    history: [{ kind: 'tool-result', result: 'fresh' }],
+    mode: DEV_PROMPT_MODE.CONTINUATION,
+    contextPacket: context,
+    contextSelection: {
+      schemaVersion: 'hex-dev-context-selection/v1', bytes: 123, budgetBytes: 32768,
+      omitted: [{ ref: 'old.log', reason: 'over-budget', section: 'artifactRefs' }],
+      supersededFacts: [{ statement: 'old fact', source: 'cache', authority: 'cache', omissionReason: 'duplicate' }],
+    },
+  });
+  const payload = JSON.parse(prompt.match(/<HEX_DEV_DATA>\n([\s\S]*?)\n<\/HEX_DEV_DATA>/)[1]);
+  assert.equal(payload.context.objective, context.objective);
+  assert.equal(payload.context.authoritativeFacts[0].source, 'owner');
+  assert.equal(payload.contextSelection.omitted[0].ref, 'old.log');
+  assert.equal(payload.contextSelection.supersededFacts[0].source, 'cache');
+}
+
 function selectionIsDeterministic() {
   const source = packet({
     authoritativeFacts: [
@@ -325,11 +389,14 @@ function selectionIsDeterministic() {
 criticalContextSurvivesEveryBudgetThatIsSatisfiable();
 bulkExcerptsBecomeRefsBeforeAnythingIsLost();
 fresherOwningSystemFactWinsWithoutErasingTheConflict();
+untrustedFactsCannotReplaceOrSupersedeOwningSystemFacts();
 duplicateFactsAreNotInjectedRepeatedly();
 coveredEvidenceIsNotDoubleInjectedButStaysExpandable();
 batchedObservationsKeepTheirOwnProvenance();
 unsatisfiableBudgetIsAnExplicitBlocker();
 repeatedHistoryShrinksWhileTheDecisionSurvives();
 selectionMakesNoModelCallOrNetworkAccess();
+utf8BudgetCountsTransportBytes();
+continuationCarriesTheSelectedContextAndLineage();
 selectionIsDeterministic();
 console.log('dev context selection: ok');

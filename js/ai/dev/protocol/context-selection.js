@@ -27,8 +27,14 @@ export const DEV_SELECTION_BLOCKER = Object.freeze({
   CONTEXT_BUDGET_TOO_SMALL: 'context-budget-too-small',
 });
 
+/* The engine uses a bounded default; callers may still pass null explicitly
+   when they are proving an unbounded selection. The pure selector itself keeps
+   its null default so it never invents a transport policy. */
+export const DEV_DEFAULT_CONTEXT_BUDGET_BYTES = 32 * 1024;
+
 /* Priority order. Lower number is selected first and dropped last. */
 const OPTIONAL_TIERS = ['dependencyResults', 'artifactRefs', 'contextDelta'];
+const UTF8_ENCODER = typeof TextEncoder === 'function' ? new TextEncoder() : null;
 
 export function selectDevContext({ packet, budgetBytes = null, expandEvidenceRefs = [] } = {}) {
   if (!packet || typeof packet !== 'object') throw new TypeError('Context selection requires a ContextPacket.');
@@ -41,6 +47,8 @@ export function selectDevContext({ packet, budgetBytes = null, expandEvidenceRef
      time -- unless this task explicitly asked to expand it, which is the audit
      path. Coverage is only honoured when the compact item states it; nothing is
      inferred. */
+  /* Coverage only suppresses an artifact after the compact representation that
+     declared the coverage actually survived selection. */
   const covered = coveredRefs(packet, expand);
 
   // Tiers 1 and 2. These are the reason the packet exists; they are never
@@ -105,6 +113,12 @@ export function selectDevContext({ packet, budgetBytes = null, expandEvidenceRef
       }
       core[tier].push(item.value);
       bytes += cost;
+      if (tier === 'dependencyResults') {
+        for (const ref of item.value?.coveredEvidenceRefs || []) {
+          const normalized = String(ref);
+          if (!expand.has(normalized)) covered.add(normalized);
+        }
+      }
     }
   }
 
@@ -138,6 +152,9 @@ function resolveFacts(input, omitted) {
   const facts = [...input];
   const supersededKeys = new Set();
   for (const fact of facts) {
+    /* A Worker/cache observation is evidence, not authority. Only the
+       host-bound owning-system fact may cause another fact to be suppressed. */
+    if (!isOwningSystemFact(fact)) continue;
     for (const key of fact?.supersedes || []) supersededKeys.add(String(key));
   }
 
@@ -171,16 +188,23 @@ function resolveFacts(input, omitted) {
 }
 
 function fresher(a, b) {
+  // A cache or Worker report can never replace an owning-system observation,
+  // even if its caller supplied a later timestamp. Timestamps only order facts
+  // after the authority boundary has been respected.
+  const aOwning = isOwningSystemFact(a);
+  const bOwning = isOwningSystemFact(b);
+  if (aOwning !== bOwning) return aOwning ? a : b;
+
   const at = Date.parse(a?.observedAt || '');
   const bt = Date.parse(b?.observedAt || '');
   if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at > bt ? a : b;
   if (Number.isFinite(bt) && !Number.isFinite(at)) return b;
   if (Number.isFinite(at) && !Number.isFinite(bt)) return a;
-  // Equally fresh: the owning system outranks a report about it.
-  const aOwning = a?.authority === 'owning-system';
-  const bOwning = b?.authority === 'owning-system';
-  if (aOwning !== bOwning) return aOwning ? a : b;
   return a;
+}
+
+function isOwningSystemFact(fact) {
+  return fact?.authority === 'owning-system';
 }
 
 /* Only coverage that a compact item actually declared. If nothing states that a
@@ -188,9 +212,6 @@ function fresher(a, b) {
    missing. */
 function coveredRefs(packet, expand) {
   const covered = new Set();
-  for (const dependency of packet.dependencyResults || []) {
-    for (const ref of dependency?.coveredEvidenceRefs || []) covered.add(String(ref));
-  }
   for (const ref of packet.coveredEvidenceRefs || []) covered.add(String(ref));
   for (const ref of expand) covered.delete(ref);
   return covered;
@@ -232,7 +253,14 @@ function normalizeBudget(value) {
 /* Characters, not tokens: a tokenizer dependency is not worth its weight on iOS
    and a byte budget is what the transport actually cares about. */
 function byteLength(value) {
-  return JSON.stringify(value)?.length ?? 0;
+  const json = JSON.stringify(value) ?? '';
+  if (UTF8_ENCODER) return UTF8_ENCODER.encode(json).byteLength;
+  let bytes = 0;
+  for (const character of json) {
+    const codePoint = character.codePointAt(0);
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
 }
 /* Copies rather than freezing in place: the incoming packet is already frozen
    and belongs to the caller, so the selection must never write through to it. */
