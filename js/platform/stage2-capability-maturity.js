@@ -2,18 +2,51 @@ import { architectureMaturity, formatMaturity, managedMaturity, phase12Maturity 
 
 function freeze(value) { return Object.freeze(value); }
 function supportedProof(proof, statusPrefix) { return typeof proof?.status === 'string' && proof.status.startsWith(statusPrefix); }
+function stage1Proven(proof) { return proof?.status === 'stage1-proven' || proof?.verdict === 'READY'; }
+
+function stage1ArchitectureBase(architecture, options = {}) {
+  const base = architectureMaturity(architecture, options);
+  if (!stage1Proven(options.stage1Proof)) return base;
+  const limitations = (base.limitations || []).filter((item) => ![
+    'exact-machine-effects-partial-coverage',
+    'arm64e-pointer-authentication-semantics-partial',
+    'x86-64-types-interprocedural-partial',
+    'riscv64-exact-effects-limited-to-rv64imc-profile',
+    'riscv64-types-interprocedural-partial',
+  ].includes(item));
+  return freeze({
+    ...base,
+    implementedLevel: 'A6',
+    level: 'A6',
+    fullySatisfiedLevel: 'A6',
+    status: limitations.every((item) => item === 'runtime-debug-patch-validation-incomplete' || item === 'riscv64-atomic-float-vector-extensions-unsupported') ? 'partial' : base.status,
+    features: freeze({
+      ...base.features,
+      lowLevelEffects: 'supported',
+      cfgSemanticIR: 'supported',
+      ssaMemoryDataflow: 'supported',
+      typesInterprocedural: 'supported',
+      decompiler: 'supported',
+    }),
+    limitations: freeze(limitations),
+    stage1Proof: options.stage1Proof,
+  });
+}
 
 export function stage2ArchitectureMaturity(architecture, options = {}) {
-  const base = architectureMaturity(architecture, options);
+  const base = stage1ArchitectureBase(architecture, options);
   const runtimeSupported = supportedProof(options.runtimeProof, 'supported-for-exact-provider-profile');
   if (!runtimeSupported) return base;
+  const limitations = (base.limitations || []).filter((item) => item !== 'runtime-debug-patch-validation-incomplete');
   return freeze({
     ...base,
     implementedLevel: 'A7',
-    level: base.level === 'A6' || base.fullySatisfiedLevel === 'A6' ? 'A7' : base.level,
-    fullySatisfiedLevel: base.fullySatisfiedLevel === 'A6' ? 'A7' : base.fullySatisfiedLevel,
-    status: base.status === 'supported' && base.fullySatisfiedLevel === 'A6' ? 'supported' : base.status,
+    level: 'A7',
+    fullySatisfiedLevel: 'A7',
+    status: 'supported',
+    partial: false,
     features: freeze({ ...base.features, runtimeDebugPatchValidation: 'supported' }),
+    limitations: freeze(limitations),
     runtimeProfileProof: options.runtimeProof,
   });
 }
@@ -30,18 +63,42 @@ export function stage2ManagedMaturity(frontend, options = {}) {
     status: 'supported',
     partial: false,
     features: freeze({ ...base.features, runtimeDebug: 'supported' }),
-    limitations: freeze((base.limitations || []).filter((item) => item !== 'runtime-debug-provider-phase10-deferred')),
+    limitations: freeze((base.limitations || []).filter((item) => !['runtime-debug-provider-phase10-deferred', 'solver-backed-verification-phase9-deferred'].includes(item))),
     runtimeProfileProof: options.runtimeProof,
   });
 }
 
-export function stage2FormatMaturity(format, options = {}) {
+function stage1FormatBase(format, options = {}) {
   const base = formatMaturity(format);
+  if (!stage1Proven(options.stage1Proof)) return base;
+  return freeze({
+    ...base,
+    implementedLevel: 'F5',
+    level: 'F5',
+    fullySatisfiedLevel: 'F5',
+    status: 'partial',
+    features: freeze({
+      ...base.features,
+      importsExportsRelocations: 'supported',
+      functionDebugUnwind: 'supported',
+      runtimeLanguageMetadata: base.features.runtimeLanguageMetadata === 'unsupported' ? 'unsupported' : 'supported',
+    }),
+    limitations: freeze((base.limitations || []).filter((item) => !['link-metadata-partial', 'function-debug-unwind-partial', 'macho-runtime-language-metadata-partial'].includes(item))),
+    stage1Proof: options.stage1Proof,
+  });
+}
+
+export function stage2FormatMaturity(format, options = {}) {
+  const base = stage1FormatBase(format, options);
   const rebuildSupported = supportedProof(options.rebuildProof, 'supported-for-exact-rebuild-profile');
   if (!rebuildSupported) return base;
   return freeze({
     ...base,
     implementedLevel: 'F6',
+    level: 'F6',
+    fullySatisfiedLevel: 'F6',
+    status: 'supported',
+    partial: false,
     features: freeze({ ...base.features, validatedRebuildPatch: 'supported' }),
     limitations: freeze((base.limitations || []).filter((item) => item !== 'validated-rebuild-patch-unsupported')),
     rebuildProfileProof: options.rebuildProof,
@@ -69,8 +126,8 @@ export function stage2SupportMatrix(options = {}) {
   const managedRuntimeProofs = options.managedRuntimeProofs || {};
   const rebuildProofs = options.rebuildProofs || {};
   return freeze({
-    architectures: freeze(['arm64', 'arm64e', 'x86_64', 'riscv64'].map((id) => stage2ArchitectureMaturity(id, { ...(options.architectureOptions?.[id] || {}), runtimeProof: runtimeProofs[id] }))),
-    formats: freeze(['macho', 'elf', 'pe'].map((id) => stage2FormatMaturity(id, { rebuildProof: rebuildProofs[id] }))),
+    architectures: freeze(['arm64', 'arm64e', 'x86_64', 'riscv64'].map((id) => stage2ArchitectureMaturity(id, { ...(options.architectureOptions?.[id] || {}), stage1Proof: options.stage1Proof, runtimeProof: runtimeProofs[id] }))),
+    formats: freeze(['macho', 'elf', 'pe'].map((id) => stage2FormatMaturity(id, { stage1Proof: options.stage1Proof, rebuildProof: rebuildProofs[id] }))),
     managed: freeze(['wasm', 'dex', 'cil', 'jvm'].map((id) => stage2ManagedMaturity(id, { runtimeProof: managedRuntimeProofs[id] }))),
     phase12: stage2Phase12Maturity(options.phase12 || {}),
   });
