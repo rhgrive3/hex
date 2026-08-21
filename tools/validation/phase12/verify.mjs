@@ -6,10 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { currentSupportMatrix } from '../../../js/platform/capability-maturity.js';
 import { verifyPhase11 } from '../phase11/verify.mjs';
 import { runPhase12Tests } from '../../../tests/phase12/run.mjs';
-import { loadManifest, validateManifest } from './ownership.mjs';
+import { loadManifest as loadOwnershipManifest, validateManifest } from './ownership.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_DIR = path.join(ROOT, 'reports/phase12');
+const PHASE_MANIFEST_PATH = path.join(ROOT, 'tools/validation/phase12/manifest.json');
 export const VERIFIER_ID = 'phase12.verifier';
 export const VERIFIER_VERSION = '1.0.0';
 export const SCHEMA_VERSION = 'phase12-release-evidence/v1';
@@ -58,7 +59,8 @@ function validateEvidenceShape(report) {
 
 export async function verifyPhase12(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
-  const manifest = loadManifest();
+  const ownership = loadOwnershipManifest();
+  const manifest = JSON.parse(fs.readFileSync(PHASE_MANIFEST_PATH, 'utf8'));
   const product = getProductIdentity();
   if (!product.clean) {
     const result = blocking('product worktree is dirty', product);
@@ -70,7 +72,7 @@ export async function verifyPhase12(argv = process.argv.slice(2)) {
     if (!args.shadow) throw new Error(`${result.reason}: expected ${args.expectSha}, got ${product.commitSha}`);
     return result;
   }
-  if (validateManifest(manifest).length) throw new Error(`phase12 ownership manifest invalid: ${validateManifest(manifest).join('; ')}`);
+  if (validateManifest(ownership).length) throw new Error(`phase12 ownership manifest invalid: ${validateManifest(ownership).join('; ')}`);
   const foundation = manifest.foundation;
   if (!isSha(foundation.commitSha) || !isSha(foundation.treeSha)) throw new Error('phase12 foundation identity is not exact');
   const ancestor = spawnSync('git', ['merge-base', '--is-ancestor', foundation.commitSha, product.commitSha], { cwd: ROOT });
