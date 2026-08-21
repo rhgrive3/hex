@@ -1,0 +1,45 @@
+name: Phase 12 release validation
+
+on:
+  pull_request:
+    paths:
+      - 'js/phase12/**'
+      - 'js/knowledge/phase12-**'
+      - 'js/collaboration/**'
+      - 'js/pattern/**'
+      - 'js/rebuild/**'
+      - 'tests/phase12/**'
+      - 'tools/validation/phase12/**'
+      - 'package.json'
+      - 'docs/SUPPORT_MATRIX.md'
+      - '.github/workflows/phase12-release-validation.yml'
+  workflow_dispatch:
+    inputs:
+      expect_sha:
+        description: Exact candidate commit SHA to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expect_sha || github.sha }}
+          fetch-depth: 0
+      - name: Resolve current main for ownership proof
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Verify exact candidate
+        env:
+          VERIFY_SHA: ${{ inputs.expect_sha || github.sha }}
+        run: npm run phase12:verify -- --expect-sha "$VERIFY_SHA"

@@ -469,6 +469,19 @@ export function capabilityDisplay(maturity) {
   });
 }
 
+// Phase 12 begins with low-authority, evidence-producing paths. These entries
+// deliberately do not promote support for remote collaboration, arbitrary
+// pattern mutation, or general binary rebuilding.
+export function phase12Maturity() {
+  return Object.freeze({
+    knowledgePackages: Object.freeze({ status: 'partial', authority: 'suggestion-only', limitations: Object.freeze(['legacy-v2-compatibility-adapter', 'package-derived-facts-require-local-promotion']) }),
+    capabilityRules: Object.freeze({ status: 'partial', authority: 'deterministic-evidence-only', limitations: Object.freeze(['partial-upstream-propagates', 'no-ai-capability-minting']) }),
+    collaboration: Object.freeze({ status: 'partial', authority: 'local-canonical-only', limitations: Object.freeze(['remote-security-gate-required', 'derived-analysis-excluded']) }),
+    patterns: Object.freeze({ status: 'partial', authority: 'read-only-bounded', limitations: Object.freeze(['no-arbitrary-javascript', 'no-loader-semantic-mutation']) }),
+    rebuild: Object.freeze({ status: 'partial', authority: 'R0-shadow-only', limitations: Object.freeze(['operation-profile-proof-required', 'publication-explicit-and-atomic']) }),
+  });
+}
+
 export function currentSupportMatrix(options = {}) {
   const decoderSupport = options.decoderSupport || { arm64: true, x86_64: true };
   const decoderFor = (id) => id === 'arm64e'
@@ -478,5 +491,6 @@ export function currentSupportMatrix(options = {}) {
     architectures: Object.freeze(['arm64', 'arm64e', 'x86_64', 'riscv64'].map((id) => architectureMaturity(id, { decoderAvailable: decoderFor(id) }))),
     formats: Object.freeze(['macho', 'elf', 'pe'].map((id) => formatMaturity(id))),
     managed: Object.freeze(['wasm', 'dex', 'cil', 'jvm'].map((id) => managedMaturity(id))),
+    phase12: phase12Maturity(),
   });
 }

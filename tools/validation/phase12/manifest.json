@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "phase12-manifest/v1",
+  "phase": 12,
+  "foundation": {
+    "commitSha": "4e6df2d645b86628f542a1ebcbb91d13b169b4fb",
+    "treeSha": "d1d5e6015fcb0c32e5e5eb9e06ac45415bd3d668",
+    "observedAt": "2026-08-21T04:43:23.868Z",
+    "source": "live origin/main",
+    "phase11Evidence": {
+      "commitSha": "4e6df2d645b86628f542a1ebcbb91d13b169b4fb",
+      "treeSha": "d1d5e6015fcb0c32e5e5eb9e06ac45415bd3d668",
+      "verifierId": "phase11.verifier",
+      "verifierVersion": "1.0.0",
+      "evidenceDigest": "a33a882bcda7d308f4e92d9964811715b43ad6901c9aaef4c53c6e234410bb87"
+    }
+  },
+  "versions": {
+    "packageEnvelope": "hex-phase12-package-envelope-v1",
+    "knowledgeCompatibility": "hex-knowledge-pack-v2",
+    "changeLog": "hex-project-operation-v1",
+    "patternLanguage": "hex-pattern-language-v1",
+    "rebuildPlan": "hex-rebuild-plan-v1",
+    "evidence": "phase12-release-evidence/v1"
+  },
+  "lanes": ["p12-k", "p12-c", "p12-p", "p12-r", "p12-reviewer", "p12-integration"],
+  "testRoots": ["tests/phase12"],
+  "permanentVerifier": {
+    "command": "npm run phase12:verify -- --expect-sha <exact-candidate-sha>",
+    "id": "phase12.verifier",
+    "version": "1.0.0",
+    "evidencePath": "reports/phase12/phase12-release-evidence.json"
+  },
+  "requiredBaselineChecks": [
+    "live-main-exact-head",
+    "phase11-current-head-verifier",
+    "project-artifact-boundary",
+    "binary-project-entity-identity",
+    "plugin-isolation",
+    "knowledge-signature-recognition-compatibility",
+    "patch-loader-rebuild-seam",
+    "canonical-test-discovery",
+    "generated-output-ownership",
+    "open-pr-and-ci-state"
+  ],
+  "supportTruth": {
+    "nativeRebuild": "unsupported-until-operation-profile-proof",
+    "remoteCollaboration": "unsupported-until-security-gate",
+    "patternMutation": "unsupported-read-only-v1",
+    "aiCapabilityMinting": "unsupported"
+  }
+}

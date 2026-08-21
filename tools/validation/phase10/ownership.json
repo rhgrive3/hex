@@ -10,7 +10,14 @@
     "js/core/identity/",
     "js/core/evidence/",
     "tests/phase10/",
-    "tools/validation/phase10/"
+    "tools/validation/phase10/",
+    "js/collaboration/",
+    "js/knowledge/phase12-",
+    "js/pattern/",
+    "js/phase12/",
+    "js/rebuild/",
+    "tests/phase12/",
+    "tools/validation/phase12/"
   ],
   "allowedExact": [
     ".github/workflows/phase10-release-validation.yml",
@@ -21,6 +28,10 @@
     "tests/semantic-v2/integration-userscript-sync.test.mjs",
     "tools/validation/generated-output-policy.mjs",
     "tools/validation/phase11/ownership.json",
+    ".github/workflows/phase12-release-validation.yml",
+    ".github/workflows/invariant-gates.yml",
+    "docs/SUPPORT_MATRIX.md",
+    "js/platform/capability-maturity.js",
     "userscript/hex.user.template.js",
     "userscript/release-version.json",
     "package.json",
