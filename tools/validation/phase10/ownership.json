@@ -37,7 +37,8 @@
     "package.json",
     "js/ai/dev/protocol/dev-supervisor-prompt.js",
     "tests/dev-agent/tool-contract-parity.mjs",
-    "js/ai/tools/registry.js"
+    "js/ai/tools/registry.js",
+    "tests/phase9/integration/late-result-boundary.test.mjs"
   ],
   "forbiddenPrefixes": [
     "js/semantics/",

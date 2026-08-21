@@ -99,14 +99,15 @@ export class ToolRegistry {
       }
       const result = jsonSafe(raw);
       const sourceRef = record ? { detailRef: record.id, path: '$', bindingKey: record.binding.key } : null;
-      let evidence = record?.evidence ?? null;
+      let evidence = record?.evidence || null;
       const resultLifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
       const resultPublishable = resultLifecycle.publishable !== false && resultLifecycle.late !== true;
       if (resultPublishable && !evidence) {
         evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: tool.verifier === true, sourceRef }) : [];
         if (record) record.evidence = evidence;
       }
-      const evidenceIds = evidence.map((item) => item.id);
+      const evidenceList = Array.isArray(evidence) ? evidence : [];
+      const evidenceIds = evidenceList.map((item) => item.id);
       const completeness = completenessOf(result);
       const continuation = result?.continuation?.cursor ? { cursor: result.continuation.cursor } : null;
       const detailRef = record?.id || result?.detailRef || null;
@@ -121,7 +122,7 @@ export class ToolRegistry {
       return {
         tool: name, result, modelData, summary,
         completeness, ...(continuation ? { continuation } : {}), ...(detailRef ? { detailRef } : {}),
-        evidence, evidenceIds, cost: tool.cost, elapsedMs, ...(cached ? { cached: true } : {}),
+        evidence: evidenceList, evidenceIds, cost: tool.cost, elapsedMs, ...(cached ? { cached: true } : {}),
       };
     } catch (error) {
       this.accounting.failures++;
