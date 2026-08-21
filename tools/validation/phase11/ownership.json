@@ -36,6 +36,7 @@
     "tools/validation/phase10/ownership-check.mjs",
     "js/platform/capability-maturity.js",
     "js/platform/stage2-capability-maturity.js",
+    "js/platform/stage2-profile-evidence.js",
     "js/platform/physical-ipad-evidence.js",
     "js/runtime/authority.js",
     "js/runtime/stage2.js",
