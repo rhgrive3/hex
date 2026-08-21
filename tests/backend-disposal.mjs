@@ -13,6 +13,7 @@ const { Backend }=await import('../js/backend.js');
 
 // Every worker RPC exit path must settle its local promise. A timeout/cancel or
 // worker transport failure must never leave an entry orphaned in Backend.pending.
+// Local settlement is authoritative even when the best-effort worker cancel message is lost.
 {
   const b=new Backend();
   const pending=b._callTo('legacy','probe',{});
