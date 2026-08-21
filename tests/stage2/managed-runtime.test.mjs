@@ -48,6 +48,7 @@ for (const frontendId of frontends) {
     maxOperandStack: 2,
   });
 
+  assert.equal(binding.targetProfileId, `managed:${frontendId}:m6`);
   assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ moduleIdentity: binding.runtimeModuleIdentity, locals: [1], operandStack: [2] }] }] }).ok, true);
   assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ moduleIdentity: binding.runtimeModuleIdentity, locals: [1, 2, 3] }] }] }).reason, 'managed-runtime-local-budget-exceeded');
   assert.equal(validateManagedRuntimeState(binding, { threads: [{ frames: [{ moduleIdentity: 'wrong' }] }] }).reason, 'managed-runtime-frame-module-mismatch');
@@ -60,6 +61,7 @@ for (const frontendId of frontends) {
   const runtimeProfileProof = runtimeProfileSupport({
     binding: binding.runtime,
     providerProfileId: `managed:${frontendId}:provider-bound-runtime-v1`,
+    targetProfileId: binding.targetProfileId,
     providerCapabilities,
     requiredCapabilities,
     proof: runtimeProofFlags,
@@ -67,8 +69,10 @@ for (const frontendId of frontends) {
   assert.equal(runtimeProfileProof.status, 'supported-for-exact-provider-profile');
   const support = managedRuntimeProfileSupport({ binding, runtimeProfileProof, proof: managedProof });
   assert.equal(support.frontendId, frontendId);
+  assert.equal(support.targetProfileId, binding.targetProfileId);
   assert.equal(support.status, 'supported-for-exact-provider-profile');
   assert.equal(managedRuntimeProfileSupport({ binding, runtimeProfileProof: { ...runtimeProfileProof, bindingId: 'wrong' }, proof: managedProof }).status, 'partial');
+  assert.equal(managedRuntimeProfileSupport({ binding, runtimeProfileProof: { ...runtimeProfileProof, targetProfileId: 'managed:other:m6' }, proof: managedProof }).status, 'partial', 'proof from another managed frontend must not be reusable');
   assert.equal(managedRuntimeProfileSupport({ binding, runtimeProfileProof, proof: { ...managedProof, frontendProviderTests: false } }).status, 'partial');
 }
 
