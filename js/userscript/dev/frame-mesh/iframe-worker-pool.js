@@ -359,12 +359,24 @@ export class IframeWorkerPool {
     const workerId = randomId('worker', this.cryptoRef);
     const retirement = this.retirement;
     let claimRollbackCompleted = false;
+    let reservationDeferred = false;
     try {
       const remoteClaim = Promise.resolve().then(() => client.claim({ runId, workerId }));
+      let removeAbortListener = () => {};
+      const abort = signal
+        ? new Promise((resolve) => {
+          const onAbort = () => resolve({ kind: 'cancelled' });
+          removeAbortListener = () => signal.removeEventListener?.('abort', onAbort);
+          if (signal.aborted) resolve({ kind: 'cancelled' });
+          else signal.addEventListener?.('abort', onAbort, { once: true });
+        })
+        : null;
       const outcome = await Promise.race([
         remoteClaim.then((value) => ({ kind: 'claimed', value }), (error) => ({ kind: 'rejected', error })),
         retirement.promise.then(() => ({ kind: 'retired' })),
+        ...(abort ? [abort] : []),
       ]);
+      removeAbortListener();
       if (outcome.kind === 'retired') {
         /* The public claim must settle when close retires the generation, but a
            late remote acceptance still needs rollback on the captured client. */
@@ -378,6 +390,35 @@ export class IframeWorkerPool {
           () => {},
         ).catch(() => {});
         throw poolError('transport-failure', 'Worker pool closed while a Worker claim was settling.');
+      }
+      if (outcome.kind === 'cancelled') {
+        /* Abort settles the caller immediately, but the captured slot remains
+           reserved until the remote claim answers and its rollback completes.
+           Reusing it earlier could overlap an unknown remote owner. */
+        reservationDeferred = true;
+        claimRollbackCompleted = true;
+        slot.error = { code: 'worker-claim-cancelled', message: 'Worker claim was cancelled before remote ownership settled.' };
+        void remoteClaim
+          .then(
+            () => this.rollbackClaim(slot, { runId, workerId }, {
+              code: 'worker-claim-cancel-cleanup-failed',
+              label: 'Cancelled Worker claim',
+              client,
+            }),
+            () => this.rollbackClaim(slot, { runId, workerId }, {
+              code: 'worker-claim-cancel-cleanup-failed',
+              label: 'Cancelled Worker claim',
+              client,
+            }),
+          )
+          .catch(() => {})
+          .finally(() => {
+            if (this.slots.get(slot.index) !== slot) return;
+            if (slot.error?.code === 'worker-claim-cancelled') slot.error = null;
+            slot.reserving = false;
+            this.flushWaiters();
+          });
+        throw abortError(signal.reason);
       }
       if (outcome.kind === 'rejected') throw outcome.error;
       if (this.closed || generation !== this.generation || this.slots.get(slot.index) !== slot) {
@@ -413,8 +454,10 @@ export class IframeWorkerPool {
       }
       throw error;
     } finally {
-      slot.reserving = false;
-      if (!slot.claimed) this.flushWaiters();
+      if (!reservationDeferred) {
+        slot.reserving = false;
+        if (!slot.claimed) this.flushWaiters();
+      }
     }
   }
 

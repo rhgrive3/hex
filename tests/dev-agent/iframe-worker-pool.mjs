@@ -132,6 +132,61 @@ async function testClosedPoolSettlesAStuckClaim() {
   assert.equal(outcome.error?.code, 'transport-failure');
 }
 
+async function testAbortedClaimSettlesBeforeRemoteClaim() {
+  let claimStarted;
+  const claimStartedPromise = new Promise((resolve) => { claimStarted = resolve; });
+  let releaseClaim;
+  const claimReleasePromise = new Promise((resolve) => { releaseClaim = resolve; });
+  let releaseStarted;
+  const releaseStartedPromise = new Promise((resolve) => { releaseStarted = resolve; });
+  const calls = [];
+  const pool = newPool(new FakeFrameFactory(), {
+    createWorkerRuntime: ({ slot, document }) => {
+      const runtime = fakeWorkerRuntime(slot, document);
+      const claim = runtime.coordinator.claim.bind(runtime.coordinator);
+      const release = runtime.coordinator.release.bind(runtime.coordinator);
+      runtime.coordinator.claim = async (args) => {
+        calls.push('claim');
+        claimStarted();
+        await claimReleasePromise;
+        return claim(args);
+      };
+      runtime.coordinator.release = async (args) => {
+        calls.push('release');
+        releaseStarted();
+        return release(args);
+      };
+      return runtime;
+    },
+  });
+  await pool.provision({ size: 1, timeoutMs: 2000 });
+
+  const controller = new AbortController();
+  const pending = pool.claim({ taskId: 'aborted-claim', wait: false, signal: controller.signal });
+  await claimStartedPromise;
+  controller.abort('cancelled-by-test');
+  const outcome = await Promise.race([
+    pending.then(() => ({ kind: 'resolved' }), (error) => ({ kind: 'rejected', error })),
+    new Promise((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 100)),
+  ]);
+  assert.equal(outcome.kind, 'rejected', 'aborting a claim must settle before a stuck remote claim answers');
+  assert.equal(outcome.error?.code, 'cancelled');
+  assert.equal(publicSlot(pool, 1).error?.code, 'worker-claim-cancelled', 'an unsettled remote claim must quarantine its slot');
+  await assert.rejects(
+    pool.claim({ taskId: 'must-not-overlap-cancelled-claim', wait: false }),
+    (error) => error?.code === 'worker-pool-full',
+  );
+
+  releaseClaim();
+  await releaseStartedPromise;
+  await settle();
+  assert.deepEqual(calls, ['claim', 'release'], 'a cancelled claim must roll back after its remote result settles');
+  assert.equal(publicSlot(pool, 1).error, null, 'a successful rollback makes the slot reusable');
+  const reclaimed = await pool.claim({ taskId: 'reclaimed-after-cancel' });
+  await pool.release({ leaseId: reclaimed.leaseId });
+  pool.close();
+}
+
 async function testClosedPoolDoesNotResurrectProvisioning() {
   let releaseFrame;
   const frameReady = new Promise((resolve) => { releaseFrame = resolve; });
@@ -701,6 +756,7 @@ await testSixFramesSeventhWaitsAndReuse();
 await testConcurrentClaimReservesSlotBeforeSettling();
 await testClosedPoolRejectsLateClaimWithoutResurrectingLease();
 await testClosedPoolSettlesAStuckClaim();
+await testAbortedClaimSettlesBeforeRemoteClaim();
 await testClosedPoolDoesNotResurrectProvisioning();
 await testDedicatedCoordinatorCloseSettlesInFlightSend();
 await testRejectedClaimRollsBackBeforeReuse();
