@@ -164,15 +164,23 @@ function installLiveFunctionQueryRoute(app, producer) {
   if (!app || typeof app.analyzeFunctionAt !== 'function' || app.analyzeFunctionAt?.[QUERY_ROUTED_ANALYZE]) return;
   const original = app.analyzeFunctionAt.bind(app);
   const routed = async function routedAnalyzeFunctionAt(functionId, options = {}) {
-    const address = asAddress(functionId);
-    const queries = app.analysisQueries;
-    if (!queries || typeof queries.snapshot !== 'function' || typeof queries.function !== 'function') {
-      return original(address, options);
+    try {
+      const address = asAddress(functionId);
+      const queries = app.analysisQueries;
+      if (!queries || typeof queries.snapshot !== 'function' || typeof queries.function !== 'function') {
+        return await original(address, options);
+      }
+      const snapshot = await queries.snapshot(options);
+      const result = await queries.function(snapshot, address, options);
+      if (result.completeness === 'unsupported' || result.value == null) return null;
+      return publishFunctionAnalysis(app, address, result.value);
+    } catch {
+      // Preserve App.analyzeFunctionAt's historical UI contract: callers such as
+      // goToFunction intentionally fire-and-forget and expect analysis failure to
+      // resolve to null rather than create an unhandled rejection. Direct
+      // AnalysisQueryAPI callers still receive fail-closed errors.
+      return null;
     }
-    const snapshot = await queries.snapshot(options);
-    const result = await queries.function(snapshot, address, options);
-    if (result.completeness === 'unsupported' || result.value == null) return null;
-    return publishFunctionAnalysis(app, address, result.value);
   };
   Object.defineProperty(routed, QUERY_ROUTED_ANALYZE, { value: true });
   app.analyzeFunctionAt = routed;
