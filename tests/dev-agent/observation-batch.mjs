@@ -23,7 +23,6 @@ const BATCH_TOOL = DEV_ADMIN_TOOL.BATCH_OBSERVE;
 const EXPECTED_BATCHABLE_TOOLS = Object.freeze([
   DEV_ADMIN_TOOL.PAGE_SNAPSHOT,
   DEV_ADMIN_TOOL.PAGE_SCRIPTS,
-  DEV_ADMIN_TOOL.PAGE_SCRIPT_SOURCE,
   DEV_ADMIN_TOOL.SKILL_LIST,
   DEV_ADMIN_TOOL.SKILL_DESCRIBE,
   DEV_ADMIN_TOOL.POOL_STATUS,
@@ -123,6 +122,10 @@ async function canonicalRegistryAndSurfaceContract() {
   // are ambiguous. Both must remain normal direct observations only.
   for (const tool of [
     DEV_ADMIN_TOOL.RUNTIME_IDENTITY,
+<<<<<<< HEAD
+=======
+    DEV_ADMIN_TOOL.PAGE_SCRIPT_SOURCE,
+>>>>>>> origin/main
     DEV_ADMIN_TOOL.POOL_OBSERVE,
     DEV_ADMIN_TOOL.POOL_RESULT,
   ]) {
@@ -231,6 +234,18 @@ async function invalidTargetsAndBatchShapesFailClosedBeforeDispatch() {
   await assertRejectedBeforeAnyTargetDispatch('lease-scoped observation target', {
     calls: [valid, call(DEV_ADMIN_TOOL.POOL_OBSERVE, { leaseId: 'lease' })],
   });
+<<<<<<< HEAD
+=======
+  await assertRejectedBeforeAnyTargetDispatch('non-batchable script source target', {
+    calls: [valid, call(DEV_ADMIN_TOOL.PAGE_SCRIPT_SOURCE, { needle: 'probe' })],
+  });
+  await assertRejectedBeforeAnyTargetDispatch('target-specific invalid graph identity', {
+    calls: [valid, call(DEV_ADMIN_TOOL.GRAPH_STATUS, { graphId: 'not a graph id' })],
+  });
+  await assertRejectedBeforeAnyTargetDispatch('target-specific invalid skill identity', {
+    calls: [valid, call(DEV_ADMIN_TOOL.SKILL_DESCRIBE, { skillId: 'Not-A-Skill' })],
+  });
+>>>>>>> origin/main
 
   const malformedRequests = [
     ['missing calls', {}],

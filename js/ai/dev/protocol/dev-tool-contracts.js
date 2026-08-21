@@ -43,15 +43,82 @@ export const DEV_TOOL_OWNER = Object.freeze({
 });
 
 /* Whether a tool may ever join the bounded read-only observation batch of
-   CARD H2. This card adds no batch tool; it only makes eligibility explicit.
+   CARD H2. The batch dispatcher is itself explicitly `never`; this metadata
+   only opts normal read-only observations into the existing direct path.
    `observation` is opt-in and is granted only to a read-only, idempotent
    observation whose normal handler runs without touching repository, runtime or
    DOM ownership state. Everything else -- including anything lease-scoped, and
    anything at all uncertain -- is `never`. */
 export const DEV_BATCH_POLICY = Object.freeze({ NEVER: 'never', OBSERVATION: 'observation' });
+export const DEV_BATCH_MAX_CALLS = 6;
 
 const { CONTROL, OBSERVATION, FULL_TURN, MUTATION } = DEV_OPERATION_CLASS;
 const { NEVER, OBSERVATION: BATCHABLE } = DEV_BATCH_POLICY;
+
+const BATCH_SELECTOR = /^[^\u0000\r\n]{1,256}$/;
+const BATCH_SKILL_ID = /^[a-z0-9][a-z0-9._-]{1,95}$/;
+const BATCH_GRAPH_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
+
+function validateEmptyBatchArguments(args) {
+  assertBatchObject(args);
+  assertBatchKeys(args, []);
+}
+
+function validatePageSnapshotBatchArguments(args) {
+  assertBatchObject(args);
+  assertBatchKeys(args, ['selectors', 'includeHtml', 'htmlSelector', 'maxNodes', 'maxHtmlChars']);
+  if (args.selectors != null) {
+    if (!Array.isArray(args.selectors) || args.selectors.length > 16) throw new TypeError('selectors must contain at most 16 items.');
+    for (const selector of args.selectors) assertBatchString(selector, 'selector', BATCH_SELECTOR);
+  }
+  if (args.includeHtml != null && typeof args.includeHtml !== 'boolean') throw new TypeError('includeHtml must be boolean.');
+  if (args.htmlSelector != null) assertBatchString(args.htmlSelector, 'htmlSelector', BATCH_SELECTOR);
+  assertBatchFinite(args.maxNodes, 'maxNodes');
+  assertBatchFinite(args.maxHtmlChars, 'maxHtmlChars');
+}
+
+function validateSkillDescribeBatchArguments(args) {
+  assertBatchObject(args);
+  assertBatchKeys(args, ['skillId']);
+  assertBatchPattern(args.skillId, 'skillId', BATCH_SKILL_ID);
+}
+
+function validateGraphStatusBatchArguments(args) {
+  assertBatchObject(args);
+  assertBatchKeys(args, ['graphId']);
+  assertBatchPattern(args.graphId, 'graphId', BATCH_GRAPH_ID);
+}
+
+function validateGraphTaskResultBatchArguments(args) {
+  assertBatchObject(args);
+  assertBatchKeys(args, ['graphId', 'taskId']);
+  assertBatchPattern(args.graphId, 'graphId', BATCH_GRAPH_ID);
+  assertBatchPattern(args.taskId, 'taskId', BATCH_GRAPH_ID);
+}
+
+function assertBatchObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Batch target arguments must be a plain object.');
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError('Batch target arguments must be a plain object.');
+}
+
+function assertBatchKeys(value, allowed) {
+  const expected = new Set(allowed);
+  if (Object.keys(value).some((key) => !expected.has(key))) throw new TypeError('Batch target arguments contain an unknown field.');
+}
+
+function assertBatchString(value, name, pattern) {
+  if (typeof value !== 'string' || !pattern.test(value.trim())) throw new TypeError(`${name} has an invalid value.`);
+}
+
+function assertBatchPattern(value, name, pattern) {
+  if (typeof value !== 'string' || !pattern.test(value.trim())) throw new TypeError(`${name} has an invalid value.`);
+}
+
+function assertBatchFinite(value, name) {
+  if (value == null || value === '') return;
+  if (!Number.isFinite(Number(value))) throw new TypeError(`${name} must be finite.`);
+}
 
 /* Order is significant: the prompt renders argument contracts in this order and
    each surface exposes its tools in this order. */
@@ -72,19 +139,22 @@ const ENTRIES = [
   entry('worker.result', DEV_TOOL_SURFACE.WORKER, 'result', OBSERVATION, DEV_TOOL_OWNER.SINGLE_SLOT_WORKER, '{}', { rpcName: 'dev.worker.result' }),
   entry('worker.release', DEV_TOOL_SURFACE.WORKER, 'release', CONTROL, DEV_TOOL_OWNER.SINGLE_SLOT_WORKER, '{}', { rpcName: 'dev.worker.release' }),
 
-  entry('chatgpt.page.snapshot', DEV_TOOL_SURFACE.ADMIN, 'pageSnapshot', OBSERVATION, DEV_TOOL_OWNER.CHATGPT_PAGE, '{"selectors":["<CSS selector>"],"includeHtml":false,"htmlSelector":"<CSS selector>","maxNodes":96,"maxHtmlChars":16384}', { rpcName: 'dev.admin.page_snapshot', batchPolicy: BATCHABLE }),
-  entry('chatgpt.page.scripts', DEV_TOOL_SURFACE.ADMIN, 'pageScripts', OBSERVATION, DEV_TOOL_OWNER.CHATGPT_PAGE, '{}', { rpcName: 'dev.admin.page_scripts', batchPolicy: BATCHABLE }),
-  entry('chatgpt.page.script_source', DEV_TOOL_SURFACE.ADMIN, 'pageScriptSource', OBSERVATION, DEV_TOOL_OWNER.CHATGPT_PAGE, '{"index":0,"offset":0,"maxChars":24576,"needle":"<optional literal>","contextChars":768,"maxMatches":5}', { rpcName: 'dev.admin.page_script_source', batchPolicy: BATCHABLE }),
+  entry('chatgpt.page.snapshot', DEV_TOOL_SURFACE.ADMIN, 'pageSnapshot', OBSERVATION, DEV_TOOL_OWNER.CHATGPT_PAGE, '{"selectors":["<CSS selector>"],"includeHtml":false,"htmlSelector":"<CSS selector>","maxNodes":96,"maxHtmlChars":16384}', { rpcName: 'dev.admin.page_snapshot', batchPolicy: BATCHABLE, batchArgumentValidator: validatePageSnapshotBatchArguments }),
+  entry('chatgpt.page.scripts', DEV_TOOL_SURFACE.ADMIN, 'pageScripts', OBSERVATION, DEV_TOOL_OWNER.CHATGPT_PAGE, '{}', { rpcName: 'dev.admin.page_scripts', batchPolicy: BATCHABLE, batchArgumentValidator: validateEmptyBatchArguments }),
+  // Script-source safety depends on whether the selected script is inline or
+  // external, so its normal handler must inspect the page before validating
+  // the needle. That target is intentionally never batchable.
+  entry('chatgpt.page.script_source', DEV_TOOL_SURFACE.ADMIN, 'pageScriptSource', OBSERVATION, DEV_TOOL_OWNER.CHATGPT_PAGE, '{"index":0,"offset":0,"maxChars":24576,"needle":"<optional literal>","contextChars":768,"maxMatches":5}', { rpcName: 'dev.admin.page_script_source', batchPolicy: NEVER }),
 
-  entry('chatgpt.skill.list', DEV_TOOL_SURFACE.ADMIN, 'skillList', OBSERVATION, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{}', { rpcName: 'dev.skill.list', batchPolicy: BATCHABLE }),
-  entry('chatgpt.skill.describe', DEV_TOOL_SURFACE.ADMIN, 'skillDescribe', OBSERVATION, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{"skillId":"<skill id>"}', { rpcName: 'dev.skill.describe', batchPolicy: BATCHABLE }),
+  entry('chatgpt.skill.list', DEV_TOOL_SURFACE.ADMIN, 'skillList', OBSERVATION, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{}', { rpcName: 'dev.skill.list', batchPolicy: BATCHABLE, batchArgumentValidator: validateEmptyBatchArguments }),
+  entry('chatgpt.skill.describe', DEV_TOOL_SURFACE.ADMIN, 'skillDescribe', OBSERVATION, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{"skillId":"<skill id>"}', { rpcName: 'dev.skill.describe', batchPolicy: BATCHABLE, batchArgumentValidator: validateSkillDescribeBatchArguments }),
   entry('chatgpt.skill.install_candidate', DEV_TOOL_SURFACE.ADMIN, 'skillInstallCandidate', MUTATION, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{"manifest":{"schema":"hex-dom-skill-v1","skillId":"<skill id>","version":"<version>","validationPrograms":["probe"],"programs":{"probe":{"version":1,"name":"probe","readOnly":true,"steps":[]}}}}', { rpcName: 'dev.skill.install_candidate' }),
   entry('chatgpt.skill.validate_candidate', DEV_TOOL_SURFACE.ADMIN, 'skillValidateCandidate', CONTROL, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{"skillId":"<skill id>","programs":["probe"]}', { rpcName: 'dev.skill.validate_candidate' }),
   entry('chatgpt.skill.activate', DEV_TOOL_SURFACE.ADMIN, 'skillActivate', MUTATION, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{"skillId":"<skill id>"}', { rpcName: 'dev.skill.activate' }),
   entry('chatgpt.skill.rollback', DEV_TOOL_SURFACE.ADMIN, 'skillRollback', MUTATION, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{"skillId":"<skill id>"}', { rpcName: 'dev.skill.rollback' }),
   entry('chatgpt.skill.run', DEV_TOOL_SURFACE.ADMIN, 'skillRun', CONTROL, DEV_TOOL_OWNER.DOM_SKILL_SYSTEM, '{"skillId":"<skill id>","program":"<program>","args":{}}', { rpcName: 'dev.skill.run' }),
 
-  entry('worker.pool.status', DEV_TOOL_SURFACE.ADMIN, 'poolStatus', OBSERVATION, DEV_TOOL_OWNER.WORKER_POOL, '{}', { rpcName: 'dev.worker_pool.status', batchPolicy: BATCHABLE }),
+  entry('worker.pool.status', DEV_TOOL_SURFACE.ADMIN, 'poolStatus', OBSERVATION, DEV_TOOL_OWNER.WORKER_POOL, '{}', { rpcName: 'dev.worker_pool.status', batchPolicy: BATCHABLE, batchArgumentValidator: validateEmptyBatchArguments }),
   entry('worker.pool.provision', DEV_TOOL_SURFACE.ADMIN, 'poolProvision', MUTATION, DEV_TOOL_OWNER.WORKER_POOL, '{"size":"<how many Workers this work actually needs, up to 6>","projectUrl":"<optional ChatGPT Project URL>"}', { rpcName: 'dev.worker_pool.provision' }),
   entry('worker.pool.claim', DEV_TOOL_SURFACE.ADMIN, 'poolClaim', CONTROL, DEV_TOOL_OWNER.WORKER_POOL, '{"taskId":"<task id>","wait":true}', { rpcName: 'dev.worker_pool.claim' }),
   entry('worker.pool.create_chat', DEV_TOOL_SURFACE.ADMIN, 'poolCreateChat', CONTROL, DEV_TOOL_OWNER.WORKER_POOL, '{"leaseId":"<returned lease id>"}', { rpcName: 'dev.worker_pool.create_chat' }),
@@ -100,9 +170,14 @@ const ENTRIES = [
   entry('worker.pool.release', DEV_TOOL_SURFACE.ADMIN, 'poolRelease', CONTROL, DEV_TOOL_OWNER.WORKER_POOL, '{"leaseId":"<returned lease id>"}', { rpcName: 'dev.worker_pool.release' }),
 
   entry('worker.graph.start', DEV_TOOL_SURFACE.ADMIN, 'graphStart', CONTROL, DEV_TOOL_OWNER.TASK_GRAPH, '{"graphId":"<optional graph id>","maxConcurrency":"<1-6, only as many Workers as the graph needs>","tasks":[{"id":"<task id>","dependencies":["<task id this one waits for>"],"instruction":"<specific task>","maxAttempts":"<1-5>","timeoutMs":"<omit for no deadline, or an explicit deadline in ms>"}]}', { rpcName: 'dev.task_graph.start' }),
-  entry('worker.graph.status', DEV_TOOL_SURFACE.ADMIN, 'graphStatus', OBSERVATION, DEV_TOOL_OWNER.TASK_GRAPH, '{"graphId":"<returned graph id>"}', { rpcName: 'dev.task_graph.status', batchPolicy: BATCHABLE }),
-  entry('worker.graph.task_result', DEV_TOOL_SURFACE.ADMIN, 'graphTaskResult', OBSERVATION, DEV_TOOL_OWNER.TASK_GRAPH, '{"graphId":"<returned graph id>","taskId":"<task id>"}', { rpcName: 'dev.task_graph.task_result', batchPolicy: BATCHABLE }),
+  entry('worker.graph.status', DEV_TOOL_SURFACE.ADMIN, 'graphStatus', OBSERVATION, DEV_TOOL_OWNER.TASK_GRAPH, '{"graphId":"<returned graph id>"}', { rpcName: 'dev.task_graph.status', batchPolicy: BATCHABLE, batchArgumentValidator: validateGraphStatusBatchArguments }),
+  entry('worker.graph.task_result', DEV_TOOL_SURFACE.ADMIN, 'graphTaskResult', OBSERVATION, DEV_TOOL_OWNER.TASK_GRAPH, '{"graphId":"<returned graph id>","taskId":"<task id>"}', { rpcName: 'dev.task_graph.task_result', batchPolicy: BATCHABLE, batchArgumentValidator: validateGraphTaskResultBatchArguments }),
   entry('worker.graph.cancel', DEV_TOOL_SURFACE.ADMIN, 'graphCancel', CONTROL, DEV_TOOL_OWNER.TASK_GRAPH, '{"graphId":"<returned graph id>","reason":"<why the graph is being cancelled>"}', { rpcName: 'dev.task_graph.cancel' }),
+
+  /* This is a host-side dispatcher, not an observation target. It is exposed
+     through the Admin surface but has no client/RPC mapping and can never
+     participate in another batch. */
+  entry('dev.batch.observe', DEV_TOOL_SURFACE.ADMIN, null, OBSERVATION, DEV_TOOL_OWNER.DEV_RUNTIME, '{"calls":[{"tool":"<batch-eligible observation tool>","arguments":{}}]}', { batchPolicy: NEVER }),
 ];
 
 /* The fail-closed rule itself, exported so it is a tested contract rather than
@@ -114,14 +189,19 @@ export function devBatchPolicyFor(operationClass, requested) {
   return requested === BATCHABLE ? BATCHABLE : NEVER;
 }
 
-function entry(publicName, surface, clientMethod, operationClass, owner, argumentContract, { rpcName = null, batchPolicy = NEVER } = {}) {
+function entry(publicName, surface, clientMethod, operationClass, owner, argumentContract, { rpcName = null, batchPolicy = NEVER, batchArgumentValidator = null } = {}) {
   if (!publicName || !surface || !operationClass || !owner || typeof argumentContract !== 'string') {
     throw new TypeError(`Dev tool contract is incomplete: ${publicName}`);
   }
   if (!OPERATION_CLASSES.has(operationClass)) throw new TypeError(`Unknown operation class for ${publicName}: ${operationClass}`);
+  const normalizedBatchPolicy = devBatchPolicyFor(operationClass, batchPolicy);
+  if (normalizedBatchPolicy === BATCHABLE && typeof batchArgumentValidator !== 'function') {
+    throw new TypeError(`Batchable observation lacks argument validation: ${publicName}`);
+  }
   return Object.freeze({
     publicName, surface, clientMethod, operationClass, owner, argumentContract, rpcName,
-    batchPolicy: devBatchPolicyFor(operationClass, batchPolicy),
+    batchPolicy: normalizedBatchPolicy,
+    batchArgumentValidator: typeof batchArgumentValidator === 'function' ? batchArgumentValidator : null,
   });
 }
 
@@ -141,6 +221,9 @@ export function devToolNamesForSurface(surface) {
    batch-eligible. */
 export function devToolBatchPolicy(publicName) {
   return devToolContract(publicName)?.batchPolicy || NEVER;
+}
+export function devToolBatchArgumentValidator(publicName) {
+  return devToolContract(publicName)?.batchArgumentValidator || null;
 }
 export function devToolOperationClass(publicName) {
   return devToolContract(publicName)?.operationClass || null;
