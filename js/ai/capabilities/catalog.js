@@ -92,7 +92,14 @@ export class CapabilityCatalog {
   get(id) { return this.entries.get(String(id)) || null; }
   has(id) { return this.entries.has(String(id)); }
   list(context = null) {
-    return [...this.entries.values()].map((entry) => ({ ...entry, available: availability(entry, context) }));
+    return [...this.entries.values()].map((entry) => {
+      let scopeSupport = entry.scopeSupport;
+      if (entry.agentTool && context?.toolRegistry?.get) {
+        const tool = context.toolRegistry.get(entry.agentTool);
+        if (tool?.scopeSupport) scopeSupport = tool.scopeSupport;
+      }
+      return { ...entry, scopeSupport, available: availability(entry, context) };
+    });
   }
   agent(context = null) { return this.list(context).filter((entry) => entry.agentExposed && entry.available.ok); }
 }

@@ -1,0 +1,94 @@
+name: Reusable Phase release validation
+
+on:
+  workflow_call:
+    inputs:
+      phase_name:
+        description: "Display name of the phase (e.g. Phase 10)"
+        required: true
+        type: string
+      checkout_ref:
+        description: "Exact ref or commit SHA to check out"
+        required: true
+        type: string
+      expected_sha:
+        description: "Optional expected commit SHA to enforce in verifier"
+        required: false
+        default: ""
+        type: string
+      shadow:
+        description: "Report without failing the job"
+        required: false
+        default: false
+        type: boolean
+      run_broad_regression:
+        description: "Whether to run broad repository regression (npm run check)"
+        required: false
+        default: true
+        type: boolean
+      ownership_script:
+        description: "Relative path to phase ownership inventory script"
+        required: true
+        type: string
+      verify_script:
+        description: "Relative path to phase verifier script"
+        required: true
+        type: string
+      artifact_prefix:
+        description: "Prefix for evidence artifact name (e.g. phase10-release-evidence)"
+        required: true
+        type: string
+      artifact_suffix:
+        description: "Suffix for evidence artifact name (exact checked-out SHA)"
+        required: true
+        type: string
+      evidence_paths:
+        description: "Newline-separated list of paths to evidence files"
+        required: true
+        type: string
+      timeout_minutes:
+        description: "Job timeout in minutes"
+        required: false
+        default: 60
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref }}
+          fetch-depth: 0
+      - name: Resolve current main for ownership proof
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --no-audit --no-fund
+      - name: ${{ inputs.phase_name }} ownership inventory
+        run: node ${{ inputs.ownership_script }}
+      - name: ${{ inputs.phase_name }} exact-product verifier
+        env:
+          EXPECT_SHA: ${{ inputs.expected_sha }}
+          SHADOW: ${{ inputs.shadow }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${EXPECT_SHA:-}" ]; then args+=(--expect-sha "$EXPECT_SHA"); fi
+          if [ "${SHADOW:-false}" = "true" ]; then args+=(--shadow); fi
+          node ${{ inputs.verify_script }} "${args[@]}"
+      - name: Broad repository regression at release boundary
+        if: ${{ inputs.run_broad_regression }}
+        run: npm run check
+      - name: Publish validated ${{ inputs.phase_name }} evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_prefix }}-${{ inputs.artifact_suffix }}
+          path: ${{ inputs.evidence_paths }}
+          if-no-files-found: error

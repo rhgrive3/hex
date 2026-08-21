@@ -136,6 +136,28 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
   };
 
+  if (Array.isArray(ssa?.definitions) && Array.isArray(ssa?.uses) && ssa.uses.length > 0) {
+    const defsByValueId = new Map(ssa.definitions.map((d) => [d.valueId, d]));
+    const isEntryReaching = (valueId, visited = new Set()) => {
+      if (visited.has(valueId)) return false;
+      visited.add(valueId);
+      const def = defsByValueId.get(valueId);
+      if (!def) return true;
+      if (def.kind === 'entry' || def.kind === 'undef') return true;
+      if (def.kind === 'phi') {
+        return (def.incoming ?? []).some((inc) => isEntryReaching(inc.valueId, visited));
+      }
+      return false;
+    };
+    for (const use of ssa.uses) {
+      if (isEntryReaching(use.valueId)) {
+        const def = defsByValueId.get(use.valueId);
+        const varKey = def?.variableKey ?? use.variableKey;
+        if (varKey) readVariables.add(varKey);
+      }
+    }
+  }
+
   for (const node of ir.nodes ?? []) {
     if (node.kind === 'load' || node.kind === 'store') {
       const into = node.kind === 'load' ? memoryReadRegions : memoryWriteRegions;
@@ -158,7 +180,9 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
 
     if (node.kind === 'state-read') {
-      if (node.variable?.key && !writtenVariables.has(node.variable.key)) readVariables.add(node.variable.key);
+      if (node.variable?.key && (!ssa?.uses || ssa.uses.length === 0)) {
+        if (!writtenVariables.has(node.variable.key)) readVariables.add(node.variable.key);
+      }
       continue;
     }
     if (node.kind === 'state-write') {

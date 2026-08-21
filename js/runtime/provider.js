@@ -5,6 +5,7 @@ import {
   createRuntimeProviderSessionId,
   createRuntimeTargetBinding,
 } from './provider-identity.js';
+import { normalizeRuntimeModuleBinding } from './module-binding.js';
 
 export const RUNTIME_FACETS = Object.freeze(['debugger', 'instrumentation', 'trace', 'emulator']);
 export const RUNTIME_SESSION_STATES = Object.freeze(['opening', 'ready', 'running', 'paused', 'degraded', 'disconnected', 'closing', 'closed', 'failed']);
@@ -239,21 +240,8 @@ export class DebugAdapterRuntimeProvider {
         for (let i = 0; i < (Array.isArray(modules) ? modules.length : 0); i++) {
           const module = modules[i] || {};
           if (module.base == null || module.size == null) continue;
-          const identityEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
-          const hasProvenStaticIdentity = module.binaryId != null && (module.identityState === 'exact' || module.identityState === 'resolved' || identityEvidenceIds.length > 0);
-          session.modules.load({
-            bindingKey: module.id ?? module.uuid ?? module.name ?? `module:${i}`,
-            runtimeBase: module.base,
-            runtimeSize: module.size,
-            staticBase: module.staticBase ?? module.imageBase ?? null,
-            pathHint: module.path ?? module.name ?? null,
-            binaryId: hasProvenStaticIdentity ? module.binaryId : null,
-            sliceId: hasProvenStaticIdentity ? (module.sliceId ?? null) : null,
-            imageId: hasProvenStaticIdentity ? (module.imageId ?? null) : null,
-            buildIdentity: module.buildIdentity ?? module.uuid ?? null,
-            identityState: hasProvenStaticIdentity ? (module.identityState ?? 'resolved') : 'unresolved',
-            identityEvidenceIds,
-          });
+          const bindingKey = module.id ?? module.uuid ?? module.name ?? `module:${i}`;
+          session.modules.load(normalizeRuntimeModuleBinding(module, { bindingKey }));
         }
       }
       session.setState('ready');

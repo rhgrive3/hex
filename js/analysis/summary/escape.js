@@ -122,6 +122,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   const escapes = [];
   const rootOrigins = new Map();
   const escapedRoots = new Set();
+  const containment = new Map();
   let sawUnresolvedFlow = false;
 
   const setsFor = (valueId) => {
@@ -190,8 +191,16 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
       if (destinationOrigins.has('unknown')) {
         record(storedSet, { reason: 'stored-through-unknown-pointer', boundary: 'unknown', siteId: node.id, evidenceIds: evidenceOf(node) });
       }
-      // A store whose destination is only locally created keeps the value inside
-      // the frame; nothing escapes.
+      for (const destTarget of addressSet.targets) {
+        const destOrigin = classifyRootOrigin(destTarget, { allocationRootKeys });
+        if (LOCALLY_CREATED.has(destOrigin)) {
+          if (!containment.has(destTarget.rootKey)) containment.set(destTarget.rootKey, new Set());
+          for (const storedTarget of storedSet.targets) {
+            containment.get(destTarget.rootKey).add(storedTarget.rootKey);
+            observe(setsFor(storedValueId));
+          }
+        }
+      }
       continue;
     }
 
@@ -224,6 +233,46 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
       escapes.push(record_);
       escapedRoots.add(record_.rootKey);
       if (!rootOrigins.has(record_.rootKey)) rootOrigins.set(record_.rootKey, record_.rootOrigin);
+    }
+  }
+
+  // Transitive containment propagation: if a local container escaped, any root stored into it also escapes.
+  const escapeRecordsByRoot = new Map();
+  for (const esc of escapes) {
+    if (!escapeRecordsByRoot.has(esc.rootKey)) escapeRecordsByRoot.set(esc.rootKey, []);
+    escapeRecordsByRoot.get(esc.rootKey).push(esc);
+  }
+
+  const worklist = [...escapedRoots];
+  const visitedTransitive = new Set();
+  while (worklist.length) {
+    const currentRoot = worklist.pop();
+    const children = containment.get(currentRoot);
+    if (!children) continue;
+    const parentEscapes = escapeRecordsByRoot.get(currentRoot) ?? [];
+    for (const childRoot of children) {
+      const edgeKey = `${currentRoot}->${childRoot}`;
+      if (!visitedTransitive.has(edgeKey)) {
+        visitedTransitive.add(edgeKey);
+        const childOrigin = rootOrigins.get(childRoot) ?? 'unknown';
+        for (const parentEsc of parentEscapes) {
+          const childRecord = createEscapeRecord({
+            rootKey: childRoot,
+            rootOrigin: childOrigin,
+            reason: parentEsc.reason,
+            boundary: parentEsc.boundary,
+            siteId: parentEsc.siteId,
+            evidenceIds: parentEsc.evidenceIds,
+          });
+          escapes.push(childRecord);
+          if (!escapeRecordsByRoot.has(childRoot)) escapeRecordsByRoot.set(childRoot, []);
+          escapeRecordsByRoot.get(childRoot).push(childRecord);
+        }
+        if (!escapedRoots.has(childRoot)) {
+          escapedRoots.add(childRoot);
+          worklist.push(childRoot);
+        }
+      }
     }
   }
 

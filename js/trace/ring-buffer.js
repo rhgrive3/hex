@@ -31,7 +31,14 @@ function cloneTraceValue(value, state = null, depth = 0) {
   if (Array.isArray(value)) {
     for (const item of value) out.push(cloneTraceValue(item, s, depth + 1));
   } else {
-    for (const [key, item] of Object.entries(value)) out[key] = cloneTraceValue(item, s, depth + 1);
+    for (const [key, item] of Object.entries(value)) {
+      Object.defineProperty(out, key, {
+        value: cloneTraceValue(item, s, depth + 1),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
   }
   return out;
 }

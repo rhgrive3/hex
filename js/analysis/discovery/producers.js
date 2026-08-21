@@ -205,11 +205,30 @@ export function createDebugEvidenceProducer(debugEvidence) {
  * Output is always `heuristic`: a byte pattern alone never establishes a start.
  */
 export function createPatternProducer({ id, architectureId, patterns, alignment = 1 }) {
-  const compiled = (patterns ?? []).map((pattern) => ({
-    id: String(pattern.id ?? 'pattern'),
-    bytes: Uint8Array.from(pattern.bytes ?? []),
-    mask: pattern.mask ? Uint8Array.from(pattern.mask) : null,
-  }));
+  if (!Number.isSafeInteger(alignment) || alignment <= 0) {
+    throw new TypeError('discovery-pattern-invalid-alignment');
+  }
+  if (!Array.isArray(patterns)) {
+    throw new TypeError('discovery-pattern-empty-patterns');
+  }
+  const compiled = patterns.map((pattern) => {
+    if (!pattern || (!Array.isArray(pattern.bytes) && !(pattern.bytes instanceof Uint8Array)) || pattern.bytes.length === 0) {
+      throw new TypeError('discovery-pattern-invalid-bytes');
+    }
+    const bytes = Uint8Array.from(pattern.bytes);
+    let mask = null;
+    if (pattern.mask) {
+      if (pattern.mask.length !== bytes.length) {
+        throw new TypeError('discovery-pattern-mask-length-mismatch');
+      }
+      mask = Uint8Array.from(pattern.mask);
+    }
+    return {
+      id: String(pattern.id ?? 'pattern'),
+      bytes,
+      mask,
+    };
+  });
   return Object.freeze({
     id: String(id),
     architectureId: architectureId == null ? null : String(architectureId),

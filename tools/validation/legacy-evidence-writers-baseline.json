@@ -1,0 +1,17 @@
+{
+  "baselineCommit": "856a4362bcd9c50554a9f30d61afb33a96c78934",
+  "allowed": [
+    {
+      "file": "js/ai/runtime.js",
+      "line": 24,
+      "constructor": "EvidenceStore",
+      "snippet": "this.evidenceStore = options.evidenceStore || new EvidenceStore();"
+    },
+    {
+      "file": "js/ai/runtime.js",
+      "line": 42,
+      "constructor": "EvidenceStore",
+      "snippet": "const evidenceStore = new EvidenceStore(session.confirmedFindings || []);"
+    }
+  ]
+}

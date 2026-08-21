@@ -77,4 +77,53 @@ assert.equal(runtime.deterministic, false, 'runtime compatibility must not conve
 const compatGraph = legacyEvidenceToCanonicalGraph({ aiEvidence:[{ id:'legacy-ai-2', kind:'type', status:'supported', sourceTool:'type_recovery' }], runtimeEvidence:[{ id:'runtime-2', source:'runtime', kind:'trace' }] });
 assert.equal(compatGraph.allNodes().length, 2);
 
+// #1177: Edge scaling, deduplication, budgets, cancellation
+{
+  const edges = Array.from({ length: 5000 }, (_, i) => ({
+    type: 'supports',
+    from: `claim_${i}`,
+    to: `evidence_${i}`,
+  }));
+  const g = new EvidenceGraph({ nodes: [], edges });
+  assert.equal(g.allEdges().length, 5000);
+
+  // Duplicate edge
+  g.addEdge({ type: 'supports', from: 'claim_0', to: 'evidence_0' });
+  assert.equal(g.allEdges().length, 5000);
+
+  // Budget exceeded
+  assert.throws(() => new EvidenceGraph({ nodes: [], edges: [{ type: 'supports', from: 'a', to: 'b' }] }, { maxEdges: 0 }), /evidence-graph-edge-budget-exceeded/);
+
+  // AbortSignal
+  const controller = new AbortController();
+  controller.abort();
+  assert.throws(() => new EvidenceGraph({ nodes: [], edges }, { signal: controller.signal }), /AbortError/);
+}
+
+// #1178: Confirmation policy lattice
+{
+  const unsupportedProof = { id: 'ev-unsupported', family: 'SemanticEvidence', semanticKind: 'test', completeness: 'unsupported', deterministic: true };
+  const truncatedProof = { id: 'ev-truncated', family: 'SemanticEvidence', semanticKind: 'test', completeness: 'truncated', deterministic: true };
+  const partialProof = { id: 'ev-partial', family: 'SemanticEvidence', semanticKind: 'test', completeness: 'partial', deterministic: true };
+  const completeProof = { id: 'ev-complete', family: 'SemanticEvidence', semanticKind: 'test', completeness: 'complete', deterministic: true };
+
+  const testGraph = new EvidenceGraph({
+    nodes: [
+      unsupportedProof,
+      truncatedProof,
+      partialProof,
+      completeProof,
+      { id: 'claim-unsup', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-unsupported'], completeness: 'complete', verdict: 'unknown' },
+      { id: 'claim-trunc', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-truncated'], completeness: 'complete', verdict: 'unknown' },
+      { id: 'claim-part', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-partial'], completeness: 'complete', verdict: 'unknown' },
+      { id: 'claim-comp', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-complete'], completeness: 'complete', verdict: 'unknown' },
+    ],
+  });
+
+  assert.equal(testGraph.evaluateClaim('claim-unsup').verdict, 'unverified', 'unsupported evidence cannot confirm');
+  assert.equal(testGraph.evaluateClaim('claim-trunc').verdict, 'unverified', 'truncated evidence cannot confirm');
+  assert.equal(testGraph.evaluateClaim('claim-part').verdict, 'unverified', 'partial evidence cannot confirm');
+  assert.equal(testGraph.evaluateClaim('claim-comp').verdict, 'confirmed', 'complete deterministic proof confirms');
+}
+
 console.log('core evidence contracts: ok');

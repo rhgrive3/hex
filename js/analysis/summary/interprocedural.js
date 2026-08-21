@@ -49,7 +49,12 @@ function fail(code) { throw new TypeError(code); }
  * JavaScript stack. Components come back in reverse topological order, which is
  * exactly the bottom-up order the solve wants.
  */
-export function condenseCallGraph(roots, successorsOf, { maxComponents = INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents } = {}) {
+export function condenseCallGraph(roots, successorsOf, {
+  maxComponents = INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents,
+  maxNodes = Math.max(10000, maxComponents),
+  maxEdges = Math.max(50000, maxNodes * 4),
+  signal = null,
+} = {}) {
   const index = new Map();
   const low = new Map();
   const onStack = new Set();
@@ -57,12 +62,18 @@ export function condenseCallGraph(roots, successorsOf, { maxComponents = INTERPR
   const components = [];
   let counter = 0;
   let truncated = false;
+  let traversedEdges = 0;
 
   for (const root of roots) {
+    if (signal?.aborted) return { components, truncated: true, cancelled: true };
     if (index.has(root)) continue;
-    // Explicit work stack: `state` is the index of the next successor to visit.
+    if (index.size >= maxNodes) {
+      truncated = true;
+      return { components, truncated };
+    }
     const work = [{ node: root, successors: null, state: 0 }];
     while (work.length) {
+      if (signal?.aborted) return { components, truncated: true, cancelled: true };
       const frame = work[work.length - 1];
       if (frame.successors == null) {
         index.set(frame.node, counter);
@@ -73,10 +84,21 @@ export function condenseCallGraph(roots, successorsOf, { maxComponents = INTERPR
         frame.successors = [...successorsOf(frame.node)].sort();
       }
       if (frame.state < frame.successors.length) {
+        if (++traversedEdges > maxEdges) {
+          truncated = true;
+          return { components, truncated };
+        }
         const next = frame.successors[frame.state];
         frame.state += 1;
-        if (!index.has(next)) work.push({ node: next, successors: null, state: 0 });
-        else if (onStack.has(next)) low.set(frame.node, Math.min(low.get(frame.node), index.get(next)));
+        if (!index.has(next)) {
+          if (index.size >= maxNodes) {
+            truncated = true;
+            return { components, truncated };
+          }
+          work.push({ node: next, successors: null, state: 0 });
+        } else if (onStack.has(next)) {
+          low.set(frame.node, Math.min(low.get(frame.node), index.get(next)));
+        }
         continue;
       }
       if (low.get(frame.node) === index.get(frame.node)) {
@@ -176,7 +198,15 @@ export function solveInterproceduralSummaries({
     return [...new Set([...direct, ...indirect])].filter((id) => locals.has(id));
   };
 
-  const { components, truncated } = condenseCallGraph(roots, calleesOf, { maxComponents: limits.maxComponents });
+  const { components, truncated, cancelled } = condenseCallGraph(roots, calleesOf, {
+    maxComponents: limits.maxComponents,
+    maxNodes: limits.maxNodes,
+    maxEdges: limits.maxEdges,
+    signal,
+  });
+  if (cancelled || signal?.aborted) {
+    return { summaries: new Map(), components, status: status('partial', 'cancelled'), iterations: 0 };
+  }
   if (truncated) {
     return { summaries: new Map(), components, status: status('truncated', 'budget-exhausted'), iterations: 0 };
   }

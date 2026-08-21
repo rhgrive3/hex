@@ -57,15 +57,44 @@ class IndexedMinHeap {
   remove(artifactId) { const index=this.indices.get(String(artifactId)); if (index==null) return null; const removed=this.items[index]; const last=this.items.pop(); this.indices.delete(removed.artifactId); if (index<this.items.length) { this.items[index]=last; this.indices.set(last.artifactId,index); this.#up(index); this.#down(this.indices.get(last.artifactId)); } return removed; }
 }
 
+function priorityName(value) {
+  for (const [k, v] of Object.entries(ANALYSIS_PRIORITY)) {
+    if (v === value) return k;
+  }
+  return typeof value === 'string' ? value : 'current';
+}
+
 export class AnalysisScheduler {
-  constructor({ store, maxConcurrency=2, starvationInterval=8, defaultBudget={} }={}) {
+  constructor({ store, maxConcurrency=2, starvationInterval=8, defaultBudget={}, onEvent=null }={}) {
     if (!store) throw new TypeError('artifact-store-required');
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency <= 0) throw new TypeError('scheduler-max-concurrency-invalid');
     if (!Number.isSafeInteger(Number(starvationInterval)) || Number(starvationInterval) <= 0) throw new TypeError('scheduler-starvation-interval-invalid');
     this.store=store; this.maxConcurrency=maxConcurrency; this.starvationInterval=Number(starvationInterval); this.defaultBudget=defaultBudget;
+    this.onEvent = typeof onEvent === 'function' ? onEvent : null;
+    this.seq = 0;
     this.inflight=new Map(); this.running=0; this.dispatchEpoch=0; this.dag=new Map(); this.dagEdgeCount=0; this.states=new Map(); this.activeConsumers=0;
     this.queue=new IndexedMinHeap((a,b)=>a.orderKey<b.orderKey?-1:a.orderKey>b.orderKey?1:a.artifactId.localeCompare(b.artifactId));
-    this.metrics={ requests:0,cacheHits:0,producerInvocations:0,coalescedRequests:0,queueOperations:0,completedJobs:0,failedJobs:0,cancelledJobs:0,cancelledConsumers:0,orphanCancellations:0,budgetExhaustions:0,dependencyFailures:0,producerFailures:0,storageFailures:0,cycleErrors:0,cycleChecks:0,cycleTraversalSteps:0,dependencyIdentityErrors:0,maxObservedRunning:0 };
+    this.metrics={ requests:0,cacheHits:0,producerInvocations:0,coalescedRequests:0,queueOperations:0,completedJobs:0,failedJobs:0,cancelledJobs:0,cancelledConsumers:0,orphanCancellations:0,budgetExhaustions:0,dependencyFailures:0,producerFailures:0,storageFailures:0,cycleErrors:0,cycleChecks:0,cycleTraversalSteps:0,dependencyIdentityErrors:0,maxObservedRunning:0,observerFailures:0 };
+  }
+
+  #emit(type, taskOrArtifactId, details = {}) {
+    if (!this.onEvent) return;
+    try {
+      const artifactId = typeof taskOrArtifactId === 'string' ? taskOrArtifactId : taskOrArtifactId?.artifactId;
+      const state = typeof taskOrArtifactId === 'object' && taskOrArtifactId?.state != null
+        ? taskOrArtifactId.state
+        : (this.states.get(artifactId) ?? null);
+      const event = Object.freeze({
+        seq: ++this.seq,
+        type,
+        artifactId,
+        state,
+        details: Object.freeze({ ...details }),
+      });
+      this.onEvent(event);
+    } catch {
+      this.metrics.observerFailures = (this.metrics.observerFailures || 0) + 1;
+    }
   }
 
   request(request) { return this.#request(request,[],null); }
@@ -75,15 +104,25 @@ export class AnalysisScheduler {
     const artifactId=String(descriptor?.artifactId||'');
     if (!artifactId) return Promise.reject(new TypeError('artifact-request-descriptor-required'));
     this.metrics.requests++;
+    const priority = priorityValue(request.priority);
+    this.#emit('request.received', artifactId, {
+      priority: priorityName(priority),
+      dependencyCount: (descriptor?.upstreamArtifactIds || []).length,
+    });
     const consumerSignals=uniqueSignals(request.signal,parentSignal);
     const alreadyAborted=consumerSignals.find((signal)=>signal.aborted);
     if (alreadyAborted) { this.metrics.cancelledConsumers++; return Promise.reject(abortError(alreadyAborted)); }
     if (ancestry.includes(artifactId)) { this.metrics.cycleErrors++; return Promise.reject(new SchedulerCycleError([...ancestry,artifactId])); }
     const existing=this.inflight.get(artifactId);
-    if (existing) { this.metrics.coalescedRequests++; return this.#attachConsumer(existing,consumerSignals); }
+    if (existing) {
+      this.metrics.coalescedRequests++;
+      const p = this.#attachConsumer(existing,consumerSignals);
+      this.#emit('request.coalesced', existing, { consumerCount: existing.consumerCount });
+      return p;
+    }
 
     const controller=new AbortController();
-    const task={ artifactId,descriptor,request,controller,priority:priorityValue(request.priority),enqueuedEpoch:null,orderKey:null,state:'waiting-dependency',phase:'dependency',queueResolve:null,queueReject:null,promise:null,settled:false,consumerCount:0 };
+    const task={ artifactId,descriptor,request,controller,priority,enqueuedEpoch:null,orderKey:null,state:'waiting-dependency',phase:'dependency',queueResolve:null,queueReject:null,promise:null,settled:false,consumerCount:0 };
     controller.signal.addEventListener('abort',()=>this.#cancelQueuedTask(task),{once:true});
     task.promise=Promise.resolve()
       .then(()=>this.#execute(task,[...ancestry,artifactId]))
@@ -134,7 +173,12 @@ export class AnalysisScheduler {
 
     task.phase='cache';
     const cached=await this.store.get(task.descriptor,{signal:task.controller.signal});
-    if (cached.status==='hit') { this.metrics.cacheHits++; this.states.set(task.artifactId,'completed'); return {...cached,state:'completed',reused:true}; }
+    if (cached.status==='hit') {
+      this.metrics.cacheHits++;
+      this.states.set(task.artifactId,'completed');
+      this.#emit('cache.hit', task, { source:'store' });
+      return {...cached,state:'completed',reused:true};
+    }
     if (task.controller.signal.aborted) throw abortError(task.controller.signal);
     return this.#enqueue(task,dependencyResults);
   }
@@ -198,7 +242,9 @@ export class AnalysisScheduler {
       if (task.controller.signal.aborted) { reject(abortError(task.controller.signal)); return; }
       task.queueResolve=resolve; task.queueReject=reject; task.dependencyResults=dependencyResults; task.state='ready'; task.phase='ready'; task.enqueuedEpoch=this.dispatchEpoch;
       task.orderKey=BigInt(task.enqueuedEpoch)+(BigInt(task.priority)*BigInt(this.starvationInterval));
-      this.states.set(task.artifactId,'ready'); this.queue.push(task); this.metrics.queueOperations++; this.#pump();
+      this.states.set(task.artifactId,'ready'); this.queue.push(task); this.metrics.queueOperations++;
+      this.#emit('queue.enqueued', task, { priority: priorityName(task.priority) });
+      this.#pump();
     });
   }
 
@@ -207,6 +253,7 @@ export class AnalysisScheduler {
       const task=this.queue.pop(); this.metrics.queueOperations++; this.dispatchEpoch++;
       if (task.controller.signal.aborted) { task.queueReject(abortError(task.controller.signal)); continue; }
       this.running++; this.metrics.maxObservedRunning=Math.max(this.metrics.maxObservedRunning,this.running); task.state='running'; task.phase='producer'; this.states.set(task.artifactId,'running');
+      this.#emit('job.started', task, { priority: priorityName(task.priority) });
       this.#run(task).then(task.queueResolve,task.queueReject).finally(()=>{ this.running--; this.#pump(); });
     }
   }
@@ -223,16 +270,47 @@ export class AnalysisScheduler {
     task.phase='publish';
     const published=await this.store.publish(task.descriptor,payload,{ signal,completeness:task.request.completeness??'complete',validate:task.request.validate,creation:task.request.creation });
     budget.checkCancelled(); this.metrics.completedJobs++; this.states.set(task.artifactId,'completed'); task.phase='completed';
+    this.#emit('job.completed', task, { published: true });
     return {...published,state:'completed',reused:false,budget:budget.snapshot()};
   }
 
   #recordFailure(task,error) {
-    if (error instanceof BudgetExceededError) { this.metrics.budgetExhaustions++; this.states.set(task.artifactId,'budget-exhausted'); return; }
-    if (task.controller.signal.aborted||error?.name==='AbortError') { this.metrics.cancelledJobs++; this.states.set(task.artifactId,'cancelled'); return; }
+    if (error instanceof BudgetExceededError) {
+      this.metrics.budgetExhaustions++;
+      this.states.set(task.artifactId,'budget-exhausted');
+      this.#emit('budget.exhausted', task, {
+        resource: error.resource ?? null,
+        limit: error.limit ?? null,
+        requested: error.used ?? error.requested ?? null,
+      });
+      return;
+    }
+    if (task.controller.signal.aborted||error?.name==='AbortError') {
+      this.metrics.cancelledJobs++;
+      this.states.set(task.artifactId,'cancelled');
+      const phase = task.phase === 'producer' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      this.#emit('job.cancelled', task, { phase });
+      return;
+    }
+    if (error instanceof SchedulerDependencyError) {
+      this.metrics.failedJobs++;
+      this.states.set(task.artifactId,'failed');
+      this.#emit('dependency.failed', task, {
+        dependencyArtifactId: error.cause?.artifactId || error.artifactId || null,
+      });
+      return;
+    }
+    if (task.phase==='cache'||task.phase==='publish'||isStorageFailure(error)) {
+      this.metrics.failedJobs++;
+      this.metrics.storageFailures++;
+      this.states.set(task.artifactId,'failed');
+      this.#emit('storage.failed', task, { code: error.code || null });
+      return;
+    }
     this.metrics.failedJobs++;
     if (task.phase==='producer') this.metrics.producerFailures++;
-    if (task.phase==='cache'||task.phase==='publish'||isStorageFailure(error)) this.metrics.storageFailures++;
     this.states.set(task.artifactId,'failed');
+    this.#emit('job.failed', task, { code: error.code || null, name: error.name || 'Error' });
   }
 
   #cancelQueuedTask(task) {

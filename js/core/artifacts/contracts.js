@@ -40,9 +40,14 @@ function sortedStrings(values) {
 /** Canonicalizes JS containers before handing them to the one repository digest. */
 export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   if (typeof value === 'bigint') return value.toString();
-  if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return null;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new ArtifactError('artifact-key-invalid-number', 'Artifact key values must be finite numbers');
+    return value;
+  }
+  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') {
+    throw new ArtifactError('artifact-key-invalid-type', `Artifact key values must be JSON-serializable, received ${typeof value}`);
+  }
   if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
   if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
   if (value instanceof Date) return value.toISOString();
@@ -53,18 +58,17 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   if (value instanceof Map) {
     out = [...value.entries()].map(([key, entryValue]) => [canonicalArtifactKeyValue(key, seen), canonicalArtifactKeyValue(entryValue, seen)]);
     out.sort((a, b) => stableStringify(a[0]).localeCompare(stableStringify(b[0])) || stableStringify(a[1]).localeCompare(stableStringify(b[1])));
-    out = { $map:out };
+    out = { $map: out };
   } else if (value instanceof Set) {
     const values = [...value].map((entry) => canonicalArtifactKeyValue(entry, seen));
     values.sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
-    out = { $set:values };
+    out = { $set: values };
   } else if (Array.isArray(value)) {
     out = value.map((entry) => canonicalArtifactKeyValue(entry, seen));
   } else {
     out = {};
     for (const key of Object.keys(value).sort()) {
-      const normalized = canonicalArtifactKeyValue(value[key], seen);
-      if (normalized !== null || value[key] === null) out[key] = normalized;
+      out[key] = canonicalArtifactKeyValue(value[key], seen);
     }
   }
   seen.delete(value);

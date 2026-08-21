@@ -6,7 +6,7 @@ import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftX86MachineEffects } from '
 import { x86RegisterFile } from './x86_64/registers.js';
 import { RISCV64_INSTRUCTION_ALIGNMENT, RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftRiscv64MachineEffects } from './riscv64/effects/index.js';
 import { riscv64RegisterFile } from './riscv64/registers.js';
-import { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2, architecturePluginsV2 } from './registry.js';
+import { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2, architecturePluginsV2, canonicalArchitectureId, normalizeArchitecturePositiveInteger } from './registry.js';
 
 function arm64ControlFlow(instruction) {
   const op = String(instruction?.mnemonic || '').toLowerCase();
@@ -159,4 +159,4 @@ export const UNKNOWN_ARCHITECTURE = registerArchitecturePlugin({
   capabilities:{ decode:'unsupported', exactEffects:'unsupported', semanticAnalysis:'unsupported' },
 });
 
-export { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2, architecturePluginsV2 };
+export { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2, architecturePluginsV2, canonicalArchitectureId, normalizeArchitecturePositiveInteger };
