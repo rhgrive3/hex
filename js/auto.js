@@ -357,7 +357,6 @@ export async function autoAnalyze(opts) {
       if (g.candidates[1]) push(g.candidates[1].addr, 'goal', g.goal);
     }
     for (const n of report.notable) push(n.addr, 'notable', null);
-
     for (let i = 0; i < targets.length; i++) {
       if (cancelled()) { report.notes.push('deep-cancelled'); break; }
       progress({ phase: 'deep', done: i, all: targets.length });
@@ -429,14 +428,19 @@ export function autoNextSteps(report) {
 
 function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
-/* Cache only successful, non-null analysis. Rejections/nulls are retryable. */
-function memoize(analyze) {
+/*
+ * Cache only successful, non-null analysis. Rejections/nulls are retryable.
+ * Forward the complete options bag: pinpoint injects AbortSignal as the third
+ * argument, and dropping it here would turn its timeout into an outer-only
+ * Promise race while the real semantic analysis kept running in the backend.
+ */
+export function memoizeAnalysis(analyze) {
   const cache = new Map();
-  return (addr, end) => {
+  return (addr, end, options = undefined) => {
     const key = `${addr == null ? 'null' : addr.toString()}:${end == null ? 'null' : end.toString()}`;
     if (cache.has(key)) return cache.get(key);
     const p = Promise.resolve()
-      .then(() => analyze(addr, end))
+      .then(() => analyze(addr, end, options))
       .then((value) => {
         if (value == null) cache.delete(key);
         return value;
@@ -449,3 +453,5 @@ function memoize(analyze) {
     return p;
   };
 }
+
+function memoize(analyze) { return memoizeAnalysis(analyze); }
