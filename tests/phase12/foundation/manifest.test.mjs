@@ -24,11 +24,15 @@ assert.equal(integrationPass.ok, true);
 const generatedViolation = validateFiles(['reports/phase12/phase12-release-evidence.json'], 'p12-c', manifest);
 assert.equal(generatedViolation.ok, false);
 assert.ok(generatedViolation.violations.some((item) => item.category === 'generated' || item.category === 'release'));
+const userscriptGeneratedViolation = validateFiles(['userscript/hex.user.template.js'], 'p12-c', manifest);
+assert.equal(userscriptGeneratedViolation.ok, false);
+assert.ok(userscriptGeneratedViolation.violations.some((item) => item.category === 'generated'));
 const aggregatePass = validateAggregateFiles([
   'js/collaboration/index.js',
   'js/knowledge/phase12-rules.js',
   'tests/phase12/adversarial/trust-boundaries.test.mjs',
   'tools/validation/phase12/verify.mjs',
+  'userscript/hex.user.template.js',
 ], manifest);
 assert.equal(aggregatePass.ok, true);
 const aggregateViolation = validateAggregateFiles(['js/unknown-phase12-file.js'], manifest);

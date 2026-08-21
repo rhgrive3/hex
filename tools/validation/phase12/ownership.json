@@ -32,7 +32,10 @@
       "package.json",
       "js/platform/capability-maturity.js",
       "docs/SUPPORT_MATRIX.md",
-      "reports/phase12/**"
+      "reports/phase12/**",
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json",
+      "js/userscript/deployment-identity.generated.js"
     ]
   },
   "contractPaths": [
@@ -49,7 +52,12 @@
     "tests/phase12/integration/**",
     "package.json"
   ],
-  "generatedPaths": ["reports/phase12/**"],
+  "generatedPaths": [
+    "reports/phase12/**",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json",
+    "js/userscript/deployment-identity.generated.js"
+  ],
   "releaseOnlyPaths": ["reports/phase12/**"],
   "forbiddenPaths": ["js/binary/**", "js/architecture/**", "main"],
   "generatedWriteOwners": ["p12-integration"],
