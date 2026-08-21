@@ -17,7 +17,7 @@ const { Backend }=await import('../js/backend.js');
   const b=new Backend();
   const pending=b._callTo('legacy','probe',{});
   assert.equal(b.pending.size,1);
-  assert.equal(pending.cancel(),undefined);
+  assert.equal(pending.cancel(),true);
   await assert.rejects(pending,(error)=>error?.name==='AbortError' && error?.code==='ABORT_ERR');
   assert.equal(b.pending.size,0,'cancel must remove and reject the pending RPC locally');
   assert.ok(b.legacyWorker.sent.some((m)=>m.t==='cancel' && m.requestId===pending.requestId),'cancel must still notify the worker best-effort');
