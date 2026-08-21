@@ -68,7 +68,13 @@ jobs:
       - name: Resolve generated-output ownership policy
         id: generated-policy
         shell: bash
-        run: echo "mode=$(node tools/validation/generated-output-policy.mjs)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          mode="$(node tools/validation/generated-output-policy.mjs)"
+          case "$mode" in
+            enforce|ephemeral) printf 'mode=%s\n' "$mode" >> "$GITHUB_OUTPUT" ;;
+            *) echo "unknown generated-output policy mode: $mode" >&2; exit 1 ;;
+          esac
       - name: Generated-output synchronization
         if: steps.generated-policy.outputs.mode == 'enforce'
         # Phase 7 edits protected runtime source, so it owns the rebuild. A

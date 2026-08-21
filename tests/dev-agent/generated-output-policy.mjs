@@ -33,6 +33,12 @@ for (const workflow of [
   assert.match(source, /tools\/validation\/generated-output-policy\.mjs/, `${workflow} must use the canonical policy`);
   if (workflow.startsWith('.github/')) {
     assert.match(source, /steps\.generated-policy\.outputs\.mode/, `${workflow} must honor the canonical policy result`);
+    if (workflow.endsWith('/phase7-release-validation.yml')) {
+      assert.match(source, /set -euo pipefail/, 'Phase 7 policy resolution must fail closed on command errors');
+      assert.match(source, /case \"\$mode\" in/, 'Phase 7 policy resolution must validate its output');
+      assert.match(source, /enforce\|ephemeral/, 'Phase 7 policy resolution must whitelist only known modes');
+      assert.match(source, /exit 1/, 'Phase 7 policy resolution must reject unknown modes');
+    }
   }
 }
 console.log('generated output policy: ok');
