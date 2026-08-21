@@ -144,7 +144,7 @@ export class RuntimeAuthorityTracker {
   }
 }
 
-export function runtimeProfileSupport({ binding, providerProfileId = null, providerCapabilities = {}, requiredCapabilities = [], proof = {} } = {}) {
+export function runtimeProfileSupport({ binding, providerProfileId = null, targetProfileId = null, providerCapabilities = {}, requiredCapabilities = [], proof = {} } = {}) {
   const hasBinding = binding?.schemaVersion === RUNTIME_AUTHORITY_SCHEMA;
   const declared = capabilityList(requiredCapabilities);
   const missing = declared.filter((key) => providerCapabilities[key] !== true);
@@ -155,11 +155,19 @@ export function runtimeProfileSupport({ binding, providerProfileId = null, provi
     && proof.capabilityTests === true
     && proof.moduleMappingTests === true
     && proof.mutationAuthorityTests === true;
-  const proven = hasBinding && !!providerProfileId && declared.length > 0 && missing.length === 0 && proofComplete;
+  const normalizedProviderProfileId = providerProfileId == null ? null : String(providerProfileId).trim();
+  const normalizedTargetProfileId = targetProfileId == null ? null : String(targetProfileId).trim();
+  const proven = hasBinding
+    && !!normalizedProviderProfileId
+    && !!normalizedTargetProfileId
+    && declared.length > 0
+    && missing.length === 0
+    && proofComplete;
   return Object.freeze({
     status: proven ? 'supported-for-exact-provider-profile' : hasBinding ? 'partial' : 'unavailable',
     bindingId: hasBinding ? binding.bindingId : null,
-    providerProfileId: providerProfileId == null ? null : String(providerProfileId),
+    providerProfileId: normalizedProviderProfileId || null,
+    targetProfileId: normalizedTargetProfileId || null,
     requiredCapabilities: Object.freeze(declared),
     missingCapabilities: Object.freeze(missing),
     proofComplete,
