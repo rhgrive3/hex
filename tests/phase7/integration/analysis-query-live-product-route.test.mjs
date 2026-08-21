@@ -180,6 +180,29 @@ function makeStore(entries) {
   assert.equal(fetchChunkCalls, 1, 'analysis cache must prevent a second backend decode');
 }
 
+/* Direct QueryAPI reads fail closed, while the legacy UI entry point preserves
+   its historical null-on-failure contract for fire-and-forget callers. */
+{
+  const region = { id: 'failure-text', vmAddr: 0x5000n, size: 4n };
+  const store = makeStore({ fileInfo: { hash: 'failure' }, sliceIndex: 0, currentRegion: region });
+  const failure = new Error('producer-failure');
+  const app = {
+    store,
+    backend: { binaryId: 'bin_failure', gen: 1, analysisRoute: 'artifact' },
+    workspace: { bindingRevision: 0, project: null },
+    symbols: { gen: 0, functionCount: 1 },
+    validatedFunctionRange: () => ({ ok: true, start: 0x5000n, end: 0x5004n, region }),
+    executableRegionFor: () => region,
+    analysisFunctionProducer: async () => { throw failure; },
+    analyzeFunctionAt: async () => { throw new Error('legacy-must-not-run'); },
+  };
+  const api = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(app));
+  app.analysisQueries = api;
+  const snapshot = await api.snapshot();
+  await assert.rejects(() => api.function(snapshot, 0x5000n), (error) => error === failure);
+  assert.equal(await app.analyzeFunctionAt(0x5000n), null);
+}
+
 /* Snapshot identity is a capability boundary. Rewriting fields while keeping
    the original snapshotId must never be accepted. */
 {
@@ -190,17 +213,16 @@ function makeStore(entries) {
     artifactVersions: { semantic: { schema: 2, producer: 'a' } },
   });
   const tampered = { ...valid, projectRevision: 3 };
-  assert.throws(
-    () => {
-      // Validation happens before the adapter is touched.
-      const api = new AnalysisQueryAPI({
-        currentIdentity: async () => valid,
-        functionById: async () => ({ value: null, status: { completeness: 'unsupported' } }),
-      });
-      return api.function(tampered, 0x10n);
-    },
-    /analysis-snapshot-identity-mismatch/,
-  );
+  const api = new AnalysisQueryAPI({
+    currentIdentity: async () => ({
+      binaryId: valid.binaryId,
+      projectRevision: valid.projectRevision,
+      analysisEpoch: valid.analysisEpoch,
+      artifactVersions: valid.artifactVersions,
+    }),
+    functionById: async () => ({ value: null, status: { completeness: 'unsupported' } }),
+  });
+  await assert.rejects(() => api.function(tampered, 0x10n), /analysis-snapshot-identity-mismatch/);
   assert.throws(() => createAnalysisSnapshot({ binaryId: 'x', analysisEpoch: Number.MAX_SAFE_INTEGER + 1 }), /analysis-snapshot-epoch-invalid/);
   assert.throws(() => createAnalysisSnapshot({ binaryId: 'x', analysisEpoch: 1, projectRevision: -1 }), /analysis-snapshot-project-revision-invalid/);
 }
