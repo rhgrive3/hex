@@ -32,8 +32,14 @@ const EXTRA_API_TABLE = [
   // strtoll/strtoull can store the first unparsed character through endptr.
   { id:'libc_strto', re:/^_?str(?:toll|toull)$/, cat:'string', args:null, ret:null, effect:'write' },
 
-  // Locale/ctype routines.
-  { id:'libc_locale', re:/^_?(?:__maskrune|__toupper|localeconv|strftime|setlocale|tzset)$/, cat:'runtime', args:null, ret:null, effect:'read' },
+  // Locale/ctype helpers that do not mutate caller-visible or process-global state.
+  { id:'libc_locale', re:/^_?(?:__maskrune|__toupper|localeconv)$/, cat:'runtime', args:null, ret:null, effect:'read' },
+
+  // strftime writes the formatted result to its caller-provided destination buffer.
+  { id:'libc_strftime', re:/^_?strftime$/, cat:'runtime', args:null, ret:null, effect:'write' },
+
+  // setlocale/tzset mutate process-global locale/timezone runtime state.
+  { id:'libc_locale_runtime', re:/^_?(?:setlocale|tzset)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
 
   // Remaining scalar libm conversions/operations.
   { id:'libm', re:/^_?(?:acosf?|asinf?|atanf?|tanf?|cosh|sinh|tanh|__exp10f)$/, cat:'runtime', args:null, ret:'number', effect:'read' },
