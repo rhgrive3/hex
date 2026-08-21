@@ -27,10 +27,19 @@ const EXTRA_API_TABLE = [
   { id:'posix_io', re:/^_?(?:fcntl|fstat|lstat|statfs|fstatfs|opendir|closedir|readdir|readdir_r|scandir|rename|pipe|socketpair|select|getsockname|getpeername|setsockopt|getsockopt|ioctl|kqueue|kevent|dup2|mkstemp|fsync|getcwd|dirfd|nftw|basename|if_nametoindex|gethostname|connectx|symlink|chmod|umask|ftruncate|open_dprotected_np|isatty)$/, cat:'io', args:null, ret:null, effect:'io' },
 
   // C string/search/conversion APIs missed by the existing narrower table.
-  { id:'libc_string', re:/^_?(?:strspn|strcspn|strpbrk|strndup|strtoll|strtoull|strcoll|strnstr|strcasestr|memmem|atof|atoll|__strcat_chk|fnmatch)$/, cat:'string', args:null, ret:null, effect:'read' },
+  { id:'libc_string', re:/^_?(?:strspn|strcspn|strpbrk|strndup|strcoll|strnstr|strcasestr|memmem|atof|atoll|__strcat_chk|fnmatch)$/, cat:'string', args:null, ret:null, effect:'read' },
 
-  // Locale/ctype routines.
-  { id:'libc_locale', re:/^_?(?:__maskrune|__toupper|localeconv|strftime|setlocale|tzset)$/, cat:'runtime', args:null, ret:null, effect:'read' },
+  // strtoll/strtoull can store the first unparsed character through endptr.
+  { id:'libc_strto', re:/^_?str(?:toll|toull)$/, cat:'string', args:null, ret:null, effect:'write' },
+
+  // Locale/ctype helpers that do not mutate caller-visible or process-global state.
+  { id:'libc_locale', re:/^_?(?:__maskrune|__toupper|localeconv)$/, cat:'runtime', args:null, ret:null, effect:'read' },
+
+  // strftime writes the formatted result to its caller-provided destination buffer.
+  { id:'libc_strftime', re:/^_?strftime$/, cat:'runtime', args:null, ret:null, effect:'write' },
+
+  // setlocale/tzset mutate process-global locale/timezone runtime state.
+  { id:'libc_locale_runtime', re:/^_?(?:setlocale|tzset)$/, cat:'runtime', args:null, ret:null, effect:'runtime' },
 
   // Remaining scalar libm conversions/operations.
   { id:'libm', re:/^_?(?:acosf?|asinf?|atanf?|tanf?|cosh|sinh|tanh|__exp10f)$/, cat:'runtime', args:null, ret:'number', effect:'read' },
