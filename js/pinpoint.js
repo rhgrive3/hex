@@ -2,18 +2,17 @@
  * Audited facade over the preserved implementation.
  *
  * The legacy engine already narrows exact/literal-name queries before
- * verification.  Its verification loop accidentally reset the Bayesian prior
- * to the full field universe.  Re-fuse the final evidence using the same
+ * verification. Its verification loop accidentally reset the Bayesian prior
+ * to the full field universe. Re-fuse the final evidence using the same
  * narrowed candidate set so additional verified evidence cannot reduce
- * confidence merely because a round ran.  See issue #274.
+ * confidence merely because a round ran. See issue #274.
  *
- * Automatic analysis also arrives here with the already-built value-shape
- * index. Re-running fieldAccess over the whole executable region for every
- * goal defeats that one-pass index and can turn the pinpoint phase into
- * N * binary-size work. When shapes are present, use those already-observed
- * mutation sites and skip the redundant whole-region access scan. A direct
- * caller that explicitly needs the exhaustive access scan can opt back in with
- * forceAccessScan.
+ * Automatic analysis also arrives here with a whole-program value-shape index.
+ * The legacy pinpoint stages used to call fieldAccess repeatedly per goal even
+ * though that worker API can inspect many offsets in one pass. The facade now
+ * turns those calls into one superset scan, caches the complete groups, and
+ * serves each legacy request from that cache. Requested size filtering is
+ * applied after the scan, so batching does not relax the caller's contract.
  */
 import {
   pinpointField as legacyPinpointField,
@@ -27,9 +26,12 @@ export * from './pinpoint-legacy.js';
 
 const DEFAULT_PINPOINT_ANALYSIS_TIMEOUT_MS = 30_000;
 const MAX_PINPOINT_ANALYSIS_TIMEOUT_MS = 120_000;
+const DEFAULT_ACCESS_SCAN_TIMEOUT_MS = 45_000;
+const MAX_ACCESS_SCAN_TIMEOUT_MS = 120_000;
 const DEFAULT_AUTO_UNIQUE_ANALYSES = 48;
 const MAX_AUTO_UNIQUE_ANALYSES = 256;
 const ANALYZE_GUARDS = new WeakMap();
+const ACCESS_BATCHES = new WeakMap();
 
 function narrowedPriorCount(candidates, universe) {
   if (!candidates.length) return Math.max(1, universe || 1);
@@ -46,10 +48,16 @@ function timeoutMs(opts) {
   return Math.max(1, Math.min(MAX_PINPOINT_ANALYSIS_TIMEOUT_MS, Math.floor(requested)));
 }
 
+function accessTimeoutMs(opts) {
+  const requested = Number(opts?.accessScanTimeoutMs);
+  if (!Number.isFinite(requested) || requested <= 0) return DEFAULT_ACCESS_SCAN_TIMEOUT_MS;
+  return Math.max(1, Math.min(MAX_ACCESS_SCAN_TIMEOUT_MS, Math.floor(requested)));
+}
+
 function uniqueAnalysisLimit(opts) {
-  // `shapes` is the automatic-analysis marker: prepare() always builds that
-  // one-pass index before calling autoAnalyze. Direct pinpoint callers keep the
-  // historical unlimited behaviour unless they explicitly opt in.
+  // `shapes` is the automatic-analysis marker: prepare() builds that one-pass
+  // index before autoAnalyze. Direct pinpoint callers without shapes retain the
+  // historical unlimited unique-function envelope.
   if (opts?.shapes == null) return Infinity;
   const requested = Number(opts?.maxPinpointAnalyses);
   if (!Number.isFinite(requested) || requested < 1) return DEFAULT_AUTO_UNIQUE_ANALYSES;
@@ -59,6 +67,12 @@ function uniqueAnalysisLimit(opts) {
 function timeoutError(ms) {
   const error = new Error(`pinpoint analysis timed out after ${ms}ms`);
   error.code = 'pinpoint-analysis-timeout';
+  return error;
+}
+
+function accessTimeoutError(ms) {
+  const error = new Error(`pinpoint access scan timed out after ${ms}ms`);
+  error.code = 'pinpoint-access-timeout';
   return error;
 }
 
@@ -103,8 +117,6 @@ function guardedAnalyze(analyze, opts) {
       return await Promise.race([Promise.resolve().then(() => analyze(...args)), timeout]);
     } catch (error) {
       if (error?.code === 'pinpoint-analysis-timeout') {
-        // Fail fast for the rest of the current burst instead of accumulating
-        // orphaned analyses. A later user action can retry after the breaker.
         state.blockedUntil = Date.now() + Math.min(5000, ms);
       }
       throw error;
@@ -114,12 +126,88 @@ function guardedAnalyze(analyze, opts) {
   };
 }
 
+function addOffset(set, value) {
+  if (value == null) return;
+  try { set.add(BigInt(value).toString()); } catch { /* invalid metadata is ignored */ }
+}
+
+function automaticOffsets(opts, requested) {
+  const keys = new Set();
+  for (const item of requested || []) addOffset(keys, item?.offset);
+  for (const entry of opts?.shapes?.values?.() || []) addOffset(keys, entry?.offset);
+  for (const cls of opts?.fields?.classes?.values?.() || []) {
+    for (const ivar of cls?.ivars || []) addOffset(keys, ivar?.offset);
+  }
+  // The worker indexes requested offsets by displacement. Scanning with size=0
+  // captures a lossless superset once; each legacy request is size-filtered
+  // when read back from the cache below.
+  return Array.from(keys, (key) => ({ offset: BigInt(key), size: 0 }));
+}
+
+function emptyGroups() { return new Map(); }
+function groupAt(groups, key) {
+  if (!groups) return [];
+  return (groups.get ? groups.get(key) : groups[key]) || [];
+}
+function sizeMatches(site, size) {
+  const wanted = Number(size) || 0;
+  if (wanted <= 0) return true;
+  return site?.size === wanted || (wanted > 8 && site?.size === 8);
+}
+
+/*
+ * fieldAccessMany is specifically designed to inspect many displacements in a
+ * single executable-region pass. Build that superset on the first pinpoint
+ * request and reuse it for every later goal. A failed/timed-out scan is cached
+ * as empty for this analysis burst so an unhealthy worker is not hammered by
+ * N identical full-region retries.
+ */
+function batchedScanAccess(scanAccess, opts) {
+  if (typeof scanAccess !== 'function') return scanAccess;
+  let state = ACCESS_BATCHES.get(scanAccess);
+  if (!state) {
+    state = { promise: null, groups: null };
+    ACCESS_BATCHES.set(scanAccess, state);
+  }
+  return async (requested = []) => {
+    if (!state.groups && !state.promise) {
+      const all = automaticOffsets(opts, requested);
+      const ms = accessTimeoutMs(opts);
+      let timer = null;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(accessTimeoutError(ms)), ms);
+      });
+      state.promise = Promise.race([Promise.resolve().then(() => scanAccess(all)), timeout])
+        .then((groups) => {
+          state.groups = groups || emptyGroups();
+          return state.groups;
+        }, (error) => {
+          state.groups = emptyGroups();
+          throw error;
+        })
+        .finally(() => {
+          if (timer != null) clearTimeout(timer);
+          state.promise = null;
+        });
+    }
+    let groups;
+    try { groups = state.groups || await state.promise; }
+    catch { groups = state.groups || emptyGroups(); }
+    const out = new Map();
+    for (const item of requested || []) {
+      if (item?.offset == null) continue;
+      const key = BigInt(item.offset).toString();
+      out.set(key, groupAt(groups, key).filter((site) => sizeMatches(site, item.size)));
+    }
+    return out;
+  };
+}
+
 function preparedOptions(opts) {
-  const shapeBacked = opts?.shapes != null && opts?.forceAccessScan !== true;
   return {
     ...(opts || {}),
     analyze: guardedAnalyze(opts?.analyze, opts),
-    ...(shapeBacked ? { scanAccess: null } : {}),
+    scanAccess: opts?.forceAccessScan === true ? opts?.scanAccess : batchedScanAccess(opts?.scanAccess, opts),
   };
 }
 
@@ -136,16 +224,16 @@ function shapeMutationSites(shapes, offset) {
       const key = site.addr.toString();
       if (seen.has(key)) continue;
       seen.add(key);
-      // Shape events are observed mutations, so expose them as writes to the
-      // existing grouping code. This retains function/owner prioritization.
       out.push({ addr: site.addr, kind: 'store' });
     }
   }
   return out;
 }
 
+/* Shape sites are only a fallback when the exhaustive batched access scan did
+ * not produce a change site. Never replace stronger full-scan evidence. */
 function hydrateShapeChangeSites(pin, opts) {
-  if (!pin?.top || opts?.shapes == null) return pin;
+  if (!pin?.top || opts?.shapes == null || pin.changeSites?.length) return pin;
   const sites = shapeMutationSites(opts.shapes, pin.top.offset);
   if (!sites.length) return pin;
   const className = pin.kind === 'field' ? pin.top.className : null;
