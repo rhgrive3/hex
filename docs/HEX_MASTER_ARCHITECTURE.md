@@ -67,6 +67,8 @@ The following statements supersede stale v1.0 current-state/debt descriptions:
 
 The highest-value remaining debt is boundary completeness and proof coverage, not the absence of an analysis stack.
 
+The two-stage execution sequence for closing the remaining Phase 1–12 debt is consolidated in [`POST_PHASE_COMPLETION_TWO_STAGE_PLAYBOOK.md`](./POST_PHASE_COMPLETION_TWO_STAGE_PLAYBOOK.md). That playbook is subordinate to this specification and the current source/test/capability truth; it defines execution order and proof gates, not a Phase 13/14 architecture extension.
+
 - Complete architecture-wide exact MachineEffects coverage sufficiently to satisfy A2 cumulatively, while retaining explicit unsupported/partial semantics.
 - Continue removing architecture/ABI assumptions from generic semantic, type-recovery and decompiler code without creating a second semantic engine.
 - Improve points-to/alias precision, region reasoning, interprocedural summaries and global type/prototype constraints conservatively.
