@@ -30,6 +30,7 @@
       "tests/phase12/integration/**",
       ".github/workflows/phase12-release-validation.yml",
       "package.json",
+      "js/platform/capability-maturity.js",
       "docs/SUPPORT_MATRIX.md",
       "reports/phase12/**"
     ]

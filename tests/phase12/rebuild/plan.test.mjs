@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import { adaptPatchSetToRebuildPlan, createRebuildPlan, materializeRebuildPlan, publishRebuildOutput, rebuildSupportTruth, validateRebuildOutput } from '../../../js/rebuild/index.js';
+import { PatchSet } from '../../../js/patch.js';
+import { stableDigest } from '../../../js/core/identity/index.js';
+
+const source = Uint8Array.from([1, 2, 3, 4, 5]);
+const sourceHash = `bytes:${stableDigest(Array.from(source))}`;
+const patch = new PatchSet();
+patch.add(1, Uint8Array.from([2]), Uint8Array.from([9]));
+const plan = adaptPatchSetToRebuildPlan(patch, { binaryId: 'hex-binary:p', sourceHash, loaderVersion: 'loader-1' });
+assert.equal(plan.schemaVersion, 'hex-rebuild-plan-v1');
+assert.ok(plan.requiredValidators.includes('loader-reparse'));
+const materialized = await materializeRebuildPlan(plan, source);
+assert.equal(materialized.status, 'materialized');
+assert.deepEqual([...materialized.bytes], [1, 9, 3, 4, 5]);
+const validation = await validateRebuildOutput(plan, materialized, { original: source, loaderReparse: (bytes) => ({ ok: bytes[1] === 9 }) });
+assert.equal(validation.status, 'valid');
+assert.equal((await publishRebuildOutput(materialized, validation)).status, 'not-published');
+let promoted = null;
+assert.equal((await publishRebuildOutput(materialized, validation, { promote: (bytes) => { promoted = bytes; return 'ok'; } })).status, 'published');
+assert.equal(promoted[1], 9);
+const stale = await materializeRebuildPlan(plan, Uint8Array.from([1, 8, 3, 4, 5]));
+assert.equal(stale.reason, 'source-identity-mismatch');
+assert.equal(rebuildSupportTruth({ format: 'macho', operation: 'same-size', proof: { exactHead: false } }).status, 'unsupported');
+assert.throws(() => createRebuildPlan({ binaryId: 'b', sourceHash, loaderVersion: '1', operations: [{ offset: 0, before: [1, 2], after: [3, 4] }, { offset: 1, before: [2], after: [4] }] }), /overlapping/);
+console.log('[phase12] bounded RebuildPlan/materialization tests passed');
