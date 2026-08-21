@@ -56,7 +56,9 @@ const { NEVER, OBSERVATION: BATCHABLE } = DEV_BATCH_POLICY;
 /* Order is significant: the prompt renders argument contracts in this order and
    each surface exposes its tools in this order. */
 const ENTRIES = [
-  entry(DEV_RUNTIME_IDENTITY_TOOL, DEV_TOOL_SURFACE.ADMIN, 'runtimeIdentity', OBSERVATION, DEV_TOOL_OWNER.DEV_RUNTIME, '{}', { rpcName: 'dev.runtime.identity', batchPolicy: BATCHABLE }),
+  // Reading identity also observes/updates the self-update gate, so it is not
+  // safe to replay through H2 even though the returned value is observational.
+  entry(DEV_RUNTIME_IDENTITY_TOOL, DEV_TOOL_SURFACE.ADMIN, 'runtimeIdentity', OBSERVATION, DEV_TOOL_OWNER.DEV_RUNTIME, '{}', { rpcName: 'dev.runtime.identity', batchPolicy: NEVER }),
   entry(DEV_RUNTIME_ACTIVATION_TOOL, DEV_TOOL_SURFACE.RUNTIME, null, CONTROL, DEV_TOOL_OWNER.DEV_RUNTIME, '{"expectedCommit":"<merged 40-hex commit>","expectedBuildId":"<24-hex runtime buildId>","expectedUserscriptVersion":"<optional version>","capabilities":["<tool gated until activation>"],"reason":"<why the runtime must be reloaded>"}'),
 
   entry('worker.discover', DEV_TOOL_SURFACE.WORKER, 'discover', OBSERVATION, DEV_TOOL_OWNER.SINGLE_SLOT_WORKER, '{}', { rpcName: 'dev.worker.discover' }),

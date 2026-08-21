@@ -391,6 +391,13 @@ const MUST_NOT_BE_OBSERVATION = Object.freeze({
   [DEV_RUNTIME_ACTIVATION_TOOL]: DEV_OPERATION_CLASS.CONTROL,
 });
 
+// The returned identity is read-only data, but the normal handler also
+// updates the self-update gate. That ownership-state side effect makes it
+// ineligible for H2 even while its operation class remains observation.
+const MUST_NOT_BE_BATCHABLE = Object.freeze([
+  DEV_ADMIN_TOOL.RUNTIME_IDENTITY,
+]);
+
 /* Batch eligibility is opt-in and fails closed. This card adds no batch tool;
    it only makes the eligibility explicit for CARD H2. */
 function batchEligibilityIsOptInAndFailsClosed() {
@@ -425,6 +432,10 @@ function batchEligibilityIsOptInAndFailsClosed() {
     assert.equal(devToolOperationClass(tool), expected, `${tool} must stay classified as ${expected}`);
     assert.notEqual(devToolOperationClass(tool), DEV_OPERATION_CLASS.OBSERVATION, `${tool} changes state and is never an observation`);
     assert.equal(devToolBatchPolicy(tool), DEV_BATCH_POLICY.NEVER);
+  }
+  for (const tool of MUST_NOT_BE_BATCHABLE) {
+    assert.equal(devToolOperationClass(tool), DEV_OPERATION_CLASS.OBSERVATION);
+    assert.equal(devToolBatchPolicy(tool), DEV_BATCH_POLICY.NEVER, `${tool} has ownership-state side effects and must never be batchable`);
   }
 
   // The fail-closed rule itself, across every combination.
