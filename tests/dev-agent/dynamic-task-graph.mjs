@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { MessageChannel } from 'node:worker_threads';
-import { DynamicTaskGraphHost } from '../../js/userscript/dev/task-graph/dynamic-task-graph.js';
+import { DynamicTaskGraphHost, devAttemptTraceDurations } from '../../js/userscript/dev/task-graph/dynamic-task-graph.js';
 import { IframeWorkerPool, DEV_WORKER_POOL_MAX } from '../../js/userscript/dev/frame-mesh/iframe-worker-pool.js';
 import { createDevWorkerParentRpc, createDevWorkerParentRpcClient } from '../../js/userscript/dev/parent-rpc.js';
 import { createDevAdminToolSurface } from '../../js/ai/dev/admin/tool-surface.js';
@@ -377,6 +377,125 @@ async function testDeadlineDoesNotMakeAnActiveWorkerReusable() {
   pool.close();
 }
 
+/* CARD F: enough of the critical path to answer "where did the time go" on a
+   real iPad, and nothing more. No prompt, no response, no DOM, no global log. */
+async function testBoundedCriticalPathTrace() {
+  const harness = new WorkerHarness({ retried: { failTimes: 2, delay: 2 }, slow: { hang: true } });
+  const pool = harness.pool();
+  const host = graphHost(pool);
+  await host.start({
+    graphId: 'trace',
+    maxConcurrency: 2,
+    tasks: [
+      { id: 'retried', dependencies: [], instruction: 'retried', maxAttempts: 3 },
+      { id: 'slow', dependencies: [], instruction: 'slow', maxAttempts: 1, timeoutMs: 20 },
+    ],
+  });
+  await waitTerminal(host, 'trace');
+
+  const retried = host.taskResult({ graphId: 'trace', taskId: 'retried' });
+  assert.equal(retried.state, 'SUCCEEDED');
+  assert.equal(retried.attempts, 3);
+  assert.equal(retried.trace.length, 3, 'one trace per attempt');
+  assert.deepEqual(retried.trace.map((entry) => entry.attempt), [1, 2, 3], 'retries stay distinguishable');
+  assert.deepEqual(retried.trace.map((entry) => entry.outcome), ['failed', 'failed', 'succeeded']);
+  assert.equal(new Set(retried.trace.map((entry) => entry.leaseId)).size, 3, 'each attempt records its own lease');
+
+  const success = retried.trace[2];
+  assert.equal(success.graphId, 'trace');
+  assert.equal(success.taskId, 'retried');
+  assert.ok(success.leaseId && success.workerId, 'the successful attempt records its Worker identity');
+  assert.equal(typeof success.slot, 'number');
+  for (const field of ['readyAt', 'leaseClaimedAt', 'promptSubmitAt', 'completionDetectedAt', 'resultParsedAt', 'leaseReleasedAt']) {
+    assert.ok(success[field], `a successful attempt records ${field}`);
+  }
+  const stamps = ['readyAt', 'leaseClaimedAt', 'promptSubmitAt', 'completionDetectedAt', 'resultParsedAt', 'leaseReleasedAt']
+    .map((field) => Date.parse(success[field]));
+  for (let index = 1; index < stamps.length; index++) {
+    assert.ok(stamps[index] >= stamps[index - 1], 'critical-path timestamps must be monotonic in attempt order');
+  }
+  assert.equal(success.error, null);
+
+  // Every phase cost is separable without any extra clock or poll.
+  const durations = devAttemptTraceDurations(success);
+  for (const [name, value] of Object.entries(durations)) {
+    assert.equal(typeof value, 'number', `${name} is derivable for a completed attempt`);
+    assert.ok(value >= 0, `${name} must not be negative`);
+  }
+
+  // A deadline kill really has no completion or parse cost. Reporting 0 there
+  // would be an invented measurement.
+  const slow = host.taskResult({ graphId: 'trace', taskId: 'slow' });
+  assert.equal(slow.state, 'FAILED');
+  assert.equal(slow.trace.length, 1);
+  const timedOut = slow.trace[0];
+  assert.equal(timedOut.outcome, 'failed');
+  assert.equal(timedOut.error.code, 'task-timeout', 'a failed attempt carries its terminal reason');
+  assert.ok(timedOut.promptSubmitAt, 'the turn was submitted');
+  assert.equal(timedOut.completionDetectedAt, null, 'no completion was ever detected');
+  assert.equal(timedOut.resultParsedAt, null);
+  assert.ok(timedOut.leaseReleasedAt, 'the lease was still cleaned up');
+  const timedOutDurations = devAttemptTraceDurations(timedOut);
+  assert.equal(typeof timedOutDurations.leaseToSubmitMs, 'number');
+  assert.equal(timedOutDurations.submitToCompletionDetectedMs, null, 'a missing endpoint stays null, never 0');
+  assert.equal(timedOutDurations.completionToParseMs, null);
+  assert.equal(timedOutDurations.parseToReleaseMs, null);
+
+  // The trace is diagnosis-only: routine status must not carry it.
+  const status = host.status({ graphId: 'trace' });
+  assert.equal(status.tasks.every((item) => item.trace === undefined), true, 'graph status stays free of full traces');
+
+  // No prompt body, no response body, no DOM.
+  const serialized = JSON.stringify([retried.trace, slow.trace]);
+  assert.equal(serialized.includes('ASSIGNED TASK'), false, 'the prompt body is never persisted');
+  assert.equal(serialized.includes('done:retried'), false, 'the response body is never persisted');
+  assert.equal(serialized.includes('responseText'), false);
+  host.close();
+  pool.close();
+}
+
+/* A cancelled attempt is recorded as cancelled, and the record stays bounded by
+   the attempt limit rather than growing with the run. */
+async function testCancelledAttemptTraceAndBounds() {
+  const harness = new WorkerHarness({ hanging: { hang: true }, waiting: {} });
+  const pool = harness.pool();
+  const host = graphHost(pool);
+  await host.start({ graphId: 'trace-cancel', maxConcurrency: 1, tasks: [task('hanging'), task('waiting', ['hanging'])] });
+  await waitFor(() => host.status({ graphId: 'trace-cancel' }).tasks.some((item) => item.id === 'hanging' && item.state === 'RUNNING'));
+  host.cancel({ graphId: 'trace-cancel', reason: 'test-trace-cancel' });
+  await waitTerminal(host, 'trace-cancel');
+
+  const hanging = host.taskResult({ graphId: 'trace-cancel', taskId: 'hanging' });
+  assert.equal(hanging.state, 'CANCELLED');
+  assert.equal(hanging.trace.length, 1);
+  assert.equal(hanging.trace[0].outcome, 'cancelled', 'a cancelled attempt carries its terminal outcome');
+  assert.equal(hanging.trace[0].error.code, 'cancelled');
+  assert.ok(hanging.trace[0].leaseReleasedAt, 'cancellation still records the completed cleanup');
+
+  // A task that never started an attempt has nothing to report, not an empty guess.
+  const waiting = host.taskResult({ graphId: 'trace-cancel', taskId: 'waiting' });
+  assert.equal(waiting.state, 'CANCELLED');
+  assert.deepEqual(waiting.trace, [], 'a task that never claimed a Worker records no attempt');
+  host.close();
+  pool.close();
+
+  // maxAttempts is the bound: five failures produce five records, not more.
+  const bounded = new WorkerHarness({ doomed: { failTimes: 9 } });
+  const boundedPool = bounded.pool();
+  const boundedHost = graphHost(boundedPool);
+  await boundedHost.start({ graphId: 'trace-bounds', tasks: [{ id: 'doomed', dependencies: [], instruction: 'doomed', maxAttempts: 99 }] });
+  assert.equal(boundedHost.taskResult({ graphId: 'trace-bounds', taskId: 'doomed' }).maxAttempts, 5, 'attempt policy clamps the request');
+  await waitTerminal(boundedHost, 'trace-bounds');
+  const doomed = boundedHost.taskResult({ graphId: 'trace-bounds', taskId: 'doomed' });
+  assert.equal(doomed.state, 'FAILED');
+  assert.equal(doomed.attempts, 5);
+  assert.equal(doomed.trace.length, 5, 'trace storage is bounded by the clamped attempt limit, not by the request');
+  assert.equal(doomed.trace.length, doomed.attempts, 'exactly one record per attempt, never an accumulating log');
+  assert.deepEqual(doomed.trace.map((entry) => entry.outcome), ['failed', 'failed', 'failed', 'failed', 'failed']);
+  boundedHost.close();
+  boundedPool.close();
+}
+
 function task(id, dependencies = []) {
   return { id, dependencies, instruction: id, timeoutMs: 500, maxAttempts: 1 };
 }
@@ -559,4 +678,6 @@ await testLongTurnIsAwaitedNotPolled();
 await testDeadlineIsExplicitOrAbsent();
 await testDeadlineReleasesCleanlyWhenTheWorkerStops();
 await testDeadlineDoesNotMakeAnActiveWorkerReusable();
+await testBoundedCriticalPathTrace();
+await testCancelledAttemptTraceAndBounds();
 console.log('dynamic task graph: ok');
