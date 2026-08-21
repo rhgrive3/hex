@@ -44,6 +44,11 @@ jobs:
 
       - run: npm ci
 
+      - name: Resolve generated-output ownership policy
+        id: generated-policy
+        shell: bash
+        run: echo "mode=$(node tools/validation/generated-output-policy.mjs)" >> "$GITHUB_OUTPUT"
+
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
 
@@ -65,6 +70,7 @@ jobs:
           fi
 
       - name: Commit canonical outputs when stale
+        if: steps.generated-policy.outputs.mode == 'enforce'
         shell: bash
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

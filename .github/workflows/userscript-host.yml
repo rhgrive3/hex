@@ -58,6 +58,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Resolve generated-output ownership policy
+        id: generated-policy
+        shell: bash
+        run: echo "mode=$(node tools/validation/generated-output-policy.mjs)" >> "$GITHUB_OUTPUT"
       - name: Opaque sandbox storage contract
         run: node tests/userscript-sandbox-storage.mjs
       - name: Embed mode security boundary
@@ -71,6 +75,7 @@ jobs:
       - name: Round 4 production bootstrap contract
         run: node tests/dev-agent/round4-production-bootstrap.mjs
       - name: Verify tiny committed loader is current
+        if: steps.generated-policy.outputs.mode == 'enforce'
         run: git diff --exit-code -- userscript/hex.user.template.js
 
   # Both embed-browser suites intentionally exercise Chromium and WebKit. Run

@@ -50,8 +50,16 @@ jobs:
       - run: npm ci
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
+      - name: Resolve generated-output ownership policy
+        id: generated-policy
+        shell: bash
+        run: echo "mode=$(node tools/validation/generated-output-policy.mjs)" >> "$GITHUB_OUTPUT"
       - name: Require userscript-owned generated outputs to match source
+        if: steps.generated-policy.outputs.mode == 'enforce'
         run: >-
           git diff --exit-code --
           userscript/hex.user.template.js
           userscript/release-version.json
+      - name: Keep component output ephemeral
+        if: steps.generated-policy.outputs.mode == 'ephemeral'
+        run: echo 'Component lane built generated output ephemerally; integration owns committed synchronization.'
