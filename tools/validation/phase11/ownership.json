@@ -15,13 +15,16 @@
     "tests/phase12/",
     "tools/validation/phase12/",
     "tests/stage1/",
-    "tools/validation/stage1/"
+    "tools/validation/stage1/",
+    "tests/stage2/",
+    "tools/validation/stage2/"
   ],
   "allowedExact": [
     ".github/workflows/phase11-release-validation.yml",
     ".github/workflows/phase10-release-validation.yml",
     ".github/workflows/phase12-release-validation.yml",
     ".github/workflows/stage1-release-validation.yml",
+    ".github/workflows/stage2-release-validation.yml",
     ".github/workflows/invariant-gates.yml",
     ".github/workflows/generated-sync.yml",
     ".github/workflows/generated-userscript-autofix.yml",
@@ -31,6 +34,9 @@
     "tools/validation/generated-output-policy.mjs",
     "tools/validation/phase10/ownership.json",
     "js/platform/capability-maturity.js",
+    "js/platform/physical-ipad-evidence.js",
+    "js/runtime/authority.js",
+    "js/runtime/stage2.js",
     "tests/capability-maturity.mjs",
     "docs/SUPPORT_MATRIX.md",
     "userscript/hex.user.template.js",
