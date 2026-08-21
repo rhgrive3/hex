@@ -40,6 +40,7 @@ export class IframeWorkerPool {
     this.slots = new Map();
     this.leases = new Map();
     this.waiters = [];
+    this.resultWaiters = new Set();
   }
 
   async provision({ size = this.maxWorkers, projectUrl = null, timeoutMs = READY_TIMEOUT_MS } = {}) {
@@ -104,6 +105,75 @@ export class IframeWorkerPool {
   async observe({ leaseId } = {}) { const slot = this.requireLease(leaseId); return slot.client.observe(this.identity(slot)); }
   async result({ leaseId } = {}) { const slot = this.requireLease(leaseId); if (slot.pending) return { status: 'working', ...this.publicSlot(slot) }; return slot.lastResult || slot.client.result(this.identity(slot)); }
 
+  /* Awaits the turn the Pool already owns instead of re-reading it on a timer.
+     The captured `pending` is the only wakeup, the retained `lastResult` is the
+     only answer, and ownership is proven again after the await so a concurrent
+     release/reclaim/discard can never hand this wait the next owner's result.
+     Aborting cancels the wait alone: stop/release/discard stay with the caller
+     that owns the lease. Internal to the host; not a public Worker tool. */
+  async waitResult({ leaseId } = {}, { signal } = {}) {
+    const expectedLeaseId = String(leaseId || '');
+    const slot = this.requireLease(expectedLeaseId);
+    const expected = { slot, index: slot.index, runId: slot.runId, workerId: slot.workerId };
+    if (signal?.aborted) throw abortError(signal.reason);
+    // Captured exactly once. A turn that finished before this call leaves
+    // pending null, and the retained result below is already the answer.
+    const pending = slot.pending;
+    if (pending) await this.awaitSettlement(pending, expectedLeaseId, signal);
+    const owner = this.ownedSlot(expectedLeaseId, expected);
+    if (!owner.lastResult) {
+      throw poolError('worker-result-missing', 'Worker lease has neither an active turn nor a retained result.');
+    }
+    return owner.lastResult;
+  }
+
+  /* Re-proves ownership through the live lease table, never through the slot
+     captured before the await. A closed or reprovisioned pool holds no entry for
+     the old lease, so a late settlement can never speak for a new pool, lease,
+     slot owner, or task. */
+  ownedSlot(expectedLeaseId, expected) {
+    const index = this.leases.get(expectedLeaseId);
+    const slot = index ? this.slots.get(index) : null;
+    if (!slot || slot !== expected.slot || slot.index !== expected.index || slot.leaseId !== expectedLeaseId
+      || slot.runId !== expected.runId || slot.workerId !== expected.workerId) {
+      throw poolError('worker-lease-superseded', 'Worker lease ownership changed while its result was awaited.');
+    }
+    return slot;
+  }
+
+  /* Both settlement directions are the same wakeup: start() already installed
+     the handlers that turn a rejected Worker send into the canonical retained
+     failed result, so re-throwing the raw rejection here would invent a second,
+     competing failure representation. The waiter is registered so that retiring
+     its ownership domain wakes it instead of stranding it on a turn that can no
+     longer settle. */
+  awaitSettlement(pending, leaseId, signal) {
+    return new Promise((resolve, reject) => {
+      const waiter = { leaseId, done: false, onAbort: null, reject: null };
+      const finish = (settle) => {
+        if (waiter.done) return;
+        waiter.done = true;
+        this.resultWaiters.delete(waiter);
+        signal?.removeEventListener?.('abort', waiter.onAbort);
+        settle();
+      };
+      waiter.onAbort = () => finish(() => reject(abortError(signal?.reason)));
+      waiter.reject = (error) => finish(() => reject(error));
+      signal?.addEventListener?.('abort', waiter.onAbort, { once: true });
+      this.resultWaiters.add(waiter);
+      pending.then(ignoreSettlement, ignoreSettlement).then(() => finish(resolve));
+    });
+  }
+
+  /* A retired lease can never settle its turn, so its waiters are woken with the
+     same typed staleness they would have seen had the turn settled late. */
+  invalidateResultWaiters(leaseId = null) {
+    for (const waiter of [...this.resultWaiters]) {
+      if (leaseId != null && waiter.leaseId !== leaseId) continue;
+      waiter.reject(poolError('worker-lease-superseded', 'Worker lease ownership ended while its result was awaited.'));
+    }
+  }
+
   async release({ leaseId } = {}) {
     const slot = this.requireLease(leaseId);
     if (slot.pending) throw poolError('worker-busy', 'Cannot release a Worker slot while its task is active.');
@@ -124,6 +194,7 @@ export class IframeWorkerPool {
     const slot = this.requireLease(leaseId);
     const index = slot.index;
     const href = slot.href;
+    this.invalidateResultWaiters(slot.leaseId);
     try { await slot.client?.stop?.(this.identity(slot)); } catch { /* best-effort stop before retirement */ }
     closeSlot(slot);
     this.leases.delete(slot.leaseId);
@@ -145,6 +216,7 @@ export class IframeWorkerPool {
   }
 
   close() {
+    this.invalidateResultWaiters();
     for (const slot of this.slots.values()) closeSlot(slot);
     for (const waiter of this.waiters) waiter.reject(poolError('transport-failure', 'Worker pool closed.'));
     this.waiters = [];
@@ -382,4 +454,5 @@ function boundedInt(value, min, max, fallback) {
 }
 function poolError(code, message) { const error = new Error(message); error.code = code; return error; }
 function abortError(reason) { const error = poolError('cancelled', String(reason || 'cancelled')); error.name = 'AbortError'; return error; }
+function ignoreSettlement() {}
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
