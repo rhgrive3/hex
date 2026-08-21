@@ -27,7 +27,10 @@ const EXTRA_API_TABLE = [
   { id:'posix_io', re:/^_?(?:fcntl|fstat|lstat|statfs|fstatfs|opendir|closedir|readdir|readdir_r|scandir|rename|pipe|socketpair|select|getsockname|getpeername|setsockopt|getsockopt|ioctl|kqueue|kevent|dup2|mkstemp|fsync|getcwd|dirfd|nftw|basename|if_nametoindex|gethostname|connectx|symlink|chmod|umask|ftruncate|open_dprotected_np|isatty)$/, cat:'io', args:null, ret:null, effect:'io' },
 
   // C string/search/conversion APIs missed by the existing narrower table.
-  { id:'libc_string', re:/^_?(?:strspn|strcspn|strpbrk|strndup|strtoll|strtoull|strcoll|strnstr|strcasestr|memmem|atof|atoll|__strcat_chk|fnmatch)$/, cat:'string', args:null, ret:null, effect:'read' },
+  { id:'libc_string', re:/^_?(?:strspn|strcspn|strpbrk|strndup|strcoll|strnstr|strcasestr|memmem|atof|atoll|__strcat_chk|fnmatch)$/, cat:'string', args:null, ret:null, effect:'read' },
+
+  // strtoll/strtoull can store the first unparsed character through endptr.
+  { id:'libc_strto', re:/^_?str(?:toll|toull)$/, cat:'string', args:null, ret:null, effect:'write' },
 
   // Locale/ctype routines.
   { id:'libc_locale', re:/^_?(?:__maskrune|__toupper|localeconv|strftime|setlocale|tzset)$/, cat:'runtime', args:null, ret:null, effect:'read' },
