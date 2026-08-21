@@ -6,7 +6,7 @@ export const STAGE2_PROFILE_EVIDENCE_IDS = Object.freeze([
   'S2-A7-NATIVE',
   'S2-M6-WASM', 'S2-M6-DEX', 'S2-M6-CIL', 'S2-M6-JVM',
   'S2-F6-MACHO', 'S2-F6-ELF', 'S2-F6-PE',
-  'S2-P12-COLLAB-REMOTE',
+  'S2-P12-KNOWLEDGE', 'S2-P12-RULES', 'S2-P12-PATTERNS', 'S2-P12-COLLAB-REMOTE',
 ]);
 
 const EXPECTED_PROFILES = Object.freeze({
@@ -19,6 +19,9 @@ const EXPECTED_PROFILES = Object.freeze({
   'S2-F6-MACHO': Object.freeze(['macho:64']),
   'S2-F6-ELF': Object.freeze(['elf:64']),
   'S2-F6-PE': Object.freeze(['pe:pe32', 'pe:pe32+']),
+  'S2-P12-KNOWLEDGE': Object.freeze(['knowledge-packages:v1']),
+  'S2-P12-RULES': Object.freeze(['capability-rules:v1']),
+  'S2-P12-PATTERNS': Object.freeze(['patterns:read-only-v1']),
   'S2-P12-COLLAB-REMOTE': Object.freeze(['collaboration:remote-security-v1']),
 });
 
