@@ -1,4 +1,4 @@
-import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, jsonSafe, stableDigest } from '../core/identity/index.js';
 import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation } from './index.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
@@ -21,7 +21,7 @@ function list(value) {
 }
 
 function byteLength(value) {
-  const text = JSON.stringify(value);
+  const text = JSON.stringify(jsonSafe(value));
   return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(text).length : text.length;
 }
 
