@@ -231,6 +231,15 @@ async function invalidTargetsAndBatchShapesFailClosedBeforeDispatch() {
   await assertRejectedBeforeAnyTargetDispatch('lease-scoped observation target', {
     calls: [valid, call(DEV_ADMIN_TOOL.POOL_OBSERVE, { leaseId: 'lease' })],
   });
+  await assertRejectedBeforeAnyTargetDispatch('target-specific missing script selector', {
+    calls: [valid, call(DEV_ADMIN_TOOL.PAGE_SCRIPT_SOURCE, { needle: 'probe' })],
+  });
+  await assertRejectedBeforeAnyTargetDispatch('target-specific invalid graph identity', {
+    calls: [valid, call(DEV_ADMIN_TOOL.GRAPH_STATUS, { graphId: 'not a graph id' })],
+  });
+  await assertRejectedBeforeAnyTargetDispatch('target-specific invalid skill identity', {
+    calls: [valid, call(DEV_ADMIN_TOOL.SKILL_DESCRIBE, { skillId: 'Not-A-Skill' })],
+  });
 
   const malformedRequests = [
     ['missing calls', {}],

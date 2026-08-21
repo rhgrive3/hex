@@ -3,12 +3,16 @@ import {
   DEV_BATCH_POLICY,
   DEV_OPERATION_CLASS,
   DEV_TOOL_SURFACE,
+  devToolBatchArgumentValidator,
   devToolContract,
   devToolContractsForSurface,
 } from '../protocol/dev-tool-contracts.js';
 import { describeDevToolError, isTerminalDevToolError } from '../supervisor/tool-error-recovery.js';
 
 const ADMIN_CONTRACTS = devToolContractsForSurface(DEV_TOOL_SURFACE.ADMIN);
+const DEV_BATCH_MAX_INPUT_CHARS = 32 * 1024;
+const DEV_BATCH_MAX_RESULT_CHARS = 64 * 1024;
+const DEV_BATCH_MAX_TOTAL_RESULT_CHARS = 192 * 1024;
 
 /* Names and client-method mapping both come from the canonical registry, so a
    tool cannot be exposed here without the prompt contract, operation class and
@@ -57,9 +61,17 @@ function executeObservationBatch(args, handlers) {
 
 async function executeValidatedObservationBatch(calls, handlers) {
   const results = [];
+  let resultChars = 0;
   for (const call of calls) {
     try {
       const result = await handlers.get(call.tool)(call.arguments);
+      const size = jsonSize(result);
+      if (size > DEV_BATCH_MAX_RESULT_CHARS || resultChars + size > DEV_BATCH_MAX_TOTAL_RESULT_CHARS) {
+        const error = new Error('Observation result exceeds the bounded batch result budget.');
+        error.code = 'dev-batch-result-too-large';
+        throw error;
+      }
+      resultChars += size;
       results.push(Object.freeze({ index: call.index, tool: call.tool, ok: true, result }));
     } catch (error) {
       /* Preserve the existing terminal boundary. Ordinary target failures are
@@ -85,6 +97,7 @@ function validateObservationBatch(args, handlers) {
   if (args.calls.length > DEV_BATCH_MAX_CALLS) {
     throw new TypeError(`dev.batch.observe accepts at most ${DEV_BATCH_MAX_CALLS} calls.`);
   }
+  assertBatchPayloadSize(args.calls, DEV_BATCH_MAX_INPUT_CHARS, 'dev.batch.observe input');
 
   const validated = [];
   for (let index = 0; index < args.calls.length; index++) {
@@ -112,6 +125,13 @@ function validateObservationBatch(args, handlers) {
       throw new TypeError(`dev.batch.observe call ${index}.arguments must be a plain object.`);
     }
     assertJsonSafe(callArguments);
+    const validator = devToolBatchArgumentValidator(call.tool);
+    if (typeof validator !== 'function') throw new TypeError(`Missing batch argument contract for ${call.tool}`);
+    try {
+      validator(callArguments);
+    } catch (error) {
+      throw new TypeError(`Invalid arguments for ${call.tool}: ${String(error?.message || error)}`);
+    }
     validated.push(Object.freeze({ index, tool: call.tool, arguments: callArguments }));
   }
   return validated;
@@ -159,7 +179,7 @@ function assertAllowedKeys(value, allowed, label) {
 }
 
 function assertJsonSafe(value, depth = 0, ancestors = new Set()) {
-  if (value == null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
   if (typeof value === 'number' && Number.isFinite(value)) return;
   if (typeof value !== 'object' || depth >= 32 || ancestors.has(value)) {
     throw new TypeError('dev.batch.observe arguments must be JSON-safe.');
@@ -186,6 +206,17 @@ function assertJsonSafe(value, depth = 0, ancestors = new Set()) {
   } finally {
     ancestors.delete(value);
   }
+}
+
+function assertBatchPayloadSize(value, maxChars, label) {
+  const size = jsonSize(value);
+  if (size > maxChars) throw new TypeError(`${label} exceeds its bounded input budget.`);
+}
+
+function jsonSize(value) {
+  const encoded = JSON.stringify(value);
+  if (typeof encoded !== 'string') throw new TypeError('Batch value must be JSON-serializable.');
+  return encoded.length;
 }
 
 function hasOwn(value, key) { return Object.prototype.hasOwnProperty.call(value, key); }

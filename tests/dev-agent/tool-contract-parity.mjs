@@ -22,6 +22,7 @@ import {
   DEV_TOOL_CONTRACTS,
   DEV_TOOL_SURFACE,
   devToolBatchPolicy,
+  devToolBatchArgumentValidator,
   devToolContract,
   devToolNamesForSurface,
   devToolOperationClass,
@@ -214,10 +215,12 @@ async function everyAdminToolReachesADistinctRuntimeOperation() {
   try {
     assert.deepEqual([...DEV_PARENT_RPC_METHODS].sort(), Object.keys(CLIENT_METHOD_FOR).sort(), 'the RPC allow-list must contain every declared client method');
     assert.deepEqual(
-      [...DEV_ADMIN_TOOLS, ...DEV_WORKER_TOOLS].sort(),
+      [...DEV_ADMIN_TOOLS, ...DEV_WORKER_TOOLS].filter((tool) => tool !== DEV_ADMIN_TOOL.BATCH_OBSERVE).sort(),
       Object.keys(PUBLIC_TOOL_RPC_METHOD).sort(),
-      'every public surface tool must have an explicit RPC mapping',
+      'every RPC-backed public surface tool must have an explicit RPC mapping',
     );
+    assert.ok(admin.has(DEV_ADMIN_TOOL.BATCH_OBSERVE), 'the host-side batch tool must be exposed when eligible targets exist');
+    assert.equal(devToolContract(DEV_ADMIN_TOOL.BATCH_OBSERVE)?.rpcName, null, 'the batch tool must stay above parent RPC');
     for (const [tool, rpcMethod] of Object.entries(PUBLIC_TOOL_RPC_METHOD)) {
       assert.ok(DEV_PARENT_RPC_METHODS.includes(rpcMethod), `${tool} must be allowed by the parent RPC`);
       const surface = DEV_WORKER_TOOLS.includes(tool) ? worker : admin;
@@ -398,8 +401,8 @@ const MUST_NOT_BE_BATCHABLE = Object.freeze([
   DEV_ADMIN_TOOL.RUNTIME_IDENTITY,
 ]);
 
-/* Batch eligibility is opt-in and fails closed. This card adds no batch tool;
-   it only makes the eligibility explicit for CARD H2. */
+/* Batch eligibility is opt-in and fails closed. The batch tool itself remains
+   above parent RPC and is never a target for another batch. */
 function batchEligibilityIsOptInAndFailsClosed() {
   for (const contract of DEV_TOOL_CONTRACTS) {
     assert.ok(
@@ -420,6 +423,7 @@ function batchEligibilityIsOptInAndFailsClosed() {
   assert.ok(batchable.length > 0, 'at least one observation is eligible, or H2 would have nothing to batch');
   for (const contract of batchable) {
     assert.equal(contract.operationClass, DEV_OPERATION_CLASS.OBSERVATION);
+    assert.equal(typeof devToolBatchArgumentValidator(contract.publicName), 'function', `${contract.publicName} must carry target-specific prevalidation`);
     assert.equal(
       contract.argumentContract.includes('leaseId'),
       false,
@@ -455,6 +459,8 @@ function batchEligibilityIsOptInAndFailsClosed() {
   assert.equal(devToolBatchPolicy(''), DEV_BATCH_POLICY.NEVER);
   assert.equal(devToolBatchPolicy(undefined), DEV_BATCH_POLICY.NEVER);
   assert.equal(devToolOperationClass('not.a.tool'), null, 'unknown metadata is null, never a guess');
+  assert.equal(devToolBatchPolicy(DEV_ADMIN_TOOL.BATCH_OBSERVE), DEV_BATCH_POLICY.NEVER);
+  assert.equal(devToolBatchArgumentValidator(DEV_ADMIN_TOOL.BATCH_OBSERVE), null);
 }
 
 const CLIENT_METHOD_FOR = Object.freeze({
