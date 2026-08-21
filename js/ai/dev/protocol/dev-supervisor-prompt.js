@@ -47,7 +47,7 @@ export function buildDevSupervisorPrompt({ run, availableTools = [], history = [
     'Do not claim the Project automation campaign complete until current production can detect/select/create a Project, verify membership, list Project chats and Sources, create a chat inside the chosen Project, and control that chat model/reasoning through observed current ChatGPT UI.',
     'runId and workerId are runtime-owned identities. Never invent, copy, or repeat them in tool arguments; the runtime injects the current DevRun values and rejects conflicting IDs.',
     ...delegationLines(available),
-    'If a Worker exhausts a per-turn tool/execution window but the task is resumable, retain its result, release the slot, reclaim it, create a fresh Worker Chat, and hand off the continuation.',
+    ...recoveryLines(available),
     'Do not ask a human for routine reversible engineering decisions in Normal mode. YOLO is decision policy, not fabricated permission.',
     'ツール実行が失敗すると history に kind="tool-error" が返る。runは終了していないので、そこで止まらず、同じツールの再試行・別ツールへの切替え・状態の再観測のいずれかを自分で選んで次のdecisionを返すこと。remainingRecoveriesが0になった失敗は致命的として扱われる。',
     'userscript / parent runtime / Dev tool実装を更新した場合、GitHubへのmergeだけでは新しいruntimeはactiveにならない。旧runtimeがメモリ上で動き続けるため、mergeしただけの状態で新機能をproofしてはならない。',
@@ -65,13 +65,8 @@ export function buildDevSupervisorPrompt({ run, availableTools = [], history = [
    A fixed sentence about "the current single slot" becomes a lie the moment the
    Pool is installed, and the Supervisor believes the prompt over the tool list. */
 function concurrencyLines(available) {
-  if (!available.has('worker.pool.claim')) {
-    return ['The multi-Worker Pool is not available this turn. Run one Worker at a time through the worker.* tools and do not assume additional Worker slots exist.'];
-  }
-  const lines = [
-    'The multi-Worker iframe Pool is available. Use only leaseId/slot identities returned by the available worker.pool.* tools; never invent them.',
-  ];
   const poolOperations = [
+    'worker.pool.status',
     'worker.pool.provision',
     'worker.pool.claim',
     'worker.pool.create_chat',
@@ -83,9 +78,25 @@ function concurrencyLines(available) {
     'worker.pool.stop',
     'worker.pool.release',
   ].filter((tool) => available.has(tool));
-  lines.push(`Available worker.pool.* operations this turn: ${poolOperations.join(', ')}. Do not assume any other Pool operation exists.`);
+  const graphOperations = [
+    'worker.graph.start',
+    'worker.graph.status',
+    'worker.graph.task_result',
+    'worker.graph.cancel',
+  ].filter((tool) => available.has(tool));
+  if (!poolOperations.length && !graphOperations.length) {
+    return ['The multi-Worker Pool is not available this turn. Run one Worker at a time through the worker.* tools and do not assume additional Worker slots exist.'];
+  }
+  const lines = [
+    ...(poolOperations.length
+      ? ['The multi-Worker iframe Pool is available. Use only leaseId/slot identities returned by the available worker.pool.* tools; never invent them.']
+      : []),
+  ];
+  if (poolOperations.length) lines.push(`Available worker.pool.* operations this turn: ${poolOperations.join(', ')}. Do not assume any other Pool operation exists.`);
   if (available.has('worker.pool.provision')) {
-    lines.push('Six Workers is the capacity limit, not a target. Provision and claim only as many Workers as the work actually needs; a seventh claim waits for a released slot.');
+    lines.push(available.has('worker.pool.claim')
+      ? 'Six Workers is the capacity limit, not a target. Provision and claim only as many Workers as the work actually needs; a seventh claim waits for a released slot.'
+      : 'Six Workers is the capacity limit, not a target. Provision only as many Workers as the work actually needs.');
     lines.push('worker.pool.provision can fail with worker-frame-blocked, worker-frame-timeout, worker-frame-origin, or worker-frame-unavailable. Report that exact blocker instead of pretending parallelism exists.');
   }
   if (available.has('worker.pool.start')) {
@@ -94,15 +105,9 @@ function concurrencyLines(available) {
   if (available.has('worker.pool.result') && available.has('worker.pool.release')) {
     lines.push('Read worker.pool.result and release each lease with worker.pool.release only after its task has completed.');
   }
-  if (available.has('worker.graph.start')) {
-    const graphOperations = [
-      'worker.graph.start',
-      'worker.graph.status',
-      'worker.graph.task_result',
-      'worker.graph.cancel',
-    ].filter((tool) => available.has(tool));
+  if (graphOperations.length) {
     lines.push(`Available worker.graph.* operations this turn: ${graphOperations.join(', ')}. Do not assume any other graph operation exists.`);
-    if (available.has('worker.graph.status') && available.has('worker.graph.task_result')) {
+    if (available.has('worker.graph.start') && available.has('worker.graph.status') && available.has('worker.graph.task_result')) {
       lines.push('For work with dependencies between tasks, prefer worker.graph.start over hand-scheduling leases: the host enforces dependency order, concurrency, retries and lease cleanup. Poll worker.graph.status and read worker.graph.task_result rather than assuming a task finished.');
     }
   }
@@ -125,10 +130,25 @@ function delegationLines(available) {
       lines.push(`Available Pool delegation operations this turn: ${[...sequence, ...completion].join(', ')}. Do not assume any other worker.pool.* operation exists.`);
     }
   }
-  if (available.has('worker.send') || available.has('worker.followup')) {
-    lines.push('worker.send and worker.followup yield the host to the Worker, wait for the Worker to finish, capture its result, restore this Supervisor conversation, then return the tool result. Therefore do not emit wait merely because worker.send just ran.');
+  const turnOperations = ['worker.send', 'worker.followup'].filter((tool) => available.has(tool));
+  if (turnOperations.length) {
+    if (turnOperations.length === 2) {
+      lines.push('worker.send and worker.followup yield the host to the Worker, wait for the Worker to finish, capture its result, restore this Supervisor conversation, then return the tool result. Therefore do not emit wait merely because worker.send just ran.');
+    } else {
+      lines.push(`Available Worker turn operations this turn: ${turnOperations.join(', ')}. Do not assume the other Worker turn operation exists.`);
+    }
   }
   return lines;
+}
+
+function recoveryLines(available) {
+  if (available.has('worker.result')
+    && available.has('worker.release')
+    && available.has('worker.claim')
+    && available.has('worker.create_chat')) {
+    return ['If a Worker exhausts a per-turn tool/execution window but the task is resumable, retain its result, release the slot, reclaim it, create a fresh Worker Chat, and hand off the continuation.'];
+  }
+  return [];
 }
 
 function devToolContractLines(availableTools) {

@@ -168,6 +168,25 @@ function thePromptNeverAdvertisesAToolThatDoesNotExist() {
   ]) {
     assert.equal(partialPool.prompt.includes(unavailable), false, `partial Pool prompt must not instruct unavailable ${unavailable}`);
   }
+
+  for (const availableTool of [DEV_ADMIN_TOOL.POOL_STATUS, DEV_ADMIN_TOOL.POOL_PROVISION]) {
+    const partial = promptContracts([availableTool]);
+    assert.equal(partial.prompt.includes('The multi-Worker Pool is not available this turn.'), false);
+    assert.match(partial.prompt, new RegExp(`Available worker\\.pool\\.\\* operations this turn: ${availableTool}\\.`));
+    for (const unavailable of ['worker.pool.claim', 'worker.pool.create_chat', 'worker.pool.start', 'worker.pool.result', 'worker.pool.release']) {
+      if (unavailable !== availableTool) {
+        assert.equal(partial.prompt.includes(unavailable), false, `partial Pool prompt must not instruct unavailable ${unavailable}`);
+      }
+    }
+  }
+
+  const partialClaim = promptContracts([DEV_WORKER_TOOL.CLAIM]);
+  for (const unavailable of ['worker.create_chat', 'worker.send', 'worker.result', 'worker.release']) {
+    assert.equal(partialClaim.prompt.includes(unavailable), false, `partial Worker prompt must not instruct unavailable ${unavailable}`);
+  }
+  const partialSend = promptContracts([DEV_WORKER_TOOL.SEND]);
+  assert.equal(partialSend.prompt.includes('worker.send and worker.followup'), false);
+  assert.equal(partialSend.prompt.includes('worker.followup'), false);
 }
 
 async function everyAdminToolReachesADistinctRuntimeOperation() {
