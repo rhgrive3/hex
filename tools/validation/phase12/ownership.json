@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "phase12-ownership/v1",
+  "phase": 12,
+  "lanes": {
+    "p12-k": [
+      "js/knowledge/phase12-**",
+      "js/signature/phase12-**",
+      "tests/phase12/knowledge/**"
+    ],
+    "p12-c": [
+      "js/collaboration/**",
+      "tests/phase12/collaboration/**"
+    ],
+    "p12-p": [
+      "js/pattern/**",
+      "tests/phase12/pattern/**"
+    ],
+    "p12-r": [
+      "js/rebuild/**",
+      "tests/phase12/rebuild/**"
+    ],
+    "p12-reviewer": [
+      "tests/phase12/adversarial/**"
+    ],
+    "p12-integration": [
+      "js/phase12/**",
+      "tools/validation/phase12/**",
+      "tests/phase12/foundation/**",
+      "tests/phase12/integration/**",
+      ".github/workflows/phase12-release-validation.yml",
+      "package.json",
+      "docs/SUPPORT_MATRIX.md",
+      "reports/phase12/**"
+    ]
+  },
+  "contractPaths": [
+    "js/phase12/package-envelope.js",
+    "js/phase12/resource-budget.js",
+    "tools/validation/phase12/manifest.json",
+    "tools/validation/phase12/ownership.json",
+    "tools/validation/phase12/release-evidence.schema.json"
+  ],
+  "sharedIntegrationPaths": [
+    "js/phase12/**",
+    "tools/validation/phase12/**",
+    "tests/phase12/foundation/**",
+    "tests/phase12/integration/**",
+    "package.json"
+  ],
+  "generatedPaths": ["reports/phase12/**"],
+  "releaseOnlyPaths": ["reports/phase12/**"],
+  "forbiddenPaths": ["js/binary/**", "js/architecture/**", "main"],
+  "generatedWriteOwners": ["p12-integration"],
+  "releaseWriteOwners": ["p12-integration"],
+  "componentLanes": ["p12-k", "p12-c", "p12-p", "p12-r", "p12-reviewer"]
+}
