@@ -14,6 +14,7 @@
     ".github/workflows/generated-userscript-autofix.yml",
     ".github/workflows/userscript-host.yml",
     "tests/dev-agent/generated-output-policy.mjs",
+    "tests/semantic-v2/integration-userscript-sync.test.mjs",
     "tools/validation/generated-output-policy.mjs",
     "tools/validation/phase10/ownership.json",
     "js/platform/capability-maturity.js",
