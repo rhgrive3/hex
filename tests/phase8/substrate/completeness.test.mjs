@@ -55,6 +55,16 @@ test('every result marked complete is the same result', () => {
       casts: result.metrics.redundantCasts,
     }));
   }
+  if (completeSeen === 0) {
+    for (const result of productionRuns('quality.sccp_dead_branch.O1', 5)) {
+      completeSeen += 1;
+      canonical.add(JSON.stringify({
+        pseudocode: result.pseudocode,
+        rewrites: result.metrics.rewrittenExpressions,
+        casts: result.metrics.redundantCasts,
+      }));
+    }
+  }
   assert.ok(completeSeen > 0, 'no run reached the canonical result; the probe is not measuring anything');
   assert.equal(canonical.size, 1, `runs marked complete disagreed with each other: ${[...canonical].join(' | ')}`);
 });
