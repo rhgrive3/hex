@@ -10,10 +10,8 @@ const COMPLETENESS_JA = Object.freeze({
   unsupported:'未対応',
 });
 
-function functionName(app, address) {
-  return app?.symbols?.nameAt?.(address)
-    ?? app?.symbols?.label?.(address)
-    ?? `sub_${BigInt(address).toString(16).toUpperCase()}`;
+function functionName(value, address) {
+  return value?.name ?? `sub_${BigInt(address).toString(16).toUpperCase()}`;
 }
 
 function stale(error) {
@@ -40,12 +38,14 @@ async function withFreshSnapshot(app, operation, options = {}) {
 async function analysisBundle(app, functionId) {
   return withFreshSnapshot(app, async (api, snapshot) => {
     const fn = await api.function(snapshot, functionId);
-    if (fn?.value == null) return { snapshot, fn, decompile:null, cfg:null };
+    const resolved = fn?.value?.startAddress ?? fn?.value?.functionId ?? functionId;
+    const target = BigInt(resolved);
+    if (fn?.value == null) return { snapshot, fn, decompile:null, cfg:null, target };
     const [decompile, cfg] = await Promise.all([
-      api.decompile(snapshot, functionId),
-      api.cfg(snapshot, functionId),
+      api.decompile(snapshot, target),
+      api.cfg(snapshot, target),
     ]);
-    return { snapshot, fn, decompile, cfg };
+    return { snapshot, fn, decompile, cfg, target };
   });
 }
 
@@ -184,9 +184,7 @@ export function showFunctionSummary(app, row) {
 
   void (async () => {
     try {
-      const known = app.symbols?.functionAt?.(address) ?? null;
-      const target = known?.start ?? BigInt(address);
-      const bundle = await analysisBundle(app, target);
+      const bundle = await analysisBundle(app, BigInt(address));
       status.remove();
 
       const fn = bundle.fn;
@@ -196,13 +194,14 @@ export function showFunctionSummary(app, row) {
       }
 
       const value = fn.value;
+      const target = bundle.target;
       const architecture = value.architectureId
         ?? app.store.get('architecture')
         ?? app.store.get('capability')?.architecture
         ?? 'unknown';
       const abi = value.abiId ?? null;
       const head = el('div', 'fn-head');
-      head.append(el('div', 'fn-name', functionName(app, target)));
+      head.append(el('div', 'fn-name', functionName(value, target)));
       head.append(el('div', 'fn-range mono', addrHex(target)));
       sheet.body.append(head);
 
@@ -211,9 +210,11 @@ export function showFunctionSummary(app, row) {
         sub:`${COMPLETENESS_JA[fn.completeness] ?? fn.completeness} · ${architecture}${abi ? ` · ${abi}` : ''}`,
         disabled:true,
       }));
-      if (known?.end != null) {
-        facts.append(tapRow('関数の範囲', {
-          sub:`${addrHex(known.start)} – ${addrHex(known.end)} · ${sizeText(known.end - known.start)}`,
+      const start = value.startAddress == null ? target : BigInt(value.startAddress);
+      const end = value.endAddress == null ? null : BigInt(value.endAddress);
+      if (end != null && end > start) {
+        facts.append(tapRow('解析範囲', {
+          sub:`${addrHex(start)} – ${addrHex(end)} · ${sizeText(end - start)}`,
           disabled:true,
         }));
       }
