@@ -14,3 +14,4 @@ assert.match(source, /viewer\?\.rowAddress\?\.\(row\)/,
   'function summary must preserve variable-width viewer address geometry');
 
 console.log('Function summary QueryAPI authority tests PASS!');
+// Exact-head CI retrigger marker; no runtime effect.
