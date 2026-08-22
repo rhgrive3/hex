@@ -13,6 +13,11 @@ function metadataOf(image) {
   return image.metadata.elfMetadata ||= { complete:true, reasons:[] };
 }
 
+function metadataLimit(value, fallback) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : fallback;
+}
+
 export function markELFMetadataPartial(image, reason, warning = null) {
   const meta = metadataOf(image);
   meta.complete = false;
@@ -22,7 +27,11 @@ export function markELFMetadataPartial(image, reason, warning = null) {
 
 /** Shared budget for SHT symbols/relocations/unwind decoded JS output. */
 export function createELFMetadataBudget(image, options = {}) {
-  const limits = { ...ELF_METADATA_LIMITS, ...(options.limits || options.metadataLimits || {}) };
+  const overrides = options.limits || options.metadataLimits || {};
+  const limits = { ...ELF_METADATA_LIMITS, ...overrides };
+  for (const key of Object.keys(ELF_METADATA_LIMITS)) {
+    limits[key] = metadataLimit(limits[key], ELF_METADATA_LIMITS[key]);
+  }
   const signal = options.signal || null;
   const started = Date.now();
   const used = { inputBytes:0, records:0, objects:0, stringBytes:0, operations:0, estimatedHeapBytes:0 };
