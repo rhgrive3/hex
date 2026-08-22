@@ -1,231 +1,153 @@
+await import('./ai-analysis-boundary-base.mjs');
+
 import assert from 'node:assert/strict';
-import {
-  analyzeFunctionCached,
-  clearAnalysisCache,
-  supportsArm64SemanticAnalysis,
-} from '../js/analyze.js';
-import { analyzeModelAt, createHexAIContext } from '../js/ai/ui/hex-context.js';
-import { ToolRegistry } from '../js/ai/tools/registry-core.js';
-import { memoizeAnalysis } from '../js/auto.js';
+import { createHexAIContext } from '../js/ai/ui/hex-context.js';
+import { createHexToolRegistry } from '../js/ai/tools/registry.js';
+import { irFor } from '../js/ir.js';
+import { projectSemanticIrV2ToLegacyV1 } from '../js/semantics/compat/semantic-ir-v2-to-v1.js';
 
-const CHUNK_ROWS=1024;
-function backendFor(totalRows){
-  const state={fetches:0};
-  return {
-    state,
-    gen:1,
-    async fetchChunk(_regionId,chunk){
-      state.fetches++;
-      const start=chunk*CHUNK_ROWS;
-      const count=Math.max(0,Math.min(CHUNK_ROWS,totalRows-start));
-      return {
-        mn:new Array(count).fill('nop'),
-        ops:new Array(count).fill(''),
-        bytes:new Uint8Array(count*4),
-        rows:count,
-      };
-    },
-  };
-}
-function symbolsFor(start=0x1000n,end=null){
-  return {
-    gen:1,functionCount:1,
-    functionAt(addr){return addr===start?{start,end,index:0}:null;},
-    nameAt(){return null;},
-  };
-}
-function storeFor(region,architecture='arm64'){
-  const values={
-    architecture,capability:{architecture,instructionAlignment:architecture.startsWith('arm64')?4:1},
-    instructionAlignment:architecture.startsWith('arm64')?4:1,canDisassemble:true,
-    currentRegion:region,regions:[region],sliceIndex:0,fileInfo:{name:'fixture'},currentAddress:region.vmAddr,
-  };
-  return {values,get(key){return this.values[key];}};
-}
+const bit32 = { kind:'bitvector', widthBits:32 };
+const origin = (id, address = 0x1000n) => ({ instructionIds:[id], virtualRanges:[{ start:address, end:address + 4n }] });
+const a = { id:'a', kind:'entry', machineType:bit32, sourceEntityId:'fn', variableKey:'state:a', origin:origin('raw_a') };
+const b = { id:'b', kind:'entry', machineType:bit32, sourceEntityId:'fn', variableKey:'state:b', origin:origin('raw_b') };
+const sum = { id:'sum', kind:'definition', machineType:bit32, definitionNodeId:'n_add', sourceEntityId:'n_add', variableKey:'state:sum', origin:origin('raw_add', 0x1004n) };
+const canonical = {
+  schemaVersion:2,
+  contractVersion:'2.0.0',
+  functionId:'fn',
+  entryBlockId:'b0',
+  blocks:[{ id:'b0', nodeIds:['n_add','n_ret'], origin:origin('block') }],
+  values:[a,b,sum],
+  nodes:[
+    { id:'n_add', kind:'binary', blockId:'b0', inputs:['a','b'], outputs:['sum'], operator:'add', origin:origin('raw_add', 0x1004n) },
+    { id:'n_ret', kind:'return', blockId:'b0', inputs:['sum'], outputs:[], origin:origin('raw_ret', 0x1008n) },
+  ],
+  completeness:'complete',
+  unknowns:[],
+  origin:origin('fn'),
+};
+const projected = projectSemanticIrV2ToLegacyV1(canonical);
+assert.equal(projected.compat?.projection, 'semantic-ir-v2-to-v1');
+assert.equal(irFor(projected), projected,
+  'an official v2->v1 compatibility projection is already semantic IR and must never be re-lifted as raw ARM64');
 
-assert.equal(supportsArm64SemanticAnalysis('arm64'),true);
-assert.equal(supportsArm64SemanticAnalysis('arm64e'),true);
-assert.equal(supportsArm64SemanticAnalysis('arm64_32'),true);
-assert.equal(supportsArm64SemanticAnalysis('x86_64'),false);
+const region = { id:'text', vmAddr:0x1000n, size:0x100n, exec:true, read:true, write:false };
+const state = new Map([
+  ['fileInfo', { name:'fixture', size:0x100n, formatId:'elf' }],
+  ['sliceIndex', 0],
+  ['regions', [region]],
+  ['currentRegion', region],
+  ['currentAddress', 0x1000n],
+  ['architecture', 'x86_64'],
+  ['capability', { architecture:'x86_64', instructionAlignment:1 }],
+  ['instructionAlignment', 1],
+  ['canDisassemble', true],
+]);
+let snapshotCalls = 0;
+let functionCalls = 0;
+let instructionCalls = 0;
+let xrefCalls = 0;
+let callerCalls = 0;
+let calleeCalls = 0;
+let causalCalls = 0;
+let searchCalls = 0;
+let decompileCalls = 0;
 
-// The semantic builder caps itself at 6000 instructions. The analysis feeder
-// must retain a one-row sentinel so >6000 input cannot masquerade as complete.
-{
-  clearAnalysisCache();
-  const total=6001;
-  const region={id:'text-long',vmAddr:0x1000n,size:BigInt(total*4),exec:true};
-  const backend=backendFor(total);
-  const result=await analyzeFunctionCached(backend,region,0,total-1,symbolsFor());
-  assert.equal(result.endRow,total-1);
-  assert.equal(result.requestedRows,total);
-  assert.equal(result.analyzedRows,total);
-  assert.equal(result.model.truncated,true,'semantic-model cap must be reported');
-  assert.equal(result.truncated,true);
-}
+const analysisQueries = {
+  async snapshot() { snapshotCalls++; return { snapshotId:`s${snapshotCalls}`, binaryId:'fixture-bin' }; },
+  async function() {
+    functionCalls++;
+    if (functionCalls === 1) {
+      const error = new Error('stale once');
+      error.name = 'AnalysisSnapshotStaleError';
+      throw error;
+    }
+    return { value:{ name:'fixture_fn', startAddress:0x1000n, pipeline:{ legacyV1:projected } }, completeness:'complete', status:{ completeness:'complete' } };
+  },
+  async instructions(_snapshot, _range, page) {
+    instructionCalls++;
+    const rows = [
+      { id:'raw-0', address:0x1000n, size:2, mnemonic:'raw_mov', operands:'eax, ebx' },
+      { id:'raw-1', address:0x1002n, size:1, mnemonic:'raw_ret', operands:'' },
+    ];
+    return { value:rows.slice(page.offset, page.offset + page.limit), page:{ offset:page.offset, limit:page.limit, returned:Math.min(rows.length, page.limit), total:rows.length, next:null }, completeness:'complete', status:{ completeness:'complete' } };
+  },
+  async functions() { return { value:[{ address:0x1000n, name:'fixture_fn' }], page:{ offset:0, returned:1, total:1, next:null }, completeness:'complete', status:{ completeness:'complete' } }; },
+  async binaryInfo() { return { value:{ regions:[region] }, completeness:'complete', status:{ completeness:'complete' } }; },
+  async search() { searchCalls++; return { value:[], completeness:'unsupported', status:{ completeness:'unsupported', reason:'typed-search-producer-unavailable' } }; },
+  async decompile() { decompileCalls++; return { value:{ pseudocode:'short pseudo' }, completeness:'partial', status:{ completeness:'partial', reason:'upstream-partial' } }; },
+  async cfg() { return { value:{ blocks:[], edges:[] }, completeness:'complete', status:{ completeness:'complete' } }; },
+  async xrefs(_snapshot, _address, page) { xrefCalls++; return { value:[{ kind:'reference', site:0x1010n, target:0x1000n }], page:{ offset:page.offset, returned:1, total:1, next:null }, completeness:'complete', status:{ completeness:'complete' } }; },
+  async callers(_snapshot, _address, page) { callerCalls++; return { value:[{ address:0x1100n }], page:{ offset:page.offset, returned:1, total:1, next:null }, completeness:'complete', status:{ completeness:'complete' } }; },
+  async callees(_snapshot, _address, page) { calleeCalls++; return { value:[{ address:0x1200n }], page:{ offset:page.offset, returned:1, total:1, next:null }, completeness:'complete', status:{ completeness:'complete' } }; },
+  async causalPath() { causalCalls++; return { value:{ paths:[{ from:'0x1000', to:'0x1200' }], returned:1 }, completeness:'partial', status:{ completeness:'partial', reason:'causal-budget' } }; },
+};
 
-// A caller row budget must constrain the actual backend reads, and differently
-// budgeted requests must not alias in the analysis cache.
-{
-  clearAnalysisCache();
-  const total=100;
-  const region={id:'text-budget',vmAddr:0x2000n,size:BigInt(total*4),exec:true};
-  const backend=backendFor(total);
-  const symbols=symbolsFor(0x2000n,0x2000n+BigInt(total*4));
-  const first=await analyzeFunctionCached(backend,region,0,total-1,symbols,null,{maxRows:10});
-  assert.equal(first.endRow,9);
-  assert.equal(first.analyzedRows,10);
-  assert.equal(first.truncated,true);
-  const fetchesAfterFirst=backend.state.fetches;
-  const second=await analyzeFunctionCached(backend,region,0,total-1,symbols,null,{maxRows:20});
-  assert.equal(second.endRow,19,'larger row budget must not reuse the 10-row cached result');
-  assert.equal(second.analyzedRows,20);
-  assert.ok(backend.state.fetches>fetchesAfterFirst);
-}
+const app = {
+  store:{ get:key => state.get(key) ?? null },
+  backend:{ binaryId:'fixture-bin', gen:1 },
+  analysisQueries,
+  workspace:null,
+  activeProject:null,
+  notes:null,
+  lastGoal:null,
+  viewer:null,
+};
+Object.defineProperties(app, {
+  symbols:{ get(){ throw new Error('direct-symbol-index-read'); } },
+  program:{ get(){ throw new Error('direct-program-index-read'); } },
+  recognition:{ get(){ throw new Error('direct-recognition-index-read'); } },
+  stringIndex:{ get(){ throw new Error('direct-string-index-read'); } },
+});
 
-// AI adapter: unknown function ends are inherently incomplete, and the
-// control-plane maxInstructions budget must reach analyzeFunctionCached.
-{
-  clearAnalysisCache();
-  const total=4096;
-  const region={id:'text-ai',vmAddr:0x3000n,size:BigInt(total*4),exec:true};
-  const backend=backendFor(total);
-  const app={
-    store:storeFor(region,'arm64'),backend,codeRegion:()=>region,
-    symbols:symbolsFor(0x3000n,null),
-  };
-  const model=await analyzeModelAt(app,0x3000n,null,{maxInstructions:10});
-  assert.ok(model);
-  assert.equal(model.instructions.length,10);
-  assert.equal(model.truncated,true,'unknown function end must fail closed');
-}
+const context = createHexAIContext(app);
+assert.equal(context.analysisAuthority, 'AnalysisQueryAPI');
+assert.equal(context.symbols, null);
+assert.equal(context.program, null);
+assert.deepEqual(context.functions, []);
+assert.deepEqual(context.strings, []);
 
-// A proven end fully covered within budget remains complete.
-{
-  clearAnalysisCache();
-  const total=64, functionRows=20;
-  const region={id:'text-exact',vmAddr:0x4000n,size:BigInt(total*4),exec:true};
-  const backend=backendFor(total);
-  const end=0x4000n+BigInt(functionRows*4);
-  const app={store:storeFor(region,'arm64'),backend,codeRegion:()=>region,symbols:symbolsFor(0x4000n,end)};
-  const model=await analyzeModelAt(app,0x4000n,end,{maxInstructions:64});
-  assert.ok(model);
-  assert.equal(model.instructions.length,functionRows);
-  assert.equal(model.truncated,false);
-}
+const model = await context.analyze(0x1000n);
+assert.equal(model, projected);
+assert.equal(functionCalls, 2, 'one stale Query snapshot must be retried exactly once');
+assert.ok(snapshotCalls >= 2);
 
-// An explicit subrange of a known function is not exhaustive even when the
-// requested subrange itself fits the row budget.
-{
-  clearAnalysisCache();
-  const total=64, functionRows=20;
-  const region={id:'text-subrange',vmAddr:0x5000n,size:BigInt(total*4),exec:true};
-  const backend=backendFor(total);
-  const end=0x5000n+BigInt(functionRows*4);
-  const app={store:storeFor(region,'arm64'),backend,codeRegion:()=>region,symbols:symbolsFor(0x5000n,end)};
-  const model=await analyzeModelAt(app,0x5000n,0x5000n+20n,{maxInstructions:64});
-  assert.ok(model);
-  assert.equal(model.truncated,true);
-}
+const unsupportedStrings = await context.searchStrings('abc', { limit:10 });
+assert.equal(searchCalls, 1);
+assert.equal(unsupportedStrings.complete, false,
+  'all-unsupported typed search producers must never fabricate a complete empty string index');
+assert.equal(unsupportedStrings.truncated, true);
+assert.equal(unsupportedStrings.reason, 'typed-search-producer-unavailable');
 
-// Generic Capstone support does not make the ARM64 semantic engine valid for
-// x86_64. The UI adapter must refuse before touching the backend.
-{
-  clearAnalysisCache();
-  const region={id:'text-x86',vmAddr:0x6000n,size:0x100n,exec:true};
-  const backend=backendFor(64);
-  const app={store:storeFor(region,'x86_64'),backend,codeRegion:()=>region,symbols:symbolsFor(0x6000n,0x6010n)};
-  const model=await analyzeModelAt(app,0x6000n,0x6010n,{maxInstructions:16});
-  assert.equal(model,null);
-  assert.equal(backend.state.fetches,0,'unsupported semantic architecture must not fetch analysis chunks');
-}
+const registry = createHexToolRegistry(context);
+const functionResult = await registry.execute('get_function', { address:'0x1000' });
+assert.equal(instructionCalls, 1);
+assert.match(functionResult.result.assemblyExcerpt, /raw_mov eax, ebx/,
+  'raw assembly must come from QueryAPI.instructions, not the semantic compatibility projection');
+assert.equal(functionResult.result.analysisAuthority, 'AnalysisQueryAPI');
 
-// The actual AI context seam must forward end/options instead of silently
-// discarding the control plane's budget arguments.
-{
-  clearAnalysisCache();
-  const total=64;
-  const region={id:'text-context',vmAddr:0x7000n,size:BigInt(total*4),exec:true};
-  const backend=backendFor(total);
-  const end=0x7000n+80n;
-  const app={
-    store:storeFor(region,'arm64'),backend,codeRegion:()=>region,symbols:symbolsFor(0x7000n,end),
-    recognition:{records:[]},notes:null,lastGoal:null,stringIndex:[],program:null,knowledge:null,
-  };
-  const context=createHexAIContext(app);
-  const model=await context.analyze(0x7000n,end,{maxInstructions:5});
-  assert.ok(model);
-  assert.equal(model.instructions.length,5);
-  assert.equal(model.truncated,true);
-}
+const xrefs = await registry.execute('get_xrefs', { address:'0x1000', limit:20 });
+assert.equal(xrefCalls, 1);
+assert.equal(xrefs.result.results.length, 1);
+const callers = await registry.execute('get_callers', { address:'0x1000', limit:20 });
+const callees = await registry.execute('get_callees', { address:'0x1000', limit:20 });
+assert.equal(callerCalls, 1);
+assert.equal(calleeCalls, 1);
+assert.equal(callers.result.complete, true);
+assert.equal(callees.result.complete, true);
 
-// Cancellation must cross the real UI->semantic-analysis seam and cancel the
-// backend chunk RPC, rather than merely rejecting the outer AI tool race.
-{
-  clearAnalysisCache();
-  const region={id:'text-abort',vmAddr:0x8000n,size:0x100n,exec:true};
-  let cancelled=0;
-  const backend={
-    gen:1,
-    fetchChunk(){
-      const pending=new Promise(()=>{});
-      pending.cancel=()=>{cancelled++;};
-      return pending;
-    },
-  };
-  const app={store:storeFor(region,'arm64'),backend,codeRegion:()=>region,symbols:symbolsFor(0x8000n,0x8040n)};
-  const controller=new AbortController();
-  const pending=analyzeModelAt(app,0x8000n,0x8040n,{maxInstructions:16,signal:controller.signal});
-  controller.abort('test-analysis-abort');
-  await assert.rejects(pending,(error)=>error?.name==='AbortError' && error?.code==='ABORT_ERR');
-  assert.equal(cancelled,1,'analysis abort must invoke the underlying chunk request cancel hook');
-}
+const decompiled = await registry.execute('decompile_function', { functionAddress:'0x1000' });
+assert.equal(decompileCalls, 1);
+assert.equal(decompiled.result.pseudocodeExcerpt, 'short pseudo');
+assert.equal(decompiled.result.complete, false,
+  'partial QueryAPI decompiler evidence must remain partial even when the preview is short');
+assert.equal(decompiled.result.reason, 'upstream-partial');
 
-// Automatic analysis memoization sits between pinpoint and the real analyzer.
-// It must forward the third options argument verbatim or pinpoint's AbortSignal
-// would disappear only on the automatic-analysis path.
-{
-  const controller=new AbortController();
-  let observed=null;
-  const memo=memoizeAnalysis(async (addr,end,options)=>{
-    observed={addr,end,options};
-    return {ok:true};
-  });
-  const result=await memo(0x9000n,0x9040n,{signal:controller.signal,maxInstructions:7});
-  assert.equal(result.ok,true);
-  assert.equal(observed.addr,0x9000n);
-  assert.equal(observed.end,0x9040n);
-  assert.equal(observed.options.signal,controller.signal,'automatic memoizer must forward AbortSignal');
-  assert.equal(observed.options.maxInstructions,7);
-}
+const paths = await registry.execute('find_paths', { from:'0x1000', to:'0x1200' });
+assert.equal(causalCalls, 1);
+assert.equal(paths.result.complete, false);
+assert.equal(paths.result.truncated, true);
+assert.equal(paths.result.reason, 'causal-budget');
+assert.equal(paths.result.analysisAuthority, 'AnalysisQueryAPI');
 
-// ChatGPT Web intentionally has no model-response deadline, but local analysis
-// tools must never inherit that infinity. A tool that never settles is aborted
-// by its own finite deadline, and the registry returns a tool failure instead
-// of leaving get_function (or any other tool) permanently pending.
-{
-  const registry = new ToolRegistry();
-  let abortObserved = false;
-  registry.register({
-    name: 'hang',
-    cost: 'medium',
-    storeResult: false,
-    async execute(_args, { signal }) {
-      return new Promise((_, reject) => {
-        signal.addEventListener('abort', () => {
-          abortObserved = true;
-          reject(new Error('cancelled'));
-        }, { once: true });
-      });
-    },
-  });
-  const started = Date.now();
-  await assert.rejects(
-    () => registry.execute('hang', {}, { toolTimeoutMs: 25 }),
-    (error) => error?.type === 'tool_failed' && /hang timed out/i.test(error.message),
-  );
-  assert.equal(abortObserved, true, 'tool timeout must propagate an abort signal into the local analysis');
-  assert.ok(Date.now() - started < 1000, 'explicit regression timeout must settle promptly');
-  assert.equal(registry.executionSignal, null, 'registry must restore its execution signal after timeout');
-}
-
-console.log('ai semantic analysis boundary regressions: PASS');
+console.log('ai QueryAPI authority cutover regressions: PASS');
