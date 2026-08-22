@@ -19,7 +19,8 @@ function uniqueNames(values) {
 function compactMetadata(source) {
   const out = {};
   for (const [key, value] of Object.entries(source || {})) {
-    if (value !== undefined && value !== null) out[key] = value;
+    if (value === undefined || value === null) continue;
+    Object.defineProperty(out, key, { value, enumerable:true, writable:true, configurable:true });
   }
   return out;
 }
