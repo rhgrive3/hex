@@ -45,7 +45,7 @@ jobs:
   head:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,14 +56,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Verify exact Stage 2 head with full repository gate
+      - name: Verify exact Stage 2 head
         env:
           VERIFY_SHA: ${{ github.event.pull_request.head.sha }}
-        run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA" --full
+        # Invariant Gates already runs the complete repository check for every
+        # pull request. Keep Stage 2 focused on its exact-head product here;
+        # manual/final validation below still requires --full.
+        run: node tools/validation/stage2/verify.mjs --expect-sha "$VERIFY_SHA"
 
   candidate-merge-tree:
     if: github.event_name == 'pull_request'
-    needs: head
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
