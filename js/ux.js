@@ -1,5 +1,6 @@
 /* Compatibility bootstrap only. Canonical product UI lives under js/ui/*. */
 import { installProductUI } from './ui/product.js';
+import { installViewerDragReturnGuard } from './ui/viewer-gesture-guard.js';
 import { closeMenu } from './ui.js';
 
 const LEGACY_ACTION_IDS = [
@@ -59,6 +60,7 @@ function migrateRootControls(ui) {
 
 function boot() {
   if (!window.__app) return;
+  installViewerDragReturnGuard(window.__app.viewer);
   retireLegacyActionDom();
   const ui = installProductUI(window.__app);
   if (ui) migrateRootControls(ui);
