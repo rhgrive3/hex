@@ -49,7 +49,8 @@ function deepFreeze(value, seen = new WeakSet()) {
 
 export function validatePluginManifest(manifest) {
   if (!manifest || typeof manifest !== "object") throw new TypeError("plugin-manifest-invalid");
-  if (!ID_RE.test(String(manifest.id || ""))) throw new TypeError("plugin-manifest-id-invalid");
+  const pluginId = String(manifest.id || "");
+  if (!ID_RE.test(pluginId)) throw new TypeError("plugin-manifest-id-invalid");
   const name = String(manifest.name || "").trim();
   if (!name || name.length > 200) throw new TypeError("plugin-manifest-name-invalid");
 
@@ -87,9 +88,10 @@ export function validatePluginManifest(manifest) {
   for (const c of manifest.contributions) {
     if (!c || typeof c !== "object") throw new TypeError("plugin-manifest-contribution-invalid");
     if (c.type !== "analyzer") throw new TypeError("plugin-manifest-unsupported-contribution-type");
-    if (!ID_RE.test(String(c.id || ""))) throw new TypeError("plugin-manifest-contribution-id-invalid");
-    if (contribSet.has(c.id)) throw new TypeError("plugin-manifest-duplicate-contribution-id");
-    contribSet.add(c.id);
+    const contributionId = String(c.id || "");
+    if (!ID_RE.test(contributionId)) throw new TypeError("plugin-manifest-contribution-id-invalid");
+    if (contribSet.has(contributionId)) throw new TypeError("plugin-manifest-duplicate-contribution-id");
+    contribSet.add(contributionId);
 
     parseSemver(c.contractVersion);
 
@@ -109,14 +111,14 @@ export function validatePluginManifest(manifest) {
 
     contributions.push({
       type: "analyzer",
-      id: c.id,
+      id: contributionId,
       contractVersion: c.contractVersion,
       capabilities,
     });
   }
 
   const normalized = {
-    id: manifest.id,
+    id: pluginId,
     name,
     version: manifest.version,
     apiVersion: manifest.apiVersion,
