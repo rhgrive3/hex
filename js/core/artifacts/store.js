@@ -26,7 +26,7 @@ const INCOMPATIBLE_CODES = new Set([
 
 function aborted(signal) {
   if (!signal?.aborted) return;
-  throw signal.reason || new DOMException('Aborted', 'AbortError');
+  throw signal.reason ?? new DOMException('Aborted', 'AbortError');
 }
 
 function isAbort(error, signal) {
@@ -322,7 +322,7 @@ export class ArtifactStore {
             else await this.backend.delete(artifactId);
           } catch { /* cancellation remains the primary result */ }
         }
-        throw options.signal.reason || new DOMException('Aborted', 'AbortError');
+        throw options.signal.reason ?? new DOMException('Aborted', 'AbortError');
       }
 
       let canonicalRecord;
