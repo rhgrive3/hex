@@ -173,7 +173,9 @@ export function exportHexProject(project, name = 'analysis.hexproj') { const tex
 export async function importHexProject(input) {
   if (typeof Blob !== 'undefined' && input instanceof Blob) {
     assertProjectSize(input.size);
-    return parseHexProject(await input.arrayBuffer());
+    const [text, buffer] = await Promise.all([input.text(), input.arrayBuffer()]);
+    decodeProjectBytes(new Uint8Array(buffer));
+    return parseHexProject(text);
   }
   return parseHexProject(input);
 }
