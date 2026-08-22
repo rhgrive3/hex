@@ -61,7 +61,7 @@ export class ProjectArtifactIndex {
     for (const ref of refs) this.bind(ref);
   }
 
-  static key(scope, kind) { return JSON.stringify([String(scope), String(kind)]); }
+  static key(scope, kind) { return JSON.stringify([String(scope).trim(), String(kind).trim()]); }
 
   get size() { return this.refs.size; }
 
