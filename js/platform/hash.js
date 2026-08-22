@@ -4,14 +4,23 @@ const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const MASK64 = 0xffffffffffffffffn;
 
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error('hash cancelled');
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  throw error;
+}
+
 export async function hashByteSource(input, options = {}) {
   const source = asByteSource(input);
+  throwIfAborted(options.signal);
   const chunkSize = Math.min(options.chunkSize ?? 1024 * 1024, source.maxReadLength);
   if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) throw new TypeError('chunkSize must be a positive safe integer');
   let hash = FNV_OFFSET;
   let offset = 0n;
   while (offset < source.size) {
-    if (options.signal?.aborted) throw new Error('hash cancelled');
+    throwIfAborted(options.signal);
     const remaining = source.size - offset;
     const length = Number(remaining < BigInt(chunkSize) ? remaining : BigInt(chunkSize));
     const bytes = await source.readExactly(offset, length, { signal: options.signal });
@@ -47,6 +56,7 @@ function bytesHex(bytes) {
  */
 export async function sha256TreeByteSource(input, options = {}) {
   const source = asByteSource(input);
+  throwIfAborted(options.signal);
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) {
     const error = new Error('SubtleCrypto SHA-256 is unavailable');
@@ -59,12 +69,7 @@ export async function sha256TreeByteSource(input, options = {}) {
   const digests = [];
   let offset = 0n;
   while (offset < source.size) {
-    if (options.signal?.aborted) {
-      const error = new Error('hash cancelled');
-      error.name = 'AbortError';
-      error.code = 'ABORT_ERR';
-      throw error;
-    }
+    throwIfAborted(options.signal);
     const remaining = source.size - offset;
     const length = Number(remaining < BigInt(chunkSize) ? remaining : BigInt(chunkSize));
     const bytes = await source.readExactly(offset, length, { signal: options.signal });
