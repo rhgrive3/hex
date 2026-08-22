@@ -110,8 +110,8 @@ assert.equal(toolResult.result.requirements.length, 1);
 assert.equal(toolResult.result.candidates.length, 0);
 
 // Wiring assertions: App builds/caches the full model, normal UI/AI decompiler
-// consume the cached runtime index, and the facade passes parser options using
-// the parser's canonical 3-argument contract.
+// consume the cached runtime index, and compatibility implementations remain
+// present behind the public QueryAPI wrappers.
 const objcSource = await readFile(new URL('../js/objc.js', import.meta.url), 'utf8');
 assert.match(objcSource, /parseObjcExtendedMetadata\(read, runtimeSections, \{/);
 assert.match(objcSource, /model\.runtimeIndex = buildObjcRuntimeIndex\(model\)/);
@@ -131,10 +131,18 @@ assert.match(toolsBaseSource, /await app\.ensureObjc/,
   'compatibility renderer must still enrich decompiler output with ObjC metadata');
 assert.match(toolsBaseSource, /objcRuntimeIndex: app\.objcRuntime \|\| null/);
 const ctxSource = await readFile(new URL('../js/ai/ui/hex-context.js', import.meta.url), 'utf8');
-assert.match(ctxSource, /async resolveObjcDispatch\(/);
-assert.match(ctxSource, /receiverType: String\(receiverClass/);
-assert.match(ctxSource, /objcRuntimeIndex: app\.objcRuntime \|\| null/);
+const ctxLegacySource = await readFile(new URL('../js/ai/ui/hex-context-legacy.js', import.meta.url), 'utf8');
+assert.match(ctxSource, /createBaseHexAIContext/,
+  'public AI context must retain the QueryAPI facade over the compatibility implementation');
+assert.match(ctxLegacySource, /async resolveObjcDispatch\(/,
+  'ObjC dispatch capability must remain implemented behind the QueryAPI facade');
+assert.match(ctxLegacySource, /receiverType: String\(receiverClass/);
+assert.match(ctxLegacySource, /objcRuntimeIndex: app\.objcRuntime \|\| null/);
 const registrySource = await readFile(new URL('../js/ai/tools/registry.js', import.meta.url), 'utf8');
-assert.match(registrySource, /register\('resolve_objc_dispatch'/);
+const registryBaseSource = await readFile(new URL('../js/ai/tools/registry-base.js', import.meta.url), 'utf8');
+assert.match(registrySource, /createBaseHexToolRegistry/,
+  'public AI registry must retain the QueryAPI facade over the compatibility registry');
+assert.match(registryBaseSource, /register\('resolve_objc_dispatch'/,
+  'ObjC dispatch tool must remain registered behind the QueryAPI facade');
 
 console.log('issue #529 ObjC runtime integration: PASS');
