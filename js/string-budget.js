@@ -6,9 +6,9 @@ export const STRING_SCAN_BUDGET = Object.freeze({
 
 export class StringCollectionBudget {
   constructor(config = STRING_SCAN_BUDGET) {
-    this.inputRemaining = Math.max(0, Number(config.inputBytes) || 0);
-    this.resultLimit = Math.max(1, Number(config.resultLimit) || 1);
-    this.heapLimit = Math.max(1, Number(config.estimatedHeapBytes) || 1);
+    this.inputRemaining = finiteBudget(config.inputBytes, 0, 0);
+    this.resultLimit = finiteBudget(config.resultLimit, 1, 1, true);
+    this.heapLimit = finiteBudget(config.estimatedHeapBytes, 1, 1);
     this.results = 0;
     this.estimatedHeap = 0;
     this.truncationReason = null;
@@ -43,4 +43,11 @@ export class StringCollectionBudget {
   get exhausted() {
     return this.requestLimit() <= 0 || this.estimatedHeap >= this.heapLimit;
   }
+}
+
+function finiteBudget(value, fallback, minimum, integer = false) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  const bounded = Math.max(minimum, numeric);
+  return integer ? Math.floor(bounded) : bounded;
 }
