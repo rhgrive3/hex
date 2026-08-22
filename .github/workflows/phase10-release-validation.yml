@@ -36,7 +36,6 @@ on:
       - "tests/runtime-evidence-fusion.mjs"
       - "tools/validation/phase10/**"
       - ".github/workflows/phase10-release-validation.yml"
-      - ".github/workflows/_phase-release-validation.yml"
       - "package.json"
   workflow_dispatch:
     inputs:

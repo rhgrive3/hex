@@ -29,7 +29,6 @@ on:
       - "tests/capability-maturity.mjs"
       - "tools/validation/phase11/**"
       - ".github/workflows/phase11-release-validation.yml"
-      - ".github/workflows/_phase-release-validation.yml"
       - "docs/SUPPORT_MATRIX.md"
       - "package.json"
   workflow_dispatch:

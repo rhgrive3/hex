@@ -22,11 +22,15 @@ assert.ok(reusableText.includes("fetch-depth: 0"), "5. fetch-depth: 0");
 assert.ok(reusableText.includes("git fetch --no-tags origin main:refs/remotes/origin/main"), "6. fetch origin/main");
 assert.ok(reusableText.includes("actions/setup-node@v4"), "7. setup-node");
 assert.ok(reusableText.includes("22"), "7. node 22");
+assert.ok(reusableText.includes("cache: npm"), "7. npm cache");
 assert.ok(reusableText.includes("npm ci --no-audit --no-fund"), "8. npm ci");
 assert.ok(reusableText.includes("node ${{ inputs.ownership_script }}"), "9. ownership execution");
 assert.ok(reusableText.includes("--expect-sha"), "10. --expect-sha");
 assert.ok(reusableText.includes("--shadow"), "11. --shadow");
-assert.ok(reusableText.includes("${{ inputs.run_broad_regression }}"), "12. run_broad_regression gate");
+assert.ok(
+  reusableText.includes("${{ inputs.run_broad_regression && github.event_name != 'pull_request' }}"),
+  "12. broad regression is preserved at release boundaries and deduplicated on PRs",
+);
 assert.ok(reusableText.includes("actions/upload-artifact@v4"), "13. upload-artifact");
 assert.ok(reusableText.includes("if: success()"), "14. if: success()");
 assert.ok(reusableText.includes("${{ inputs.artifact_prefix }}-${{ inputs.artifact_suffix }}"), "15. artifact name");
@@ -34,8 +38,16 @@ assert.ok(reusableText.includes("if-no-files-found: error"), "16. if-no-files-fo
 
 console.log("  ok 1-16 reusable workflow assertions");
 
-// Phase 10 assertions
-const p10ExpectedPaths = [
+function extractPaths(text, event) {
+  const match = text.match(new RegExp(event + ":[\\s\\S]*?paths:\\s*\\n([\\s\\S]*?)(?:\\n\\s*\\w+:|\\Z)"));
+  if (!match) return [];
+  const lines = match[1].split("\n").map(l => l.trim()).filter(l => l.startsWith("-"));
+  return lines.map(l => l.replace(/^-\s*['"]?/, "").replace(/['"]?$/, "")).sort();
+}
+
+// Phase 10 assertions. Shared reusable-workflow changes are validated by
+// Invariant Gates on PRs; main/push still revalidates the Phase release path.
+const p10PushExpectedPaths = [
   ".github/workflows/_phase-release-validation.yml",
   ".github/workflows/phase10-release-validation.yml",
   "js/adapters/**",
@@ -50,16 +62,10 @@ const p10ExpectedPaths = [
   "tests/runtime-platform.mjs",
   "tools/validation/phase10/**",
 ].sort();
+const p10PrExpectedPaths = p10PushExpectedPaths.filter((path) => path !== ".github/workflows/_phase-release-validation.yml");
 
-function extractPaths(text, event) {
-  const match = text.match(new RegExp(event + ":[\\s\\S]*?paths:\\s*\\n([\\s\\S]*?)(?:\\n\\s*\\w+:|\\Z)"));
-  if (!match) return [];
-  const lines = match[1].split("\n").map(l => l.trim()).filter(l => l.startsWith("-"));
-  return lines.map(l => l.replace(/^-\s*['"]?/, "").replace(/['"]?$/, "")).sort();
-}
-
-assert.deepEqual(extractPaths(phase10Text, "push"), p10ExpectedPaths, "Phase 10 push paths match");
-assert.deepEqual(extractPaths(phase10Text, "pull_request"), p10ExpectedPaths, "Phase 10 PR paths match");
+assert.deepEqual(extractPaths(phase10Text, "push"), p10PushExpectedPaths, "Phase 10 push paths match");
+assert.deepEqual(extractPaths(phase10Text, "pull_request"), p10PrExpectedPaths, "Phase 10 PR paths match");
 
 assert.ok(phase10Text.includes("main"));
 assert.ok(phase10Text.includes("phase10/**"));
@@ -73,7 +79,6 @@ assert.ok(phase10Text.includes("phase10-release-evidence"));
 assert.ok(phase10Text.includes("reports/phase10/phase10-release-evidence.json"));
 assert.ok(phase10Text.includes("reports/phase10/checkpoints.json"));
 
-// Check SHA selection expression identical for checkout_ref and artifact_suffix
 const p10CheckoutMatch = phase10Text.match(/checkout_ref:\s*(.+)/);
 const p10SuffixMatch = phase10Text.match(/artifact_suffix:\s*(.+)/);
 assert.ok(p10CheckoutMatch && p10SuffixMatch, "Phase 10 has checkout_ref and artifact_suffix");
@@ -97,7 +102,6 @@ const p11PushExpectedPaths = [
 ].sort();
 
 const p11PrExpectedPaths = [
-  ".github/workflows/_phase-release-validation.yml",
   ".github/workflows/phase11-release-validation.yml",
   "docs/SUPPORT_MATRIX.md",
   "js/managed/**",

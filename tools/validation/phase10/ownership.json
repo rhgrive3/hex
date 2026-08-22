@@ -26,9 +26,11 @@
   "allowedExact": [
     ".github/workflows/phase10-release-validation.yml",
     ".github/workflows/phase11-release-validation.yml",
+    ".github/workflows/_phase-release-validation.yml",
     ".github/workflows/generated-sync.yml",
     ".github/workflows/generated-userscript-autofix.yml",
     ".github/workflows/userscript-host.yml",
+    "tests/reusable-release-validation.mjs",
     "tests/dev-agent/generated-output-policy.mjs",
     "tests/semantic-v2/integration-userscript-sync.test.mjs",
     "tools/validation/generated-output-policy.mjs",
