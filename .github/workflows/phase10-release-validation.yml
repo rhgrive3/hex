@@ -58,6 +58,12 @@ concurrency:
 
 jobs:
   verify:
+    # Stage 1 completion owns the aggregate product candidate. Phase 10's
+    # component ownership gate must not reinterpret that cross-phase diff as a
+    # Phase 10 candidate merely because package.json is shared.
+    if: >-
+      ${{ github.event_name != 'pull_request' ||
+          github.head_ref != 'completion/stage1-integration' }}
     uses: ./.github/workflows/_phase-release-validation.yml
     with:
       phase_name: "Phase 10"

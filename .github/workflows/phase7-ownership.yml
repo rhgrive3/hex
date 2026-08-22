@@ -34,6 +34,13 @@ concurrency:
 
 jobs:
   ownership:
+    # The Stage 1 completion branch is an integration lane. Its aggregate
+    # inventory is verified by stage1-release-validation.yml; running this
+    # component-lane gate over the whole integration diff misclassifies the
+    # Stage 1 and competitive paths as Phase 7 violations.
+    if: >-
+      ${{ github.event_name != 'pull_request' ||
+          github.head_ref != 'completion/stage1-integration' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { verifyCompetitiveProfile } from '../competitive/verify.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const REPORT_PATH = path.join(ROOT, 'reports/stage1/stage1-verdict.json');
@@ -108,6 +109,45 @@ const GATES = Object.freeze([
   }),
 ]);
 
+const SCOPE_PATH = path.join(ROOT, 'tools/validation/stage2/completion-scope.lock.json');
+const LEDGER_PATH = path.join(ROOT, 'tools/validation/stage2/closure-ledger.json');
+const REQUIRED_STAGE1_LEDGER_IDS = Object.freeze([
+  'S1-A2-NATIVE',
+]);
+
+export function validateStage1ScopeAndLedger(headSha) {
+  const errors = [];
+  if (!fs.existsSync(SCOPE_PATH)) errors.push('completion-scope-missing');
+  if (!fs.existsSync(LEDGER_PATH)) errors.push('closure-ledger-missing');
+  if (errors.length > 0) return { ok: false, errors };
+
+  const scope = JSON.parse(fs.readFileSync(SCOPE_PATH, 'utf8'));
+  const ledger = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
+
+  if (scope.growthOnly !== true) errors.push('scope-not-growth-only');
+  if (!/^[0-9a-f]{40}$/.test(scope.baselineCommit || '')) errors.push('scope-baseline-commit-invalid');
+  if (!/^[0-9a-f]{40}$/.test(scope.baselineTree || '')) errors.push('scope-baseline-tree-invalid');
+
+  const ancestor = spawnSync('git', ['merge-base', '--is-ancestor', scope.baselineCommit, headSha], { cwd: ROOT, encoding: 'utf8' });
+  if (ancestor.status !== 0) errors.push('scope-baseline-not-ancestor');
+
+  const ids = new Set();
+  for (const item of ledger.items || []) {
+    if (!item.id || ids.has(item.id)) errors.push(`ledger-id-invalid:${item.id || '<missing>'}`);
+    ids.add(item.id);
+    for (const ref of [...(item.implementationRefs || []), ...(item.testRefs || []), ...(item.verifierRefs || []), ...(item.supportTruthRefs || [])]) {
+      if (ref.includes('*')) continue;
+      if (!fs.existsSync(path.join(ROOT, ref))) errors.push(`ledger-ref-missing:${item.id}:${ref}`);
+    }
+  }
+
+  for (const id of REQUIRED_STAGE1_LEDGER_IDS) {
+    if (!ids.has(id)) errors.push(`ledger-required-stage1-id-missing:${id}`);
+  }
+
+  return { ok: errors.length === 0, errors, scope, ledger, ledgerItemCount: ids.size };
+}
+
 export function stage1GateDefinitions() {
   return GATES;
 }
@@ -123,6 +163,15 @@ export function verifyStage1({ expectedSha = null } = {}) {
   }
   const dirty = git(['status', '--porcelain', '--untracked-files=no']);
   if (dirty) throw new Error(`stage1-worktree-not-clean:\n${dirty}`);
+
+  // Validate Scope and Ledger
+  const scopeValidation = validateStage1ScopeAndLedger(gitSha);
+  if (!scopeValidation.ok) {
+    throw new Error(`stage1-scope-ledger-invalid:\n${scopeValidation.errors.join('\n')}`);
+  }
+
+  // Validate Competitive Profile
+  verifyCompetitiveProfile();
 
   const gates = [];
   for (const gate of GATES) {
@@ -145,6 +194,7 @@ export function verifyStage1({ expectedSha = null } = {}) {
     gitSha,
     expectedSha: expectedSha || null,
     generatedAt: new Date().toISOString(),
+    scopeValidation: { ok: true, ledgerItemCount: scopeValidation.ledgerItemCount },
     gates,
     verdict,
   };

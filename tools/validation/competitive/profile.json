@@ -1,0 +1,152 @@
+{
+  "schemaVersion": "hex-competitive-profile/v1",
+  "profileId": "competitive-v2-master",
+  "baselineCommit": "a7f2e8f03828d0bee971b799ab07666642a33f60",
+  "baselineTree": "bd714bfd90494c716cc8345b2ca16e8d8ecc57a0",
+  "specificationBlobSha": "724eb69335d72b45be0e469e61c90eeb94462997",
+  "specificationCommitSha": "7aea6707839dd2a4f4945ce6cf6a27e7d6928e4e",
+  "runtimeHardwareClass": "node22-linux-x86_64",
+  "toolchainVersions": {
+    "node": "22",
+    "capstone": "5.0.1-hex"
+  },
+  "architectureDecoderIdentities": {
+    "arm64": "arm64:a64",
+    "arm64e": "arm64e:a64+pac",
+    "x86_64": "x86_64:long-64",
+    "riscv64": "riscv64:rv64imc"
+  },
+  "compilerCorpusGeneratorVersions": {
+    "clang": "18.1.8",
+    "gcc": "14.2.0",
+    "rustc": "1.80.0"
+  },
+  "referenceTools": {
+    "ghidra": {
+      "version": "11.1.2",
+      "role": "oracle-differential-only"
+    },
+    "capstone": {
+      "version": "5.0.1",
+      "role": "disassembly-oracle"
+    }
+  },
+  "metrics": {
+    "alias-v2-exact-precision": {
+      "name": "Alias Analysis v2 Exact Precision",
+      "direction": "higher",
+      "targetVerdict": "WIN",
+      "regressionTolerance": 0.0,
+      "class": "deterministic",
+      "blocksGenericCI": true,
+      "requiresDedicatedRunner": false,
+      "corpusWorkloadIds": ["phase7-alias-memory-corpus-v2"],
+      "repetitionPolicy": {
+        "coldWarm": "both",
+        "repetitions": 5
+      }
+    },
+    "alias-v2-exact-recall": {
+      "name": "Alias Analysis v2 Exact Recall",
+      "direction": "higher",
+      "targetVerdict": "WIN",
+      "regressionTolerance": 0.0,
+      "class": "deterministic",
+      "blocksGenericCI": true,
+      "requiresDedicatedRunner": false,
+      "corpusWorkloadIds": ["phase7-alias-memory-corpus-v2"],
+      "repetitionPolicy": {
+        "coldWarm": "both",
+        "repetitions": 5
+      }
+    },
+    "alias-v2-false-must-alias": {
+      "name": "Alias Analysis v2 False MustAlias Count",
+      "direction": "exact-zero",
+      "targetVerdict": "WIN",
+      "regressionTolerance": 0.0,
+      "class": "deterministic",
+      "blocksGenericCI": true,
+      "requiresDedicatedRunner": false,
+      "corpusWorkloadIds": ["phase7-alias-memory-corpus-v2"],
+      "repetitionPolicy": {
+        "coldWarm": "none",
+        "repetitions": 1
+      }
+    },
+    "alias-v2-false-no-alias": {
+      "name": "Alias Analysis v2 False NoAlias Count",
+      "direction": "exact-zero",
+      "targetVerdict": "WIN",
+      "regressionTolerance": 0.0,
+      "class": "deterministic",
+      "blocksGenericCI": true,
+      "requiresDedicatedRunner": false,
+      "corpusWorkloadIds": ["phase7-alias-memory-corpus-v2"],
+      "repetitionPolicy": {
+        "coldWarm": "none",
+        "repetitions": 1
+      }
+    },
+    "machine-effects-arm64-coverage": {
+      "name": "MachineEffects ARM64 Coverage",
+      "direction": "higher",
+      "targetVerdict": "WIN",
+      "regressionTolerance": 0.0,
+      "class": "deterministic",
+      "blocksGenericCI": true,
+      "requiresDedicatedRunner": false,
+      "corpusWorkloadIds": ["tests/stage1/a2-machine-effects-coverage.test.mjs"]
+    },
+    "machine-effects-x86_64-coverage": {
+      "name": "MachineEffects x86_64 Coverage",
+      "direction": "higher",
+      "targetVerdict": "WIN",
+      "regressionTolerance": 0.0,
+      "class": "deterministic",
+      "blocksGenericCI": true,
+      "requiresDedicatedRunner": false,
+      "corpusWorkloadIds": ["tests/phase5/verification/compiler-corpus-pipeline.test.mjs"]
+    },
+    "machine-effects-riscv64-coverage": {
+      "name": "MachineEffects RISC-V64 Coverage",
+      "direction": "higher",
+      "targetVerdict": "WIN",
+      "regressionTolerance": 0.0,
+      "class": "deterministic",
+      "blocksGenericCI": true,
+      "requiresDedicatedRunner": false,
+      "corpusWorkloadIds": ["tests/phase6/verification/compiler-corpus-pipeline.test.mjs"]
+    },
+    "decompiler-quality-gotos": {
+      "name": "Decompiler Gotos in Corpus",
+      "direction": "lower",
+      "targetVerdict": "WIN",
+      "regressionTolerance": 0.0,
+      "class": "deterministic",
+      "blocksGenericCI": true,
+      "requiresDedicatedRunner": false,
+      "corpusWorkloadIds": ["tests/phase8/corpus/**"]
+    },
+    "decompiler-quality-assembly-fallbacks": {
+      "name": "Decompiler Raw Assembly Fallbacks",
+      "direction": "lower",
+      "targetVerdict": "WIN",
+      "regressionTolerance": 0.0,
+      "class": "deterministic",
+      "blocksGenericCI": true,
+      "requiresDedicatedRunner": false,
+      "corpusWorkloadIds": ["tests/phase8/corpus/**"]
+    },
+    "universal-binary-hotpath-ms": {
+      "name": "Universal Binary Hot-path Latency (ms)",
+      "direction": "lower",
+      "targetVerdict": "WIN",
+      "regressionTolerance": 0.05,
+      "class": "device-class-performance",
+      "blocksGenericCI": false,
+      "requiresDedicatedRunner": true,
+      "corpusWorkloadIds": ["tests/benchmark-baseline.mjs"]
+    }
+  }
+}
