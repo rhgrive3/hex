@@ -11,7 +11,12 @@
  *  - 「レジスタ」には役割がある（x0 は引数、x30 は戻り先…）。それを毎回教える。
  */
 import { isJa, pick } from './i18n.js';
-import { parseOperands, immText, opShort, condInfo } from './ui/explain/arm64-operands.js';
+// immShort / absHex / memExpr は擬似コードと注釈で使います。以前は
+// arm64-operands.js の中に閉じたままで、こちらからは import されていません
+// でした。呼び出しは残っていたので、メモリ系や即値系の説明はすべて例外で
+// 落ち、空の説明として表示されていました。ここで正規の 1 つの実装を
+// 取り込みます（別実装を作り直すと 2 つの真実ができてしまいます）。
+import { parseOperands, immText, immShort, absHex, memExpr, opShort, condInfo } from './ui/explain/arm64-operands.js';
 import { registerRole } from './abi/aapcs64/presentation.js';
 
 export { parseOperands, immText, opShort, condInfo, registerRole };
@@ -79,19 +84,35 @@ function memText(m) {
 
 const BRANCH_IMM = new Set(['b', 'bl', 'cbz', 'cbnz', 'tbz', 'tbnz']);
 
+/**
+ * 同じ 64bit 汎用レジスタか。
+ *
+ * adrp+add のような「2 行で 1 つの意味」を組み立てるときに、本当に値が
+ * つながっているかを確かめるために使います。名前の文字列比較ではなく
+ * クラス・番号・幅で見るので、lr / fp のような別名でも取り違えません。
+ */
+function sameGeneralRegister(a, b) {
+  if (!a || !b || a.k !== 'reg' || b.k !== 'reg') return false;
+  if (a.cls !== 'gp' || b.cls !== 'gp') return false;
+  if (a.bits !== 64 || b.bits !== 64) return false;
+  return a.num === b.num;
+}
+
 /** 命令が指しているアドレス（BigInt）。ないときは null。 */
 export function referenceTarget(mn, opsStr) {
   if (!mn) return null;
   const base = mn.toLowerCase();
   const ops = parseOperands(opsStr);
   const isCond = /^b\.[a-z]{2}$/.test(base);
+  // アドレス 0 は「参照なし」の合図ではなく、実在しうる番地です。
+  // 存在判定に正の値であることを使うと、0 番地の分岐先/参照先が消えます (#1288)。
   if (BRANCH_IMM.has(base) || isCond || base === 'adr' || base === 'adrp') {
     for (let i = ops.length - 1; i >= 0; i--) {
-      if (ops[i].k === 'imm' && ops[i].value != null && ops[i].value > 0n) return ops[i].value;
+      if (ops[i].k === 'imm' && ops[i].value != null && ops[i].value >= 0n) return ops[i].value;
     }
     return null;
   }
-  if (base === 'ldr' && ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null && ops[1].value > 0n) {
+  if (base === 'ldr' && ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null && ops[1].value >= 0n) {
     return ops[1].value;   // リテラルプール読み込み
   }
   return null;
@@ -220,7 +241,11 @@ export function explain(mn, opsStr, address, ctx) {
 
   const h = HANDLERS[base] || familyHandler(base);
   if (h) {
-    try { h(out, ops, base, address, c); } catch (err) { /* 壊れた行でも表示は続ける */ }
+    // 壊れた行でも表示は続けます。ただし黙って握りつぶすと、handler 側の
+    // 実装バグ（未定義ヘルパーの呼び出しなど）が「説明がない命令」に見えて
+    // しまい、長期間気付けません。失敗したことを出力に残し、テストが機械的に
+    // 検出できるようにします。
+    try { h(out, ops, base, address, c); } catch (err) { out.handlerError = (err && err.message) || String(err); }
   }
   if (!out.title) {
     out.title = J('この命令', 'Instruction');
@@ -403,8 +428,12 @@ HANDLERS.add = (o, ops, base, addr, c) => {
       '同じレジスタに足し戻しているので、C 言語で書けば ' + opShort(d) + ' += ' + immShort(m) + '; です。',
       'Same register on both sides — in C this is ' + opShort(d) + ' += ' + immShort(m) + ';'));
   }
-  // adrp の直後の add はアドレス組み立て
-  if (c && c.prev && /^adrp$/i.test(c.prev.mn) && m && m.k === 'imm') {
+  // adrp の直後の add はアドレス組み立て。
+  // ただし「直前が adrp」だけでは足りません。この add が adrp の書き込み先
+  // レジスタを読んでいることまで確かめないと、無関係な 2 行から実在しない
+  // 参照先を作ってしまいます (#1289)。
+  if (c && c.prev && /^adrp$/i.test(c.prev.mn) && m && m.k === 'imm'
+    && sameGeneralRegister(n, parseOperands(c.prev.ops)[0])) {
     const page = referenceTarget('adrp', c.prev.ops);
     if (page != null) {
       const full = page + (m.value || 0n);
@@ -1010,10 +1039,17 @@ HANDLERS.b = (o, ops, base, addr, c) => {
     '無条件で ' + tgt(at, c) + ' へ飛ぶ。ここから下の行は（飛んでこない限り）実行されません。',
     'Jump to ' + tgt(at, c) + ' unconditionally.');
   if (at != null && addr != null && at < addr) {
+    // 「飛び先が前にある」だけではループの証拠になりません。自然な逆辺は
+    // 飛び先がこの行を支配し、両端が同じ強連結成分にあるときだけです
+    // (js/controlflow.js analyzeGraph)。1 行だけを見るこの説明器には
+    // その情報がないので、向きだけを事実として述べます (#1293)。
     o.detail.push(J(
-      '飛び先が今より前なので、ループの終わりでしょう。同じところを繰り返しています。',
-      'The target is earlier than here, so this is the bottom of a loop.'));
-    o.terms.push('loop');
+      '飛び先が今より前（上）です。ループの終わりのこともありますが、'
+      + '前に置かれた別のブロックへ飛ぶだけのこともあります。'
+      + 'ループかどうかは、関数全体の流れ（制御フローグラフ）を見ないと決まりません。',
+      'The target is earlier (above) than this line. That can be the bottom of a loop, '
+      + 'but it can also be a jump into an earlier block. Only the function-wide control-flow '
+      + 'graph can tell which.'));
   } else {
     o.detail.push(J(
       '飛び先が今より後ろなので、if 文の「else を飛ばす」ような使い方でしょう。',
@@ -1101,9 +1137,11 @@ function condBranch(o, ops, base, addr, c) {
     'これが if 文の正体です。「飛ぶ」「飛ばない」の 2 択で、飛ばなかった場合はすぐ下の行が実行されます。',
     'This is what an if statement becomes: take the jump, or fall through to the next line.'));
   if (at != null && addr != null && at < addr) {
-    o.detail.push(J('飛び先が上なので、これは while / for ループの底です。条件を満たす間ぐるぐる回ります。',
-      'The target is above, so this is a loop that repeats while the condition holds.'));
-    o.terms.push('loop');
+    // 逆向きの条件分岐も、それだけではループの証明になりません (#1293)。
+    o.detail.push(J('飛び先が今より前（上）です。while / for の底であることも多いですが、'
+      + 'ループかどうかは関数全体の流れ（制御フローグラフ）を見て決まります。',
+      'The target is earlier (above). This is often the bottom of a while/for loop, but only the '
+      + 'function-wide control-flow graph proves it.'));
   }
   o.target = at;
   o.terms.push('branch', 'flags');
@@ -1122,7 +1160,7 @@ function cbzHandler(zero) {
       'cmp を書かずに、レジスタが 0 かどうかだけをその場で見る短縮形です。' +
       'C 言語の if (p == NULL) や if (n) がよくこの形になります。',
       'A shortcut that tests for zero without a separate compare — “if (p == NULL)” and “if (n)” compile to this.'));
-    if (at != null && addr != null && at < addr) { o.terms.push('loop'); }
+    // cbz/cbnz も、アドレスの前後関係だけでループと断定しません (#1293)。
     o.target = at;
     o.terms.push('branch');
   };
@@ -1337,25 +1375,88 @@ HANDLERS.dup = (o, ops) => {
     'Copy ' + opShort(ops[1]) + ' into every lane.');
   o.terms = ['simd'];
 };
+/**
+ * ベクタレジスタの並び（16b / 8h / 4s / 2d …）が何バイト分かを返す。
+ * 分からないときは null。
+ */
+function arrangementBytes(arr) {
+  const m = /^(\d+)([bhsd])$/i.exec(String(arr || ''));
+  if (!m) return null;
+  const lanes = Number(m[1]);
+  const elem = { b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()];
+  if (!Number.isSafeInteger(lanes) || lanes <= 0 || !elem) return null;
+  return lanes * elem;
+}
+
+/**
+ * `{v0.16b, v1.16b, v2.16b, v3.16b}` のようなレジスタリストが運ぶ総バイト数。
+ *
+ * ld2/ld3/ld4 と st2/st3/st4 は複数のベクタを一度に埋めます。
+ * これを常に「16 バイト」と言ってしまうと、扱うデータ量を実際より
+ * 小さく説明してしまいます (#1294)。総量が確定できないときは null を返し、
+ * 呼び出し側はバイト数を言わない説明にします。
+ */
+function registerListBytes(ops) {
+  const list = ops.find((x) => x && x.k === 'list');
+  if (!list || !Array.isArray(list.regs) || !list.regs.length) return null;
+  let total = 0;
+  for (const reg of list.regs) {
+    if (!reg || reg.k !== 'reg') return null;
+    const bytes = reg.cls === 'vec'
+      ? arrangementBytes(reg.arr)
+      : (Number.isSafeInteger(reg.bits) && reg.bits > 0 ? reg.bits / 8 : null);
+    if (bytes == null) return null;
+    total += bytes;
+  }
+  return { total, count: list.regs.length, text: list.text };
+}
+
+function vectorListTitle(load, info) {
+  if (!info) return load ? J('まとめて読む', 'Vector load') : J('まとめて書く', 'Vector store');
+  const unit = info.count === 1 ? '' : '（' + info.count + ' 本のベクタ）';
+  const unitEn = info.count === 1 ? '' : ' (' + info.count + ' vectors)';
+  return load
+    ? J('まとめて読む' + unit, 'Vector load' + unitEn)
+    : J('まとめて書く' + unit, 'Vector store' + unitEn);
+}
+
 for (const n of ['ld1', 'ld2', 'ld3', 'ld4']) {
   HANDLERS[n] = (o, ops) => {
     const mem = ops.find((x) => x.k === 'mem');
-    o.title = J('まとめて読む（16 バイト単位）', 'Vector load');
+    const info = registerListBytes(ops);
+    o.title = vectorListTitle(true, info);
     o.pseudo = (ops[0] ? ops[0].text : '') + ' = *(vector*)(' + (mem ? memExpr(mem) : '') + ')';
+    const amountJa = info ? '合計 ' + info.total + ' バイト（' + info.count + ' 本のベクタ）' : '複数のベクタ';
+    const amountEn = info ? info.total + ' bytes in total across ' + info.count + ' vector register(s)' : 'the listed vector registers';
     o.summary = J(
-      mem ? memText(mem) + 'から 16 バイト単位でまとめて読み込む。' : 'まとめて読み込む。',
-      'Load a whole vector at once.');
+      (mem ? memText(mem) + 'から' : '') + amountJa + 'をまとめて読み込む。',
+      'Load ' + amountEn + ' at once' + (mem ? ' from ' + memExpr(mem) : '') + '.');
+    if (info && info.count > 1) {
+      o.detail.push(J(
+        n + ' は ' + info.count + ' 本のレジスタを同時に埋めます。'
+        + 'メモリ上で交互に並んだデータを、レジスタごとに分けて取り出す命令です。',
+        n + ' fills ' + info.count + ' registers at once, de-interleaving structures held in memory.'));
+    }
     o.terms = ['simd', 'memory'];
   };
 }
 for (const n of ['st1', 'st2', 'st3', 'st4']) {
   HANDLERS[n] = (o, ops) => {
     const mem = ops.find((x) => x.k === 'mem');
-    o.title = J('まとめて書く（16 バイト単位）', 'Vector store');
+    const info = registerListBytes(ops);
+    o.title = vectorListTitle(false, info);
     o.pseudo = '*(vector*)(' + (mem ? memExpr(mem) : '') + ') = ' + (ops[0] ? ops[0].text : '');
+    const amountJa = info ? '合計 ' + info.total + ' バイト（' + info.count + ' 本のベクタ）' : '複数のベクタ';
+    const amountEn = info ? info.total + ' bytes in total across ' + info.count + ' vector register(s)' : 'the listed vector registers';
     o.summary = J(
-      mem ? memText(mem) + 'へ 16 バイト単位でまとめて書き込む。' : 'まとめて書き込む。',
-      'Store a whole vector at once.');
+      (mem ? memText(mem) + 'へ' : '') + amountJa + 'をまとめて書き込む。',
+      'Store ' + amountEn + ' at once' + (mem ? ' to ' + memExpr(mem) : '') + '.');
+    if (info && info.count > 1) {
+      o.detail.push(J(
+        n + ' は ' + info.count + ' 本のレジスタを同時に書き出します。'
+        + 'レジスタごとの値を、メモリ上で交互に並べ直して置く命令です。',
+        n + ' writes ' + info.count + ' registers at once, interleaving them into memory.'));
+    }
     o.terms = ['simd', 'memory'];
   };
 }

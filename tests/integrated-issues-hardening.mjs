@@ -640,5 +640,12 @@ console.log('Testing integrated PRs and issue fixes...');
   console.log('  ok #1066 ArchitectureAdapter fixedInstructionSize region boundary check');
 }
 
+// Issues #1288 / #1289 / #1293 / #1294 and the undefined-helper regression they
+// exposed live in their own file because they need a wide instruction corpus.
+// They are imported here, rather than registered in package.json, so an ARM64
+// fix does not drag every phase release validator into its ownership lane
+// through the shared `package.json` trigger path (EP-007).
+await import('./arm64-explainer-semantics.mjs');
+
 console.log('\nAll integrated issue tests PASS!');
 
