@@ -28,7 +28,7 @@
       };
       return {
         takeRead:(n)=>take('read',n,32*MiB), takeResident:(n)=>take('resident',n,8*MiB),
-        releaseResident(n){ used.resident=Math.max(0,used.resident-Math.max(0,Number(n)||0)); },
+        releaseResident(n){ const amount=Number(n); if(Number.isFinite(amount)&&amount>0) used.resident=Math.max(0,used.resident-amount); },
         takeRegion:(n=1)=>take('regions',n,128), takeName:(n=1)=>take('names',n,80_000),
         takeString:(n)=>take('strings',n,8*MiB), takeOperation:(n=1)=>take('operations',n,2_000_000),
         expired:()=>Date.now()-start>3000, snapshot:()=>({...used,elapsedMs:Date.now()-start}),
