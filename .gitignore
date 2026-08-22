@@ -30,3 +30,7 @@ tests/.real-fixtures/
 # verified. CI publishes it as a build artifact instead.
 /reports/phase6/phase6-release-evidence.json
 /reports/phase6/phase6-release-evidence.md
+/reports/stage1/
+/reports/stage2/
+/reports/competitive/
+

@@ -8,7 +8,7 @@
  * (§13.4) — the baseline has to be re-run under the new version.
  */
 
-import { ALIAS_QUERIES, MEMORY_LINK_QUERIES, buildFixture, memoryAccessOf, regionOf } from '../../../tests/phase7/corpus/fixtures.mjs';
+import { ALIAS_QUERIES, ALIAS_QUERIES_V2, MEMORY_LINK_QUERIES, buildFixture, memoryAccessOf, regionOf } from '../../../tests/phase7/corpus/fixtures.mjs';
 import { reachingMemoryDefinition } from '../../../js/semantics/memoryssa/queries.js';
 
 export const SCORING_ID = 'phase7.scoring';
@@ -114,4 +114,104 @@ export function scoreMemoryLinks({ queries = MEMORY_LINK_QUERIES, buildWith, pro
   };
 }
 
-export { ALIAS_QUERIES, MEMORY_LINK_QUERIES, buildFixture, memoryAccessOf, regionOf };
+export function scoreAliasQueriesV2(answer, { queries = ALIAS_QUERIES_V2 } = {}) {
+  const perQuery = [];
+  const unknownReasonCounts = {};
+  let mustAvailable = 0;
+  let mustCorrect = 0;
+  let noAliasAvailable = 0;
+  let noAliasCorrect = 0;
+  let mayAvailable = 0;
+  let mayCorrect = 0;
+  let exactAvailable = 0;
+  let exactClaimed = 0;
+  let exactCorrect = 0;
+  let falseMustAlias = 0;
+  let falseNoAlias = 0;
+  let unknownCount = 0;
+
+  for (const query of queries) {
+    const rawRelation = answer(query);
+    const relation = typeof rawRelation === 'string' ? rawRelation : rawRelation?.relation ?? 'unknown';
+    const reason = typeof rawRelation === 'object' && rawRelation?.reason ? rawRelation.reason : 'unknown-unspecified';
+
+    const truthIsMust = query.truth === 'must';
+    const truthIsNo = query.truth === 'no';
+    const truthIsMay = query.truth === 'may' || query.truth === 'may-or-weaker';
+
+    if (truthIsMust) {
+      mustAvailable += 1;
+      exactAvailable += 1;
+    } else if (truthIsNo) {
+      noAliasAvailable += 1;
+      exactAvailable += 1;
+    } else {
+      mayAvailable += 1;
+    }
+
+    if (relation === 'must') {
+      exactClaimed += 1;
+      if (truthIsMust) {
+        mustCorrect += 1;
+        exactCorrect += 1;
+      } else {
+        falseMustAlias += 1;
+      }
+    } else if (relation === 'no') {
+      exactClaimed += 1;
+      if (truthIsNo) {
+        noAliasCorrect += 1;
+        exactCorrect += 1;
+      } else {
+        falseNoAlias += 1;
+      }
+    } else if (relation === 'may') {
+      if (truthIsMay) {
+        mayCorrect += 1;
+      }
+    } else {
+      unknownCount += 1;
+      unknownReasonCounts[reason] = (unknownReasonCounts[reason] || 0) + 1;
+    }
+
+    perQuery.push({
+      id: query.id,
+      relation,
+      truth: query.truth,
+      truthSource: query.truthSource || null,
+      proofClass: query.proofClass || null,
+      category: query.category || null,
+    });
+  }
+
+  const queryCount = queries.length;
+  const exactPrecision = exactClaimed === 0 ? null : exactCorrect / exactClaimed;
+  const exactRecall = exactAvailable === 0 ? null : exactCorrect / exactAvailable;
+
+  return {
+    scoringId: 'phase7.scoring.v2',
+    scoringVersion: '2.0.0',
+    truthGeneratorId: 'phase7.corpus.declared-truth.v2',
+    truthGeneratorVersion: '2.0.0',
+    queryCount,
+    exactAvailable,
+    exactClaimed,
+    exactCorrect,
+    exactPrecision,
+    exactRecall,
+    mustAvailable,
+    mustCorrect,
+    noAliasAvailable,
+    noAliasCorrect,
+    mayAvailable,
+    mayCorrect,
+    unknownCount,
+    falseMustAlias,
+    falseNoAlias,
+    unknownReasonCounts: Object.freeze({ ...unknownReasonCounts }),
+    perQuery: Object.freeze(perQuery),
+  };
+}
+
+export { ALIAS_QUERIES, ALIAS_QUERIES_V2, MEMORY_LINK_QUERIES, buildFixture, memoryAccessOf, regionOf };
+
