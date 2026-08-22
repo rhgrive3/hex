@@ -177,12 +177,14 @@ export class FieldIndex {
   findFields(query, limit = 200) {
     const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
+    const maxResults = Number(limit);
+    if (!Number.isFinite(maxResults) || maxResults <= 0) return out;
     for (const c of this.classes.values()) {
       for (const iv of c.ivars) {
         re.lastIndex = 0;
         if (!re.test(iv.name)) continue;
         out.push({ className: c.name, field: iv });
-        if (out.length >= limit) return out;
+        if (out.length >= maxResults) return out;
       }
     }
     return out;
@@ -192,10 +194,12 @@ export class FieldIndex {
   findClasses(query, limit = 200) {
     const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
+    const maxResults = Number(limit);
+    if (!Number.isFinite(maxResults) || maxResults <= 0) return out;
     for (const c of this.classes.values()) {
       re.lastIndex = 0;
       if (re.test(c.name)) out.push(c);
-      if (out.length >= limit) break;
+      if (out.length >= maxResults) break;
     }
     return out;
   }

@@ -1,7 +1,7 @@
 import { ResourceBudget } from './index.js';
 
 function abortError(signal) {
-  return signal?.reason || new DOMException('Aborted', 'AbortError');
+  return signal?.reason ?? new DOMException('Aborted', 'AbortError');
 }
 
 export function createSchedulerBudget(candidate, defaultLimits = {}, signal = null) {
@@ -21,6 +21,8 @@ export function createSchedulerBudget(candidate, defaultLimits = {}, signal = nu
         checkCancelled();
         return base.consume(resource, amount);
       };
+      if (property === 'scope') return (name, limits = {}, options = {}) =>
+        createSchedulerBudget(base.scope(name, limits, options), {}, signal);
       const value = Reflect.get(target, property, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },

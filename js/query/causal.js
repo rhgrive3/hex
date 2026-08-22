@@ -9,6 +9,13 @@ function evidenceAt(facts, row) {
   return semanticEvidenceIds(facts.filter((f) => f.row === row));
 }
 
+function boundedOption(value, fallback, min, max = Infinity) {
+  if (!value) return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
 function nodeOf(step, index, ir, facts, fn) {
   const value = step && step.value ? valueInfo(step.value) : null;
   return {
@@ -34,7 +41,7 @@ function nodeOf(step, index, ir, facts, fn) {
 /** Minimal human-sized causal path for one SSA/Memory-SSA seed. */
 export function minimalCausalPath(ir, seed, opts) {
   if (!ir || !seed) return { nodes: [], edges: [], truncated: false, elided: 0, engine: 'semantic-ir' };
-  const limit = Math.max(2, opts && opts.limit || 8);
+  const limit = boundedOption(opts && opts.limit, 8, 2);
   const chain = causalChain(ir, seed, { ...(opts || {}), limit });
   const facts = semanticFacts(ir);
   const fn = opts && opts.function != null ? opts.function : ir.startAddress;
@@ -82,9 +89,9 @@ export function sliceResult(ir, seed, direction, opts) {
  * of absence when complete is true.
  */
 export function functionPaths(program, from, to, opts) {
-  const maxDepth = Math.max(1, Math.min(12, opts && opts.maxDepth || 6));
-  const maxPaths = Math.max(1, Math.min(32, opts && opts.maxPaths || 8));
-  const maxVisited = Math.max(16, Math.min(20000, opts && opts.maxVisited || 10000));
+  const maxDepth = boundedOption(opts && opts.maxDepth, 6, 1, 12);
+  const maxPaths = boundedOption(opts && opts.maxPaths, 8, 1, 32);
+  const maxVisited = boundedOption(opts && opts.maxVisited, 10000, 16, 20000);
   const result = { paths: [], complete: true, truncated: false, reasons: [], visited: 0 };
   if (!program || from == null || to == null) return result;
 

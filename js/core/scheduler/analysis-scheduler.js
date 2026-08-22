@@ -18,11 +18,12 @@ export {
 
 function priorityValue(value) {
   if (typeof value === 'string' && Object.hasOwn(ANALYSIS_PRIORITY, value)) return ANALYSIS_PRIORITY[value];
+  if (typeof value === 'string' && value.trim() === '') throw new TypeError('analysis-priority-invalid');
   const n = Number(value ?? ANALYSIS_PRIORITY.current);
   if (!Number.isSafeInteger(n) || n < 0) throw new TypeError('analysis-priority-invalid');
   return n;
 }
-function abortError(signal) { return signal?.reason || new DOMException('Aborted', 'AbortError'); }
+function abortError(signal) { return signal?.reason ?? new DOMException('Aborted', 'AbortError'); }
 function sameStrings(a, b) { return a.length === b.length && a.every((value, index) => value === b[index]); }
 function canonicalDependencies(request, artifactId) {
   const supplied = Array.isArray(request.dependencies) ? request.dependencies : [];
