@@ -13,7 +13,7 @@ function boundedOption(value, fallback, min, max = Infinity) {
   if (!value) return fallback;
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.min(max, n));
+  return Math.floor(Math.max(min, Math.min(max, n)));
 }
 
 function nodeOf(step, index, ir, facts, fn) {
