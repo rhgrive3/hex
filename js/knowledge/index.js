@@ -27,7 +27,13 @@ function searchTermsOf(input = {}) {
   }
   return [...out].slice(0, 512);
 }
-function addrText(value) { return value == null ? 'unknown' : BigInt(value).toString(16); }
+function addrText(value) {
+  if (value == null) return 'unknown';
+  const type = typeof value;
+  if (type !== 'number' && type !== 'bigint' && type !== 'string') throw new TypeError('address must be an integer primitive');
+  if (type === 'string' && !value.trim()) throw new TypeError('address must be a non-empty integer string');
+  return BigInt(value).toString(16);
+}
 function requestPromise(request) { return new Promise((resolve,reject) => { request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(request.error); }); }
 function candidateBatch(values, truncated = false) {
   const out = Array.isArray(values) ? values : [];
