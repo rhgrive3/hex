@@ -648,6 +648,7 @@ console.log('Testing integrated PRs and issue fixes...');
 await import('./arm64-explainer-semantics.mjs');
 await import('./ai-identity-collisions.mjs');
 await import('./ai-boundary-hardening.mjs');
+await import('./analyze-model-row-bound.mjs');
 
 console.log('\nAll integrated issue tests PASS!');
 

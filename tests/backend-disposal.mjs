@@ -55,13 +55,32 @@ const { Backend }=await import('../js/backend.js');
   await assert.rejects(access,(error)=>error?.name==='AbortError');
   assert.equal(b.pending.size,0);
 
+  // #1286: a disassembly worker that fails must release *every* request it
+  // owns, not just the one that happened to be observed. One pending request
+  // cannot tell a per-request rejection apart from a whole-worker release, so
+  // several are in flight here.
   const disasm=b._disassembleBytes(new Uint8Array([0,0,0,0]),0x1000n,'arm64');
+  const disasmSecond=b._disassembleBytes(new Uint8Array([1,0,0,0]),0x1004n,'arm64');
+  const disasmThird=b._disassembleBytes(new Uint8Array([2,0,0,0]),0x1008n,'arm64');
   const disasmWorker=b._disasmWorker;
   assert.ok(disasmWorker);
+  assert.equal(b._disasmPending.size,3,'every decode request must be tracked while in flight');
   disasmWorker.onerror({message:'decoder crashed'});
   await assert.rejects(disasm,(error)=>error?.code==='WORKER_FAILED');
+  await assert.rejects(disasmSecond,(error)=>error?.code==='WORKER_FAILED');
+  await assert.rejects(disasmThird,(error)=>error?.code==='WORKER_FAILED');
   assert.equal(b._disasmPending.size,0,'disassembly worker failure must reject every local decode request');
   assert.equal(b._disasmWorker,null,'failed disassembly worker must be released');
+
+  // A message that cannot be deserialised is the same class of transport
+  // failure and must not leave the request hanging either.
+  const disasmDecode=b._disassembleBytes(new Uint8Array([3,0,0,0]),0x100Cn,'arm64');
+  const decodeWorker=b._disasmWorker;
+  assert.ok(decodeWorker && decodeWorker!==disasmWorker,'a released worker must not be reused');
+  decodeWorker.onmessageerror({message:'decode message failed'});
+  await assert.rejects(disasmDecode,(error)=>error?.code==='WORKER_FAILED');
+  assert.equal(b._disasmPending.size,0,'messageerror must not orphan decode requests');
+  assert.equal(b._disasmWorker,null,'a worker that failed to decode a message must be released');
   b.dispose();
 }
 
