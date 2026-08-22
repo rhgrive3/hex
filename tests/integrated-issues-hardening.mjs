@@ -652,6 +652,7 @@ await import('./analyze-model-row-bound.mjs');
 await import('./abort-reason-preservation.mjs');
 await import('./project-bigint-tag-roundtrip.mjs');
 await import('./binary-budget-validation.mjs');
+await import('./bounded-option-and-project-bytes.mjs');
 await import('./artifact-key-collisions.mjs');
 
 console.log('\nAll integrated issue tests PASS!');

@@ -126,11 +126,27 @@ export function serializeHexProject(project) {
   return text;
 }
 
+/*
+ * A `.hexproj` arriving as bytes must be valid UTF-8 or it is not a project.
+ * The default `TextDecoder` is non-fatal: it rewrites every invalid byte as
+ * U+FFFD, so a corrupted file parsed cleanly as a *different* project whose
+ * strings contained characters the original bytes never held (#1388). Failing
+ * closed is the only honest answer -- silently substituting characters changes
+ * user data without telling anyone.
+ */
+function decodeProjectBytes(bytes) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new ProjectFormatError('project bytes are not valid UTF-8');
+  }
+}
+
 export function parseHexProject(input) {
   let text;
   if (typeof input === 'string') text = input;
-  else if (input instanceof Uint8Array) { assertProjectSize(input.byteLength); text = new TextDecoder().decode(input); }
-  else if (input instanceof ArrayBuffer) { assertProjectSize(input.byteLength); text = new TextDecoder().decode(new Uint8Array(input)); }
+  else if (input instanceof Uint8Array) { assertProjectSize(input.byteLength); text = decodeProjectBytes(input); }
+  else if (input instanceof ArrayBuffer) { assertProjectSize(input.byteLength); text = decodeProjectBytes(new Uint8Array(input)); }
   else throw new ProjectFormatError('project input must be JSON text or bytes');
   assertProjectSize(encodedByteLength(text));
   let raw;
@@ -166,7 +182,9 @@ export function exportHexProject(project, name = 'analysis.hexproj') { const tex
 export async function importHexProject(input) {
   if (typeof Blob !== 'undefined' && input instanceof Blob) {
     assertProjectSize(input.size);
-    return parseHexProject(await input.text());
+    // `Blob.text()` is the same non-fatal decode, so the bytes go through the
+    // one strict parser instead of a second, laxer path (#1388).
+    return parseHexProject(new Uint8Array(await input.arrayBuffer()));
   }
   return parseHexProject(input);
 }

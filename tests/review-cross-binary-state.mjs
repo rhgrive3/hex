@@ -150,7 +150,10 @@ function oneFunction(name,address=0x1000n){
   const text=serializeHexProject(createHexProject({binary:workspace.identity,userNames:[{address:0x1000n,value:'from-a'}]}));
   let releaseImport;
   const input=new Blob([text]);
-  Object.defineProperty(input,'text',{value:()=>new Promise((resolve)=>{releaseImport=()=>resolve(text);})});
+  // importHexProject reads bytes, not Blob.text(): the default text decode is
+  // non-fatal and would silently repair a corrupted project (#1388). The race
+  // this test pins is unchanged -- only the method it suspends.
+  Object.defineProperty(input,'arrayBuffer',{value:()=>new Promise((resolve)=>{releaseImport=()=>resolve(new TextEncoder().encode(text).buffer);})});
   const pending=workspace.importProject(input);
   await Promise.resolve();
   assert.equal(typeof releaseImport,'function');

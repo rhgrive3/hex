@@ -10,7 +10,11 @@ function evidenceAt(facts, row) {
 }
 
 function boundedOption(value, fallback, min, max = Infinity) {
-  if (!value) return fallback;
+  // `!value` treated the number 0 as "not supplied", so `{ maxPaths: 0 }` fell
+  // back to the default 8 while the string `'0'` clamped to the minimum 1 --
+  // the same requested bound meaning two different things (#1385). Absence is
+  // now stated explicitly; an explicit finite 0 goes through the normal clamp.
+  if (value == null || value === '' || value === false) return fallback;
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.floor(Math.max(min, Math.min(max, n)));

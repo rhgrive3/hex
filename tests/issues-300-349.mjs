@@ -91,13 +91,17 @@ const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 
 {
   const project = createHexProject({ comments: [{ text: 'x'.repeat(MAX_PROJECT_BYTES + 1024) }] });
   assert.throws(() => serializeHexProject(project), /16 MiB/);
-  let textCalled = false;
+  // importHexProject reads bytes rather than Blob.text() (#1388), so probe the
+  // method it actually calls -- otherwise this assertion would pass vacuously
+  // and stop enforcing that the size boundary fires before materialization.
+  let materialized = false;
   class ProbeBlob extends Blob {
-    async text() { textCalled = true; return super.text(); }
+    async text() { materialized = true; return super.text(); }
+    async arrayBuffer() { materialized = true; return super.arrayBuffer(); }
   }
   const blob = new ProbeBlob(['x'.repeat(MAX_PROJECT_BYTES + 1)]);
   await assert.rejects(importHexProject(blob), /16 MiB/);
-  assert.equal(textCalled, false);
+  assert.equal(materialized, false);
 }
 
 // #324: explicit receiver type is a hard contradiction, not permission to fall
