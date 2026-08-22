@@ -9,7 +9,18 @@ on:
   pull_request:
     paths:
       - 'js/**'
-      - 'tests/**'
+      - '!js/ai/**'
+      - '!js/ui/**'
+      - '!js/managed/**'
+      - '!js/userscript/**'
+      - 'tests/accuracy*.mjs'
+      - 'tests/harness.mjs'
+      - 'tests/fixtures/real-binaries.json'
+      - 'tests/oracle.py'
+      - 'tests/oracle-cfg-normalize.py'
+      - 'tests/oracle-requirements.txt'
+      - 'tests/issue-497-cross-binary-workflow.mjs'
+      - 'tests/issue-500-matcher-budget.mjs'
       - 'tools/benchmark/**'
       - 'scripts/fetch-real-fixtures.mjs'
       - 'package.json'
@@ -18,7 +29,18 @@ on:
     branches: [main]
     paths:
       - 'js/**'
-      - 'tests/**'
+      - '!js/ai/**'
+      - '!js/ui/**'
+      - '!js/managed/**'
+      - '!js/userscript/**'
+      - 'tests/accuracy*.mjs'
+      - 'tests/harness.mjs'
+      - 'tests/fixtures/real-binaries.json'
+      - 'tests/oracle.py'
+      - 'tests/oracle-cfg-normalize.py'
+      - 'tests/oracle-requirements.txt'
+      - 'tests/issue-497-cross-binary-workflow.mjs'
+      - 'tests/issue-500-matcher-budget.mjs'
       - 'tools/benchmark/**'
       - 'scripts/fetch-real-fixtures.mjs'
       - 'package.json'
@@ -206,7 +228,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          key: accuracy-result-v6-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
+          key: accuracy-result-v6-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml', '!js/ai/**', '!js/ui/**', '!js/managed/**', '!js/userscript/**') }}
       - name: Validate restored accuracy result
         if: steps.result-cache.outputs.cache-hit == 'true'
         run: |
@@ -303,7 +325,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          key: accuracy-result-v6-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
+          key: accuracy-result-v6-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml', '!js/ai/**', '!js/ui/**', '!js/managed/**', '!js/userscript/**') }}
       - name: Upload partition result
         if: success()
         uses: actions/upload-artifact@v4
