@@ -156,6 +156,8 @@ export class EvidenceGraph {
 
   constructor(initial = {}, { maxNodes = 500_000, maxEdges = 1_000_000, signal = null } = {}) {
     if (!initial || typeof initial !== 'object' || Array.isArray(initial)) fail('evidence-invalid-graph');
+    if (!Number.isSafeInteger(maxNodes) || maxNodes < 0) fail('evidence-invalid-max-nodes');
+    if (!Number.isSafeInteger(maxEdges) || maxEdges < 0) fail('evidence-invalid-max-edges');
     this.#maxNodes = maxNodes;
     this.#maxEdges = maxEdges;
     const nodes = safeArray(initial.nodes, 'evidence-invalid-nodes');
@@ -164,17 +166,13 @@ export class EvidenceGraph {
     if (edges.length > this.#maxEdges) fail('evidence-graph-edge-budget-exceeded');
     for (let i = 0; i < nodes.length; i++) {
       if (i % 1000 === 0 && signal?.aborted) {
-        const err = new Error('AbortError');
-        err.name = 'AbortError';
-        throw err;
+        throw signal.reason ?? new DOMException('Aborted', 'AbortError');
       }
       this.addNode(nodes[i]);
     }
     for (let i = 0; i < edges.length; i++) {
       if (i % 1000 === 0 && signal?.aborted) {
-        const err = new Error('AbortError');
-        err.name = 'AbortError';
-        throw err;
+        throw signal.reason ?? new DOMException('Aborted', 'AbortError');
       }
       this.addEdge(edges[i]);
     }
