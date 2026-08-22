@@ -30,6 +30,13 @@ function encodedByteLength(text) { return new TextEncoder().encode(text).byteLen
 function assertProjectSize(bytes) {
   if (bytes > MAX_PROJECT_BYTES) throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
 }
+function decodeProjectUtf8(bytes) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new ProjectFormatError('project bytes are not valid UTF-8', 'HEX_PROJECT_INVALID_UTF8');
+  }
+}
 function isLegacyPortableCacheReference(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_LEGACY_CACHE_REFERENCE_LENGTH;
 }
@@ -129,8 +136,8 @@ export function serializeHexProject(project) {
 export function parseHexProject(input) {
   let text;
   if (typeof input === 'string') text = input;
-  else if (input instanceof Uint8Array) { assertProjectSize(input.byteLength); text = new TextDecoder().decode(input); }
-  else if (input instanceof ArrayBuffer) { assertProjectSize(input.byteLength); text = new TextDecoder().decode(new Uint8Array(input)); }
+  else if (input instanceof Uint8Array) { assertProjectSize(input.byteLength); text = decodeProjectUtf8(input); }
+  else if (input instanceof ArrayBuffer) { assertProjectSize(input.byteLength); text = decodeProjectUtf8(new Uint8Array(input)); }
   else throw new ProjectFormatError('project input must be JSON text or bytes');
   assertProjectSize(encodedByteLength(text));
   let raw;
@@ -166,7 +173,7 @@ export function exportHexProject(project, name = 'analysis.hexproj') { const tex
 export async function importHexProject(input) {
   if (typeof Blob !== 'undefined' && input instanceof Blob) {
     assertProjectSize(input.size);
-    return parseHexProject(await input.text());
+    return parseHexProject(await input.arrayBuffer());
   }
   return parseHexProject(input);
 }
@@ -224,4 +231,3 @@ export function validateHexProject(project) {
 }
 
 export { ProjectMigrationError, migrateHexProject, PROJECT_MIGRATIONS };
-
