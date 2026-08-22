@@ -19,7 +19,7 @@ function clone(value) {
 }
 
 function abortError(signal) {
-  return signal?.reason || new DOMException('Aborted', 'AbortError');
+  return signal?.reason ?? new DOMException('Aborted', 'AbortError');
 }
 
 function storageError(error, operation) {

@@ -44,11 +44,8 @@ export class ResourceBudget {
     this.signal = signal || parent?.signal || null;
     this.children = new Map();
 
-    if (parent) {
-      if (parent.children.has(name)) {
-        throw new Error(`budget-duplicate-sibling-scope:${name}`);
-      }
-      parent.children.set(name, this);
+    if (parent?.children.has(name)) {
+      throw new Error(`budget-duplicate-sibling-scope:${name}`);
     }
 
     const validatedLimits = Object.create(null);
@@ -64,11 +61,13 @@ export class ResourceBudget {
     }
     this.limits = Object.freeze(validatedLimits);
     this.used = Object.create(null);
+
+    if (parent) parent.children.set(name, this);
   }
 
   checkCancelled() {
     if (!this.signal?.aborted) return;
-    throw this.signal.reason || new DOMException('Aborted', 'AbortError');
+    throw this.signal.reason ?? new DOMException('Aborted', 'AbortError');
   }
 
   scope(name, limits = {}, options = {}) {
