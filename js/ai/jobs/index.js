@@ -5,30 +5,36 @@ export class AgentJobManager {
   constructor({ runtime, persistence = null, maxSlices = 8, maxElapsedMs = 30 * 60 * 1000 } = {}) {
     if (!runtime || typeof runtime.turn !== 'function') throw new TypeError('AgentJobManager requires an AIRuntime');
     this.runtime = runtime; this.persistence = persistence; this.maxSlices = bounded(maxSlices, 1, 32); this.maxElapsedMs = bounded(maxElapsedMs, 1000, 4 * 60 * 60 * 1000);
-    this.jobs = new Map();
+    this.jobs = new Map(); this.creatingIds = new Set();
   }
 
   async create(input = {}) {
     const now = new Date().toISOString();
+    const goal = String(input.goal || '');
+    if (!goal) throw new TypeError('Agent job goal is required');
     const explicitId = input.jobId ? String(input.jobId) : null;
     let id = explicitId || autoJobId();
-    if (await this.get(id)) {
-      if (explicitId) throw new Error(`Agent job id already exists: ${id}`);
-      do id = autoJobId();
-      while (await this.get(id));
+    if (explicitId) {
+      if (this.creatingIds.has(id) || await this.get(id)) throw new Error(`Agent job id already exists: ${id}`);
+    } else {
+      while (this.creatingIds.has(id) || await this.get(id)) id = autoJobId();
     }
-    const job = {
-      version: CHECKPOINT_VERSION, id,
-      status: 'ready', goal: String(input.goal || ''), effectiveScope: input.scope || 'auto',
-      conversationId: input.conversationId == null ? null : String(input.conversationId), sessionId: input.sessionId || null,
-      provider: input.provider || null, model: input.model || null, reasoning: input.reasoning || null,
-      evidenceIds: [], hypothesisIds: [], completedTools: [], continuationRefs: [], unresolvedWork: [],
-      budgetUsage: { slices: 0, modelCalls: 0, toolCalls: 0, elapsedMs: 0, contextBytes: 0 },
-      limits: { maxSlices: bounded(input.maxSlices || this.maxSlices, 1, 32), maxElapsedMs: bounded(input.maxElapsedMs || this.maxElapsedMs, 1000, 4 * 60 * 60 * 1000) },
-      request: safeRequest(input), lastResult: null, createdAt: now, updatedAt: now,
-    };
-    if (!job.goal) throw new TypeError('Agent job goal is required');
-    this.jobs.set(job.id, job); await this.save(job); return checkpoint(job);
+    this.creatingIds.add(id);
+    try {
+      const job = {
+        version: CHECKPOINT_VERSION, id,
+        status: 'ready', goal, effectiveScope: input.scope || 'auto',
+        conversationId: input.conversationId == null ? null : String(input.conversationId), sessionId: input.sessionId || null,
+        provider: input.provider || null, model: input.model || null, reasoning: input.reasoning || null,
+        evidenceIds: [], hypothesisIds: [], completedTools: [], continuationRefs: [], unresolvedWork: [],
+        budgetUsage: { slices: 0, modelCalls: 0, toolCalls: 0, elapsedMs: 0, contextBytes: 0 },
+        limits: { maxSlices: bounded(input.maxSlices || this.maxSlices, 1, 32), maxElapsedMs: bounded(input.maxElapsedMs || this.maxElapsedMs, 1000, 4 * 60 * 60 * 1000) },
+        request: safeRequest(input), lastResult: null, createdAt: now, updatedAt: now,
+      };
+      this.jobs.set(job.id, job); await this.save(job); return checkpoint(job);
+    } finally {
+      this.creatingIds.delete(id);
+    }
   }
 
   async runSlice(jobOrId, options = {}) {
