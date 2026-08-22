@@ -1,4 +1,3 @@
-import { jsonSafe } from '../validation.js';
 import { AIError } from '../schema.js';
 
 export const SAFE_PROVIDER_CAPABILITIES = Object.freeze({
@@ -48,6 +47,33 @@ export function semanticBudgetFor({ messages = [], tools = [], meta = {}, capabi
   return Math.min(positiveLimit(configuredBytes, 128 * 1024), available);
 }
 
-function bytes(value) { return new TextEncoder().encode(JSON.stringify(jsonSafe(value))).byteLength; }
+/*
+ * Size of the payload as it is actually serialized onto the wire.
+ *
+ * This used to measure `JSON.stringify(jsonSafe(value))`. `jsonSafe` is a
+ * presentation helper: it keeps the first 1000 array items, the first 200 keys
+ * of an object, and 10 levels of depth. `WorkerAIProvider.nextTurn()` sends the
+ * real `messages` / `context` / `tools` through `requestJSON()` with no such
+ * truncation, so anything past those limits was measured as zero and a request
+ * far over `maxRequestBytes` passed `assertWireBudget()` (#1303).
+ *
+ * The replacer keeps `jsonSafe`'s BigInt spelling so a payload carrying
+ * addresses is still measurable, but nothing is dropped.
+ */
+function wireReplacer(_key, value) {
+  return typeof value === 'bigint' ? `0x${value.toString(16)}` : value;
+}
+
+function bytes(value) {
+  let text;
+  try {
+    text = JSON.stringify(value, wireReplacer);
+  } catch (error) {
+    // A payload that cannot be serialized cannot be sent either. Fail closed
+    // rather than reporting a size for something that has none.
+    throw new AIError('provider_error', 'The provider payload could not be serialized for budget measurement.', { reason: String(error?.message || error) });
+  }
+  return new TextEncoder().encode(text ?? 'null').byteLength;
+}
 function finiteNumber(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
 function positiveLimit(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }

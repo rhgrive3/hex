@@ -647,6 +647,7 @@ console.log('Testing integrated PRs and issue fixes...');
 // unrelated fix (EP-007).
 await import('./arm64-explainer-semantics.mjs');
 await import('./ai-identity-collisions.mjs');
+await import('./ai-boundary-hardening.mjs');
 
 console.log('\nAll integrated issue tests PASS!');
 
