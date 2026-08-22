@@ -46,6 +46,7 @@ export function createRelocationBudget({ limits = {}, onLimit = null } = {}) {
     },
     step(cost = 1) {
       if (stopped) return false;
+      if (!Number.isSafeInteger(cost) || cost < 0) return stop('relocation decode operation cost is invalid');
       operations += cost;
       if (!Number.isSafeInteger(operations) || operations > resolved.maxOperations) return stop(`decode work exceeds ${resolved.maxOperations} operations`);
       if (operations === 1 || (operations & 0xfff) === 0) {
