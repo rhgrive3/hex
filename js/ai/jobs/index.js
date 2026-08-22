@@ -1,4 +1,5 @@
 const CHECKPOINT_VERSION = 1;
+let fallbackRandomSequence = 0n;
 
 export class AgentJobManager {
   constructor({ runtime, persistence = null, maxSlices = 8, maxElapsedMs = 30 * 60 * 1000 } = {}) {
@@ -9,8 +10,15 @@ export class AgentJobManager {
 
   async create(input = {}) {
     const now = new Date().toISOString();
+    const explicitId = input.jobId ? String(input.jobId) : null;
+    let id = explicitId || autoJobId();
+    if (await this.get(id)) {
+      if (explicitId) throw new Error(`Agent job id already exists: ${id}`);
+      do id = autoJobId();
+      while (await this.get(id));
+    }
     const job = {
-      version: CHECKPOINT_VERSION, id: String(input.jobId || `agent_job_${Date.now().toString(36)}_${randomId()}`),
+      version: CHECKPOINT_VERSION, id,
       status: 'ready', goal: String(input.goal || ''), effectiveScope: input.scope || 'auto',
       conversationId: input.conversationId == null ? null : String(input.conversationId), sessionId: input.sessionId || null,
       provider: input.provider || null, model: input.model || null, reasoning: input.reasoning || null,
@@ -82,7 +90,16 @@ function compactResult(result) { return { answer: result?.answer || '', confiden
 function checkpoint(job) { return JSON.parse(JSON.stringify(job)); }
 function unique(values) { return [...new Set(values)]; }
 function bounded(value, min, max) { const n = Number(value); return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : min; }
-function randomId() { const bytes = new Uint8Array(6); globalThis.crypto?.getRandomValues?.(bytes); return Array.from(bytes, (v) => v.toString(16).padStart(2, '0')).join(''); }
+function autoJobId() { return `agent_job_${Date.now().toString(36)}_${randomId()}`; }
+function randomId() {
+  const bytes = new Uint8Array(6);
+  if (typeof globalThis.crypto?.getRandomValues === 'function') globalThis.crypto.getRandomValues(bytes);
+  else {
+    const sequence = fallbackRandomSequence++ & 0xffffffffffffn;
+    for (let i = 0; i < bytes.length; i++) bytes[bytes.length - 1 - i] = Number((sequence >> BigInt(i * 8)) & 0xffn);
+  }
+  return Array.from(bytes, (v) => v.toString(16).padStart(2, '0')).join('');
+}
 function safeRequest(input) {
   const out = {};
   for (const key of ['style', 'task', 'intent', 'budget', 'maxSearchResults', 'plannerTimeoutMs']) if (input[key] != null) out[key] = input[key];
