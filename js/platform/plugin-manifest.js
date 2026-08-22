@@ -33,7 +33,9 @@ export function parseSemver(value) {
 export function isSemverCompatible(requestedStr, supportedStr) {
   const req = parseSemver(requestedStr);
   const sup = parseSemver(supportedStr);
-  return req.major === sup.major && req.minor <= sup.minor;
+  if (req.major !== sup.major) return false;
+  if (req.minor !== sup.minor) return req.minor < sup.minor;
+  return req.patch <= sup.patch;
 }
 
 function deepFreeze(value, seen = new WeakSet()) {
