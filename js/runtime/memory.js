@@ -34,6 +34,7 @@ export class MemoryRegion {
   }
   contains(address, size = 1) {
     const a = asAddress(address); const n = BigInt(size);
+    if (n < 0n) return false;
     return a >= this.start && a + n <= this.end;
   }
   toJSON() { return { start:this.start, size:this.size, kind:this.kind, name:this.name, permissions:this.permissions, objectId:this.objectId }; }
