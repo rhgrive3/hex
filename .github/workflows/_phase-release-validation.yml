@@ -69,7 +69,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
       - run: npm ci --no-audit --no-fund
       - name: ${{ inputs.phase_name }} ownership inventory
         run: node ${{ inputs.ownership_script }}
@@ -83,15 +82,8 @@ jobs:
           if [ -n "${EXPECT_SHA:-}" ]; then args+=(--expect-sha "$EXPECT_SHA"); fi
           if [ "${SHADOW:-false}" = "true" ]; then args+=(--shadow); fi
           node ${{ inputs.verify_script }} "${args[@]}"
-      # Pull requests already run the deduplicated Invariant Gates workflow,
-      # which executes the complete npm-check contract in parallel shards.
-      # Re-running the same broad suite inside every matching phase validator
-      # adds minutes of duplicate critical-path work without adding coverage.
-      # Keep the broad run for push/manual release boundaries.
       - name: Broad repository regression at release boundary
-        if: ${{ inputs.run_broad_regression && github.event_name != 'pull_request' }}
-        env:
-          RUN_BROAD_REGRESSION_REQUESTED: ${{ inputs.run_broad_regression }}
+        if: ${{ inputs.run_broad_regression }}
         run: npm run check
       - name: Publish validated ${{ inputs.phase_name }} evidence
         if: success()
