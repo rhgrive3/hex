@@ -17,9 +17,9 @@ const projected = {
 assert.equal(irFor(projected), projected,
   'canonical v2 compatibility IR must not be re-lifted by the legacy ARM64 path');
 
-const region = { id:'text', vmAddr:0x1000n, size:0x100n, exec:true, read:true, write:false };
+const region = { id:'text', vmAddr:0x1000n, size:0x400n, exec:true, read:true, write:false };
 const state = new Map([
-  ['fileInfo', { name:'fixture', size:0x100n, formatId:'elf' }],
+  ['fileInfo', { name:'fixture', size:0x400n, formatId:'elf' }],
   ['sliceIndex', 0],
   ['regions', [region]],
   ['currentRegion', region],
