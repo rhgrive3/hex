@@ -15,3 +15,4 @@ assert.match(source, /viewer\?\.rowAddress\?\.\(row\)/,
 
 console.log('Function summary QueryAPI authority tests PASS!');
 // Exact-head CI retrigger marker; no runtime effect.
+// Contents-API retrigger after generated sync; no runtime effect.
