@@ -44,7 +44,21 @@
       "tools/validation/stage2/**",
       "tests/stage2/**",
       "js/ai/dev/**",
-      "tests/dev-agent/**"
+      "tests/dev-agent/**",
+      "js/ai/ui/hex-context.js",
+      "js/analyze.js",
+      "js/auto.js",
+      "js/backend.js",
+      "js/pinpoint.js",
+      "js/ui/next-views.js",
+      "js/ui/panels/navigation.js",
+      "js/ui/router.js",
+      "tests/ai-analysis-boundary.mjs",
+      "tests/backend-disposal.mjs",
+      "tests/ir-pinpoint-location.mjs",
+      "tests/ui/integration-hardening.mjs",
+      "tests/ui/next-views.mjs",
+      "tests/ui/routes.mjs"
     ]
   },
   "contractPaths": [
