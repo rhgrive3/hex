@@ -140,17 +140,20 @@ function oneFunction(name,address=0x1000n){
 }
 
 // Project parsing is asynchronous for Blob inputs. If the active file changes
-// while text() is pending, the old project's notes must never land in the new
-// file's NoteStore before workspace.bind() catches up.
+// while arrayBuffer() is pending, the old project's notes must never land in the
+// new file's NoteStore before workspace.bind() catches up.
 {
   const app=makeApp();
   const workspace=new ProductWorkspace(app,{storage:new Storage(),backendFactory:()=>({})});
   app.workspace=workspace;
   await workspace.bind();
   const text=serializeHexProject(createHexProject({binary:workspace.identity,userNames:[{address:0x1000n,value:'from-a'}]}));
+  const bytes=new TextEncoder().encode(text);
   let releaseImport;
-  const input=new Blob([text]);
-  Object.defineProperty(input,'text',{value:()=>new Promise((resolve)=>{releaseImport=()=>resolve(text);})});
+  const input=new Blob([bytes]);
+  Object.defineProperty(input,'arrayBuffer',{value:()=>new Promise((resolve)=>{
+    releaseImport=()=>resolve(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength));
+  })});
   const pending=workspace.importProject(input);
   await Promise.resolve();
   assert.equal(typeof releaseImport,'function');
