@@ -15,7 +15,7 @@ export function addrText(v, pad = 8) {
 
 /** "0x10000C3B0" */
 export function addrHex(v, pad = 8) {
-  return '0x' + addrText(v, pad);
+  return v < 0n ? '-0x' + addrText(-v, pad) : '0x' + addrText(v, pad);
 }
 
 /** "F6 57 BD A9" or "F657BDA9" */
