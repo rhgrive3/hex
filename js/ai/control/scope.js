@@ -131,4 +131,10 @@ function inRange(target, start, end) {
   return target >= a && target <= b;
 }
 function sameAddress(a, b) { const x = toBigInt(a), y = toBigInt(b); return x != null && y != null && x === y; }
-function toBigInt(value) { try { return value == null ? null : BigInt(value); } catch { return null; } }
+function toBigInt(value) {
+  try {
+    if (value == null) return null;
+    if (typeof value === 'string' && value.trim() === '') return null;
+    return BigInt(value);
+  } catch { return null; }
+}

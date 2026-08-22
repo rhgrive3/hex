@@ -68,7 +68,12 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   } else {
     out = {};
     for (const key of Object.keys(value).sort()) {
-      out[key] = canonicalArtifactKeyValue(value[key], seen);
+      Object.defineProperty(out, key, {
+        value: canonicalArtifactKeyValue(value[key], seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
   }
   seen.delete(value);
