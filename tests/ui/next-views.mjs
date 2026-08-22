@@ -63,10 +63,19 @@ check('a result with no address disables every view',
 /* ── dispatch ───────────────────────────────────────────────── */
 
 const routerCalls = [];
-const router = { navigate: (path) => routerCalls.push(path) };
+const router = { navigate: (path) => { routerCalls.push(path); return true; } };
 check('a view opens through the product router',
   openFunctionView(views.find((v) => v.id === 'flow'), { router }) === true
   && routerCalls[0] === '/function/' + ADDRESS.toString() + '/flow', routerCalls.join(','));
+
+const failedRouter = { current: { fullPath: '/code' }, navigate: () => false };
+check('a failed router render is reported instead of pretending the view opened',
+  openFunctionView(views.find((v) => v.id === 'flow'), { router: failedRouter }) === false);
+const sameRoute = views.find((v) => v.id === 'flow').route;
+check('an already-open canonical route is still a successful destination',
+  openFunctionView(views.find((v) => v.id === 'flow'), { router: { current: { fullPath: sameRoute }, navigate: () => false } }) === true);
+check('a throwing router is contained and reported as a failed destination',
+  openFunctionView(views.find((v) => v.id === 'flow'), { router: { navigate: () => { throw new Error('render failed'); } } }) === false);
 
 const legacyCalls = [];
 const legacy = {

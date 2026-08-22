@@ -57,7 +57,7 @@ export function showSearch(app) {
   const region = app.store.get("currentRegion");
   if (!region) return;
   const sheet = new Sheet(t("search.title"), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onSearchProgress = null; },
+    onClose: () => { if (running) app.backend.cancelSearch(running); app.backend.onSearchProgress = null; },
   });
 
   let kind = app.store.get("searchKind") || "asm";
@@ -166,10 +166,11 @@ export function showSearch(app) {
       }
       render(res.results);
     }).catch((err) => {
+      const cancelled = err?.name === "AbortError" || err?.code === "ABORT_ERR";
       running = false;
       goBtn.textContent = t("btn.find");
-      status.textContent = "";
-      alertDialog(t("search.failed"), userError(err));
+      status.textContent = cancelled ? t("search.stopped", { n: 0 }) : "";
+      if (!cancelled) alertDialog(t("search.failed"), userError(err));
     });
   }
 
