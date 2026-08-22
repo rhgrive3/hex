@@ -62,6 +62,20 @@ function semanticFunctionTarget(architecture) {
   return target;
 }
 
+function semanticFunctionAddress(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new TypeError('semantic-function-address-required');
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    if (!value.trim()) throw new TypeError('semantic-function-address-required');
+    try { return BigInt(value); }
+    catch { throw new TypeError('semantic-function-address-required'); }
+  }
+  throw new TypeError('semantic-function-address-required');
+}
+
 export const CHUNK_ROWS = 1024;
 export const CHUNK_BYTES = CHUNK_ROWS * 4;
 const CHUNK_CACHE = 64;
@@ -549,7 +563,7 @@ export class Backend {
    * supported calling convention.
    */
   async analyzeSemanticFunction(options = {}) {
-    const address = BigInt(options.address);
+    const address = semanticFunctionAddress(options.address);
     const length = Number(options.length);
     if (!Number.isSafeInteger(length) || length < 1 || length > X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) {
       throw new TypeError('semantic-function-bounded-length-required');
