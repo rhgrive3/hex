@@ -37,9 +37,30 @@ function sortedStrings(values) {
   return [...new Set(values.map(String).filter(Boolean))].sort();
 }
 
+/**
+ * Reserved tag names. A canonical form uses these as the single key of a
+ * wrapper object, so an ordinary object is not allowed to present the same
+ * shape: its own keys are escaped on the way in (see `escapeKey`).
+ */
+const RESERVED_TAGS = Object.freeze(['$map', '$set', '$bigint']);
+
+/**
+ * Escapes an ordinary object key so it can never collide with a reserved tag.
+ *
+ * Every key that already starts with `$` gains one more `$`. That is
+ * injective -- `$set` becomes `$$set`, `$$set` becomes `$$$set` -- so the
+ * escaped space and the tag space stay disjoint no matter what a caller
+ * supplies, and only configs that actually use `$`-prefixed keys change
+ * representation at all.
+ */
+function escapeKey(key) { return key.startsWith('$') ? `$${key}` : key; }
+
 /** Canonicalizes JS containers before handing them to the one repository digest. */
 export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
-  if (typeof value === 'bigint') return value.toString();
+  // A BigInt used to canonicalize to a bare decimal string, so `1n` and the
+  // string `'1'` produced identical key material even though downstream code
+  // distinguishes them (#1263). The tagged form keeps them apart.
+  if (typeof value === 'bigint') return { $bigint: value.toString() };
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new ArtifactError('artifact-key-invalid-number', 'Artifact key values must be finite numbers');
@@ -66,9 +87,12 @@ export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
   } else if (Array.isArray(value)) {
     out = value.map((entry) => canonicalArtifactKeyValue(entry, seen));
   } else {
+    // Ordinary objects used to share the tag namespace, so `new Set([1])` and
+    // the plain object `{ $set: [1] }` canonicalized identically (#1282).
+    // Escaping the input's own `$` keys keeps container type part of identity.
     out = {};
     for (const key of Object.keys(value).sort()) {
-      Object.defineProperty(out, key, {
+      Object.defineProperty(out, escapeKey(key), {
         value: canonicalArtifactKeyValue(value[key], seen),
         enumerable: true,
         configurable: true,
@@ -118,7 +142,17 @@ export function createArtifactDescriptor(input = {}) {
     upstreamArtifactIds,
     originRefs:sortedStrings(input.originRefs ?? []),
   };
+  // `createArtifactId()` is a shared identity primitive with no notion of
+  // artifact kind, and the descriptor forwarded every dimension except that
+  // one -- so two different kinds from the same producer under otherwise
+  // identical inputs collided on one store/cache key (#1281). Kind belongs to
+  // the descriptor, not to the generic primitive, so it enters identity through
+  // the one payload the descriptor owns rather than by widening a primitive
+  // every other caller shares. The contract version travels with it so a
+  // canonical-format change is visible in the id it produces.
   const optionsHash = stableDigest({
+    artifactContractVersion:ARTIFACT_CONTRACT_VERSION,
+    artifactKind:required(input.artifactKind ?? input.kind, 'artifact-kind-required'),
     configHash:canonicalConfig,
     keyExtrasHash:stableDigest(keyExtras),
     platformVersion:descriptor.versions.platform,
