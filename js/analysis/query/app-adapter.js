@@ -346,7 +346,7 @@ export function createAppAnalysisQueryAdapter(app) {
       const count = Math.min(symbols.funcs.length, MAX_FUNCTION_SCAN);
       const rows = [];
       for (let i = 0; i < count; i++) {
-        if (options.signal?.aborted) throw options.signal.reason || Object.assign(new Error('AbortError'), { name:'AbortError' });
+        if (options.signal?.aborted) throw options.signal.reason ?? Object.assign(new Error('AbortError'), { name:'AbortError' });
         const address = BigInt(symbols.funcs[i]);
         const name = symbols.nameAt?.(address) ?? null;
         if (exactAddress != null && address !== exactAddress) continue;
