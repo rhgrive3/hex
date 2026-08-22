@@ -12,7 +12,11 @@ function clone(value) {
   if (value == null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(clone);
   if (value instanceof Uint8Array) return value.slice();
-  const out = {}; for (const [key, item] of Object.entries(value)) out[key] = clone(item); return out;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(out, key, { value: clone(item), enumerable:true, writable:true, configurable:true });
+  }
+  return out;
 }
 function searchTermsOf(input = {}) {
   const values = [...(input.names || []), ...(input.roles || []), ...(input.semanticLabels || []), ...(input.comments || [])];
@@ -23,7 +27,13 @@ function searchTermsOf(input = {}) {
   }
   return [...out].slice(0, 512);
 }
-function addrText(value) { return value == null ? 'unknown' : BigInt(value).toString(16); }
+function addrText(value) {
+  if (value == null) return 'unknown';
+  const type = typeof value;
+  if (type !== 'number' && type !== 'bigint' && type !== 'string') throw new TypeError('address must be an integer primitive');
+  if (type === 'string' && !value.trim()) throw new TypeError('address must be a non-empty integer string');
+  return BigInt(value).toString(16);
+}
 function requestPromise(request) { return new Promise((resolve,reject) => { request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(request.error); }); }
 function candidateBatch(values, truncated = false) {
   const out = Array.isArray(values) ? values : [];
@@ -38,7 +48,8 @@ export class KnowledgeDB {
     this.memory = options.memory || (!this.indexedDB ? new Map() : null);
     this.negativeMemory = options.negativeMemory || (!this.indexedDB ? new Map() : null);
     this._db = null;
-    this.maxCandidates = Math.max(50, Number(options.maxCandidates || 1000));
+    const maxCandidates = Number(options.maxCandidates || 1000);
+    this.maxCandidates = Number.isFinite(maxCandidates) ? Math.max(50, maxCandidates) : 1000;
   }
 
   async remember(input = {}) {
