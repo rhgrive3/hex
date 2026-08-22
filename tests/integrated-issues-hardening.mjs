@@ -640,5 +640,11 @@ console.log('Testing integrated PRs and issue fixes...');
   console.log('  ok #1066 ArchitectureAdapter fixedInstructionSize region boundary check');
 }
 
+// Issues #1299 / #1302 live in their own file because they need a wide
+// value-kind matrix and a large sweep. Imported here rather than registered in
+// package.json, so an AI-subsystem fix does not drag every phase release
+// validator into its ownership lane through the shared trigger path (EP-007).
+await import('./ai-identity-collisions.mjs');
+
 console.log('\nAll integrated issue tests PASS!');
 
