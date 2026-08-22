@@ -26,7 +26,8 @@ export function selectToolWindow(registry, { mode = 'agent', requestedScope = 'a
   const phase = choosePhase({ intent, observations, hypotheses, effectiveScope });
   const preferred = WINDOWS[phase] || WINDOWS.current;
   const byName = new Map(available.map((tool) => [tool.name, tool]));
-  const limit = Math.max(1, Number(maxTools) || 1);
+  const requestedLimit = Number(maxTools);
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.max(1, Math.floor(requestedLimit)) : 1;
   const selected = [];
 
   // Reserve continuity before any phase/novel filling. A phase transition must
