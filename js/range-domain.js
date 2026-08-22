@@ -34,15 +34,15 @@ export function normalizeRangeDomain(range, bits, signed) {
   const srcSigned = normalizedSignedness(range.signed);
   const dstSigned = normalizedSignedness(signed);
   if (srcBits !== width) return null;
+  const min = BigInt(range.min), max = BigInt(range.max);
+  if (min > max) return null;
   if (srcSigned == null || dstSigned == null) {
-    return srcSigned === dstSigned ? rangeWithDomain(range.min, range.max, width, dstSigned) : null;
+    return srcSigned === dstSigned ? rangeWithDomain(min, max, width, dstSigned) : null;
   }
-  if (srcSigned === dstSigned) return rangeWithDomain(range.min, range.max, width, dstSigned);
+  if (srcSigned === dstSigned) return rangeWithDomain(min, max, width, dstSigned);
 
   const modulus = 1n << BigInt(width);
   const sign = 1n << BigInt(width - 1);
-  let min = BigInt(range.min), max = BigInt(range.max);
-  if (min > max) return null;
 
   if (srcSigned === false && dstSigned === true) {
     if (max < sign) return rangeWithDomain(min, max, width, true);
