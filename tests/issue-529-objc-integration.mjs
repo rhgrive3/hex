@@ -124,8 +124,12 @@ assert.match(appSource, /if \(!list && !protocolList && !categoryList\)/);
 const semanticSource = await readFile(new URL('../js/decompiler/semantic.js', import.meta.url), 'utf8');
 assert.match(semanticSource, /opts\.objcRuntimeIndex \|\| opts\.objcModel/);
 const toolsSource = await readFile(new URL('../js/tools.js', import.meta.url), 'utf8');
-assert.match(toolsSource, /await app\.ensureObjc/);
-assert.match(toolsSource, /objcRuntimeIndex: app\.objcRuntime \|\| null/);
+const toolsBaseSource = await readFile(new URL('../js/tools-base.js', import.meta.url), 'utf8');
+assert.match(toolsSource, /installFunctionAnalysisPresentation/,
+  'public tools wrapper must install the canonical presentation route before delegating');
+assert.match(toolsBaseSource, /await app\.ensureObjc/,
+  'compatibility renderer must still enrich decompiler output with ObjC metadata');
+assert.match(toolsBaseSource, /objcRuntimeIndex: app\.objcRuntime \|\| null/);
 const ctxSource = await readFile(new URL('../js/ai/ui/hex-context.js', import.meta.url), 'utf8');
 assert.match(ctxSource, /async resolveObjcDispatch\(/);
 assert.match(ctxSource, /receiverType: String\(receiverClass/);
