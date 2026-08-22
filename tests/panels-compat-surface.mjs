@@ -105,4 +105,16 @@ assert.match(functionPanelSource, /openFunctionView\s*\(/,
 assert.match(functionPanelSource, /['"]next-views['"]/,
   'function summary must retain the shared next-views navigation surface');
 
+const toolsSource = readFileSync(new URL('../js/tools.js', import.meta.url), 'utf8');
+assert.match(toolsSource, /api\.types\(/,
+  'canonical type presentation must request the typed QueryAPI projection');
+assert.match(toolsSource, /if \(!isCanonicalPresentation\(result\)\) return base\.showTypes/,
+  'legacy type inference is permitted only for genuine legacy presentation results');
+assert.match(toolsSource, /ARM64向けの旧推論を流用して型を作ることはしません/,
+  'canonical type UI must fail closed instead of fabricating ARM64 inference');
+assert.match(toolsSource, /if \(!isCanonicalPresentation\(result\)\) return base\.showStructRecover/,
+  'legacy struct recovery is permitted only for genuine legacy presentation results');
+assert.match(toolsSource, /ARM64向けの旧モデルへ変換して構造体を推測することはしません/,
+  'canonical struct UI must fail closed when no typed projection exists');
+
 console.log('Canonical analysis UI projection tests PASS!');
