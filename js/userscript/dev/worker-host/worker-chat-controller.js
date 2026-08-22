@@ -355,8 +355,14 @@ export class WorkerChatController {
     try {
       submitted = await waitFor(() => {
         if (active.completionError) throw active.completionError;
+        // ChatGPTTurnController already proves the exact composer contents before
+        // its owned Send click and rejects positive manual interference. At this
+        // outer Worker boundary, renderer text is not authoritative: iPad/WebKit
+        // may hydrate a long user turn late or incorrectly. One fresh explicit
+        // user-turn identity is therefore the submission evidence, matching the
+        // canonical ChatGPT turn ownership rule instead of re-verifying its text.
         const fresh = (this.adapter.userTurns?.() || []).filter((turn) => (
-          !baseline.has(String(turn.id || '')) && normalizeText(turn.text) === normalizeText(prompt)
+          !baseline.has(String(turn.id || ''))
         ));
         return fresh.length === 1 ? fresh[0] : null;
       }, 12000, controller.signal);
