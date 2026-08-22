@@ -113,6 +113,11 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const calleeSaved = new Set();
   let lastX0Write = -1;
   const rawInsns = [];
+  // Set when the row cap actually dropped instructions. The old code relied on
+  // overshooting the cap by one so `buildSemanticModel` would notice the excess
+  // and set its own `truncated` flag; keeping the bound exact removes that
+  // signal, so the fact is recorded here instead of inferred from a length.
+  let modelRowsDropped = false;
   const first = Math.floor(startRow / CHUNK_ROWS);
   const last = Math.floor(end / CHUNK_ROWS);
   const pageOf = new Map();
@@ -134,7 +139,10 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       if (!mn) continue;
       const addr = region.vmAddr + BigInt(row) * 4n;
       const b = mn.toLowerCase();
-      if (rawInsns.length <= MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
+      // `<=` before the push let the array reach MAX_MODEL_ROWS + 1. The bound
+      // exists to cap model construction work, so it has to be exact (#1287).
+      if (rawInsns.length < MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
+      else modelRowsDropped = true;
       if (b.charCodeAt(0) === 46) { res.dataRows++; continue; }
       res.instructions++;
 
@@ -247,7 +255,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       return Number(rel / 4n);
     },
   });
-  if (truncated && res.model) res.model.truncated = true;
+  if ((truncated || modelRowsDropped) && res.model) res.model.truncated = true;
   res.truncated = truncated || !!res.model?.truncated;
   res.requestedRows = requestedRows;
   res.analyzedRows = rows;
