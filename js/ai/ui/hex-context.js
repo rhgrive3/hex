@@ -1,290 +1,341 @@
 /*
- * app -> AI core local context.
+ * First-party App -> AI context.
  *
- * The AI core (js/ai/*) is written against a plain object of capabilities; the
- * Hex app is a class with workers, caches and BigInt regions. This adapter is
- * the seam between them and lives on the UI side on purpose: the core must not
- * learn about `app`, and the app must not learn about the core.
- *
- * Everything here is read-only. Mutations (rename, comment) go through the
- * proposal path in interaction/proposals.js, never through a tool.
+ * Product analysis facts cross AnalysisQueryAPI. The historical direct-index
+ * implementation is isolated in hex-context-legacy.js and is used only by
+ * headless/compatibility hosts that do not expose the public query layer.
  */
-import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
-import { decompile, decompiledText } from '../../decompile.js';
-import { runtimeEvidenceForApp, runtimePlatformForApp, verifyAppHypothesis } from '../../runtime/app-runtime.js';
-import { functionNameOf, selectionOf } from './workbench.js';
-import { currentFunctionAddr } from '../../tools.js';
-import { resolveObjcDispatch } from '../../objc.js';
+import {
+  analyzeModelAt as analyzeLegacyModelAt,
+  createHexAIContext as createLegacyHexAIContext,
+} from './hex-context-legacy.js';
 
-const MAX_SELECTION_ROWS = 80;
+const QUERY_AUTHORITY = 'AnalysisQueryAPI';
+const MAX_QUERY_PAGE = 5_000;
 
 function toBigInt(value) {
   if (value == null) return null;
   if (typeof value === 'bigint') return value;
-  try { return BigInt(typeof value === 'string' && /^0x/i.test(value) ? value : String(value)); } catch { return null; }
+  try { return BigInt(typeof value === 'string' && /^0x/i.test(value) ? value : String(value)); }
+  catch { return null; }
 }
 
-function fixedRows(app) {
-  return !!app.store.get('canDisassemble') && Number(app.store.get('instructionAlignment') || app.store.get('capability')?.instructionAlignment || 0) > 0;
-}
-function instructionBytes(app) {
-  return Math.max(1, Number(app.store.get('instructionAlignment') || app.store.get('capability')?.instructionAlignment || 4));
-}
-function containsAddress(region, addr) {
-  try { return !!region && region.size > 0n && addr >= region.vmAddr && addr < region.vmAddr + region.size; } catch { return false; }
-}
-function regionForAddress(app, address) {
-  const addr = toBigInt(address);
-  if (addr == null) return null;
-  // Keep the fast path for the currently displayed region, but never require it:
-  // a TurnSnapshot may still be analysing function A after the UI navigates to
-  // function B in another executable region of the same binary.
-  let current = null;
-  try { current = app.codeRegion?.() || app.store.get('currentRegion'); } catch { current = app.store.get('currentRegion'); }
-  if (containsAddress(current, addr)) return current;
-  const matches = (app.store.get('regions') || []).filter((region) => containsAddress(region, addr));
-  return matches.find((region) => region.exec === true) || matches.find((region) => region.exec !== false) || matches[0] || null;
+function safeCount(value, fallback, max = MAX_QUERY_PAGE) {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 0 ? Math.min(max, n) : fallback;
 }
 
-/** Semantic model for one function, or null when it cannot be analysed. */
-export async function analyzeModelAt(app, address, end = null, options = {}) {
-  const addr = toBigInt(address);
-  if (addr == null) return null;
-  const architecture = app.store.get('architecture') || app.store.get('capability')?.architecture || null;
-  if (!supportsArm64SemanticAnalysis(architecture)) return null;
-  const region = regionForAddress(app, addr);
-  if (!region || !app.store.get('canDisassemble')) return null;
-  const sym = app.symbols;
-  const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
-  const start = fn ? fn.start : addr;
-  if (!containsAddress(region, start)) return null;
-  const step = BigInt(instructionBytes(app));
-  if (step !== 4n || (start - region.vmAddr) % step !== 0n) return null;
-  const startRow = Number((start - region.vmAddr) / step);
-  const totalRows = Number(region.size / step);
-  const regionEnd = region.vmAddr + region.size;
-  const provenEnd = fn?.end == null ? null : toBigInt(fn.end);
-  const requestedEnd = toBigInt(end);
-  let boundedEnd = provenEnd;
-  if (requestedEnd != null) boundedEnd = boundedEnd == null ? requestedEnd : (requestedEnd < boundedEnd ? requestedEnd : boundedEnd);
-  if (boundedEnd == null) boundedEnd = start + 2048n * step;
-  if (boundedEnd > regionEnd) boundedEnd = regionEnd;
-  if (boundedEnd <= start) return null;
-  const endRow = Math.min(totalRows - 1, Number((boundedEnd - region.vmAddr + step - 1n) / step) - 1);
-  if (endRow < startRow) return null;
-  const rawMax = Number(options?.maxInstructions);
-  if (Number.isFinite(rawMax) && Math.floor(rawMax) <= 0) return null;
-  const maxRows = Number.isFinite(rawMax) ? Math.max(1, Math.floor(rawMax)) : undefined;
-  const coversProvenEnd = provenEnd != null && provenEnd <= regionEnd && boundedEnd >= provenEnd;
-  try {
-    const res = await analyzeFunctionCached(app.backend, region, startRow, endRow, sym, null, {
-      maxRows,
-      signal: options?.signal || null,
+function queryCompleteness(result) {
+  return result?.completeness ?? result?.status?.completeness ?? 'partial';
+}
+
+function queryReason(result) {
+  return result?.status?.reason ?? result?.reason ?? null;
+}
+
+function isStale(error) {
+  return error?.name === 'AnalysisSnapshotStaleError'
+    || error?.code === 'ANALYSIS_SNAPSHOT_STALE';
+}
+
+function abortIfNeeded(signal) {
+  if (!signal?.aborted) return;
+  const error = signal.reason instanceof Error ? signal.reason : new Error('AbortError');
+  error.name = 'AbortError';
+  if (!error.code) error.code = 'ABORT_ERR';
+  throw error;
+}
+
+async function withFreshSnapshot(app, operation, options = {}) {
+  const api = app?.analysisQueries;
+  if (!api) throw new Error('analysis-query-api-unavailable');
+  let last = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    abortIfNeeded(options.signal);
+    const snapshot = await api.snapshot({
+      signal:options.signal ?? null,
+      onProgress:options.onProgress,
+      onIdentityProgress:options.onIdentityProgress,
     });
-    const model = res?.model;
-    if (!model) return null;
-    const incomplete = !coversProvenEnd || res.truncated === true || model.truncated === true;
-    return incomplete && model.truncated !== true ? { ...model, truncated: true } : model;
-  } catch (error) {
-    if (options?.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') throw error;
-    return null;
+    try {
+      const value = await operation(api, snapshot);
+      abortIfNeeded(options.signal);
+      return value;
+    } catch (error) {
+      last = error;
+      if (!isStale(error) || attempt > 0) throw error;
+    }
   }
+  throw last ?? new Error('analysis-query-retry-exhausted');
 }
 
-function selectionContext(app) {
-  const viewer = app.viewer;
-  const selection = selectionOf(app);
-  if (!selection || !viewer) return null;
-  const rows = [];
-  if (selection.kind === 'range') {
-    const range = viewer.selectionRange();
-    const end = Math.min(range.end, range.start + MAX_SELECTION_ROWS - 1);
-    for (let row = range.start; row <= end; row++) {
-      const data = viewer.rowData(row);
-      if (data && data.address != null) rows.push({ address: data.address, mnemonic: data.mnemonic, operands: data.operands });
-    }
-  } else if (selection.row != null) {
-    const data = viewer.rowData(selection.row);
-    if (data && data.address != null) rows.push({ address: data.address, mnemonic: data.mnemonic, operands: data.operands });
+function presentationModel(result) {
+  const value = result?.value;
+  if (!value) return null;
+  if (value.model) return value.model;
+  const legacy = value.pipeline?.legacyV1 ?? value.semanticAnalysis?.pipeline?.legacyV1 ?? null;
+  if (!legacy) return null;
+  const model = { ...legacy };
+  model.truncated = model.truncated === true || value.truncated === true || queryCompleteness(result) !== 'complete';
+  Object.defineProperties(model, {
+    __analysisAuthority:{ value:QUERY_AUTHORITY, enumerable:false },
+    __canonicalAnalysisResult:{ value:value, enumerable:false },
+  });
+  return model;
+}
+
+async function queryFunction(app, address, options = {}) {
+  const addr = toBigInt(address);
+  if (addr == null) return { result:null, model:null };
+  const queryOptions = { ...options };
+  const maxInstructions = Number(options.maxInstructions);
+  if (Number.isFinite(maxInstructions)) {
+    if (Math.floor(maxInstructions) <= 0) return { result:null, model:null };
+    queryOptions.maxRows = Math.max(1, Math.floor(maxInstructions));
   }
-  if (!rows.length) return null;
-  return { start: rows[0].address, end: rows[rows.length - 1].address, instructions: rows };
+  const result = await withFreshSnapshot(app,
+    (api, snapshot) => api.function(snapshot, addr, queryOptions), queryOptions);
+  if (queryCompleteness(result) === 'unsupported' || result?.value == null) return { result, model:null };
+  return { result, model:presentationModel(result) };
 }
 
 /**
- * Build the live capability object the AI core consumes. AIRuntime creates an
- * immutable TurnSnapshot from these getters at user-turn start; capability
- * methods below therefore accept explicit addresses and must not depend on the
- * workbench's subsequently selected function/region.
+ * Semantic compatibility projection for deterministic AI tools.
+ * Raw assembly remains a separate QueryAPI.instructions() capability and is
+ * never synthesized from Semantic-v2 instruction objects.
  */
-export function createHexAIContext(app) {
-  const nameOf = (addr) => functionNameOf(app, addr);
+export async function analyzeModelAt(app, address, end = null, options = {}) {
+  if (!app?.analysisQueries) return analyzeLegacyModelAt(app, address, end, options);
+  const { model } = await queryFunction(app, address, options);
+  return model;
+}
 
-  const context = {
-    get binaryId() {
-      const info = app.store.get('fileInfo');
-      return info ? info.name + ':' + String(app.store.get('sliceIndex')) : null;
-    },
-    get symbols() { return app.symbols; },
-    get program() { return app.program; },
-    get knowledge() { return app.knowledge || null; },
-    get functions() { return (app.recognition?.records || []).map((item)=>item.fingerprint).filter(Boolean).slice(0,5000); },
-    get strings() { return app.stringIndex || []; },
-    get candidateFunctions() {
-      const ranked=app.recognition?.records;
-      if (Array.isArray(ranked) && ranked.length) return ranked.slice(0,5000).map((item)=>item.address);
-      const addr = safeCurrentFunction(app);
-      return addr == null ? [] : [addr];
-    },
-    get currentAddress() {
-      const addr = safeCurrentFunction(app);
-      return addr == null ? null : addr;
-    },
-    get activeFunction() {
-      const addr = safeCurrentFunction(app);
-      if (addr == null) return null;
-      return { address: addr, name: nameOf(addr) };
-    },
-    get selection() { return selectionContext(app); },
-    get project() {
-      return app.workspace?.project || app.activeProject || {
-        binary:null,user:{names:app.notes?app.notes.nameEntries().slice(0,400):[]},navigation:{lastQuery:app.lastGoal?.text||null},
-      };
-    },
-    get binaryDiff() { return app.getBinaryDiff?.() || null; },
-    getBinaryDiff: () => app.getBinaryDiff?.() || null,
-
-    functionName: nameOf,
-    analyze: (address, end, options) => analyzeModelAt(app, address, end, options),
-
-    async searchStrings(query, options = {}) {
-      const limit = Math.max(1, Math.min(200, Number(options.limit) || 50));
-      const rows = await app.ensureStrings();
-      const q = String(query || '').toLowerCase();
-      const out = [];
-      for (const row of rows || []) {
-        if (q && !String(row.text || '').toLowerCase().includes(q)) continue;
-        /* `stringAddress` (not `addr`) on purpose: a string is not a function
-           start, and the planner treats a bare address as a candidate. */
-        out.push({ text: row.text, stringAddress: row.addr });
-        if (out.length >= limit) break;
-      }
-      return out;
-    },
-
-    async searchFunctions(query, options = {}) {
-      const limit = Math.max(1, Math.min(200, Number(options.limit) || 40));
-      const q = String(query || '').toLowerCase();
-      try { await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { /* fallback below */ }
-      const ranked=app.recognition?.records || [];
-      if(ranked.length){
-        const out=[]; let matches=0;
-        for(const item of ranked){
-          const name=String(item.name||item.originalName||'');
-          const cls=String(item.classification||'');
-          const knowledge=(item.knowledge?.names||[]).concat(item.knowledge?.roles||[]).join(' ');
-          if(q && !(`${name} ${cls} ${knowledge}`.toLowerCase().includes(q)))continue;
-          matches++; if(out.length<limit)out.push({addr:item.address,name:name||null,score:item.score||0,classification:item.classification,confidence:item.confidence,knowledge:item.knowledge||null});
-        }
-        out.complete=app.recognition.complete===true && matches<=limit;
-        out.scannedCount=app.recognition.scannedCount;out.total=app.recognition.total;out.matchCount=matches;
-        out.truncationReason=app.recognition.complete!==true?(app.recognition.truncationReason||'recognition-incomplete'):matches>limit?'result-limit':null;
-        out.coverage=app.recognition.total?app.recognition.scannedCount/app.recognition.total:1;
-        return out;
-      }
-      const sym = app.symbols;
-      if (!sym || !Array.isArray(sym.names)) return [];
-      const maxScan=Math.min(sym.names.length,1_000_000), out=[]; let matches=0;
-      for (let i = 0; i < maxScan; i++) {
-        const name = String(sym.names[i] || '');
-        if (q && !name.toLowerCase().includes(q)) continue;
-        matches++; if(out.length<limit) out.push({ addr: sym.addrs[i], name });
-      }
-      out.complete=maxScan===sym.names.length && matches<=limit; out.scannedCount=maxScan;out.total=sym.names.length;out.matchCount=matches;
-      out.truncationReason=maxScan<sym.names.length?'scan-budget':matches>limit?'result-limit':null;out.coverage=sym.names.length?maxScan/sym.names.length:1;
-      return out;
-    },
-
-    async decompile(address) {
-      if (!fixedRows(app)) return null;
-      try { await app.ensureObjc?.(); } catch { /* ObjC metadata is optional */ }
-      const model = await analyzeModelAt(app, address);
-      if (!model) return null;
-      return decompiledText(pseudocode(app, model, toBigInt(address), nameOf));
-    },
-
-    async resolveObjcDispatch(receiverClass, selector, kind = 'instance') {
-      try { await app.ensureObjc?.(); } catch { /* ObjC metadata is optional */ }
-      const index = app.objcRuntime || app.objcModel?.runtimeIndex || null;
-      if (!index) return { resolved: null, reason: 'objc-runtime-unavailable', candidates: [], requirements: [], confidence: 0 };
-      const result = resolveObjcDispatch(index, {
-        receiverType: String(receiverClass || ''), selector: String(selector || ''), classMethod: kind === 'class',
-      });
-      return { ...result, candidates: (result.candidates || []).slice(0, 32), requirements: (result.requirements || []).slice(0, 32) };
-    },
-
-    async resolveSwiftDispatch(call = {}) {
-      try { await app.ensureSwift?.(); } catch { /* Swift metadata is optional */ }
-      const result=app.resolveSwiftCall?.(call) || {resolved:null,candidates:[],confidence:0,reason:'swift-runtime-unavailable'};
-      return { ...result, candidates:(result?.candidates||[]).slice(0,32), requirements:(result?.requirements||[]).slice(0,32), complete:result?.complete!==false && app.swiftModel?.complete!==false };
-    },
-
-    pseudocodeFor(address, model) {
-      if (!model || !fixedRows(app)) return null;
-      try { return decompiledText(pseudocode(app, model, toBigInt(address), nameOf)); } catch { return null; }
-    },
-
-    addressExists(address) {
-      const addr = toBigInt(address);
-      if (addr == null) return false;
-      for (const region of app.store.get('regions') || []) {
-        if (containsAddress(region, addr)) return true;
-      }
-      return false;
-    },
-
-    runtime: {
-      getObservations({ functionAddress, limit = 100 } = {}) {
-        const addr = toBigInt(functionAddress);
-        const results = runtimeEvidenceForApp(app, addr).slice(-limit);
-        const completeConfirmed = results.filter((item)=>item?.verdict==='confirmed' && item?.observedState?.factsComplete !== false && item?.reproducibility?.replayable === true);
-        const contradicted = results.filter((item)=>item?.verdict==='contradicted').length;
-        return {
-          results, returned:results.length,
-          status:contradicted ? 'contradicted' : completeConfirmed.length ? 'confirmed' : results.length ? 'observed' : 'none',
-          verified:completeConfirmed.length > 0 && contradicted === 0,
-          verification:{confirmedCompleteReplayable:completeConfirmed.length,contradictions:contradicted,total:results.length}
-        };
-      },
-      async verifyHypothesis(hypothesis, options) {
-        try { return await verifyAppHypothesis(app, hypothesis, options || {}); }
-        catch (error) { return { verified: false, reason: String(error && error.message || error) }; }
-      },
-      async platform() { return runtimePlatformForApp(app); },
+function copyWithMetadata(result, key = 'results') {
+  const rows = Array.isArray(result?.value) ? result.value : [];
+  const completeness = queryCompleteness(result);
+  const page = result?.page || {};
+  return {
+    [key]:rows,
+    offset:Number(page.offset ?? 0),
+    returned:Number(page.returned ?? rows.length),
+    total:Number.isFinite(Number(page.total)) ? Number(page.total) : null,
+    complete:completeness === 'complete' && page.next == null,
+    truncated:completeness !== 'complete' || page.next != null,
+    reason:queryReason(result),
+    completeness:{
+      complete:completeness === 'complete' && page.next == null,
+      returned:Number(page.returned ?? rows.length),
+      total:Number.isFinite(Number(page.total)) ? Number(page.total) : null,
+      reason:queryReason(result),
     },
   };
-  return context;
 }
 
-function safeCurrentFunction(app) {
-  try { return currentFunctionAddr(app); } catch { return null; }
+function cloneContextDescriptors(source) {
+  return Object.defineProperties({}, Object.getOwnPropertyDescriptors(source));
 }
 
-function pseudocode(app, model, addr, nameOf) {
-  const region = regionForAddress(app, addr);
-  return decompile(model, {
-    name: nameOf(addr),
-    addr,
-    rowOfAddress: (a) => (region && a != null && containsAddress(region, a) ? Number((a - region.vmAddr) / BigInt(instructionBytes(app))) : null),
-    addrOfRow: (row) => (region ? region.vmAddr + BigInt(row) * BigInt(instructionBytes(app)) : null),
-    symbolFor: (a) => app.symbols?.nameAt?.(a) || null,
-    objcModel: app.objcModel || null,
-    objcRuntimeIndex: app.objcRuntime || null,
-    swiftModel: app.swiftModel || null,
-    swiftRuntimeIndex: app.swiftRuntime || null,
-    resolveSwiftDispatch: (call) => app.resolveSwiftCall?.(call) || null,
-    notes: app.notes,
+function define(context, name, descriptor) {
+  Object.defineProperty(context, name, {
+    configurable:true,
+    enumerable:true,
+    ...descriptor,
   });
+}
+
+function currentAddressOf(context) {
+  try { return toBigInt(context.currentAddress); } catch { return null; }
+}
+
+/**
+ * Build the live first-party AI capability object. Product App instances always
+ * expose AnalysisQueryAPI; hosts without it are explicit compatibility oracles.
+ */
+export function createHexAIContext(app) {
+  if (!app?.analysisQueries) return createLegacyHexAIContext(app);
+
+  const legacy = createLegacyHexAIContext(app);
+  const context = cloneContextDescriptors(legacy);
+  const names = new Map();
+  const remember = (row) => {
+    const address = toBigInt(row?.address ?? row?.addr ?? row?.startAddress);
+    if (address != null && row?.name) names.set(address.toString(), String(row.name));
+    return address;
+  };
+  const nameOf = (address) => {
+    const addr = toBigInt(address);
+    return addr == null ? null : (names.get(addr.toString()) || null);
+  };
+
+  define(context, 'analysisAuthority', { value:QUERY_AUTHORITY, writable:false });
+  define(context, 'binaryId', {
+    get() { return app?.backend?.binaryId ?? legacy.binaryId ?? null; },
+  });
+
+  // Direct analysis indexes are intentionally not part of the production AI
+  // context. Query callbacks below are the only first-party analysis authority.
+  define(context, 'symbols', { get:() => null });
+  define(context, 'program', { get:() => null });
+  define(context, 'functions', { get:() => [] });
+  define(context, 'strings', { get:() => [] });
+  define(context, 'candidateFunctions', {
+    get() {
+      const address = currentAddressOf(context);
+      return address == null ? [] : [address];
+    },
+  });
+  define(context, 'activeFunction', {
+    get() {
+      const address = currentAddressOf(context);
+      return address == null ? null : { address, name:nameOf(address) };
+    },
+  });
+  define(context, 'functionName', { value:(address) => nameOf(address) });
+
+  define(context, 'analyze', {
+    value:async (address, _end = null, options = {}) => {
+      const { result, model } = await queryFunction(app, address, options);
+      remember(result?.value);
+      return model;
+    },
+  });
+
+  define(context, 'searchFunctions', {
+    value:async (query, options = {}) => {
+      const offset = safeCount(options.offset, 0, 1_000_000);
+      const limit = Math.max(1, safeCount(options.limit, 40, 200));
+      const result = await withFreshSnapshot(app,
+        (api, snapshot) => api.functions(snapshot, { text:String(query ?? '') }, { offset, limit }, { signal:options.signal ?? null }),
+        options);
+      const page = copyWithMetadata(result);
+      page.results = page.results.map((row) => {
+        const address = remember(row);
+        return { ...row, addr:address ?? row?.address ?? null };
+      });
+      page.matchCount = page.total;
+      return page;
+    },
+  });
+
+  define(context, 'searchStrings', {
+    value:async (query, options = {}) => {
+      const offset = safeCount(options.offset, 0, 1_000_000);
+      const limit = Math.max(1, safeCount(options.limit, 50, 200));
+      const need = Math.min(MAX_QUERY_PAGE, offset + limit + 1);
+      return withFreshSnapshot(app, async (api, snapshot) => {
+        const info = await api.binaryInfo(snapshot, { signal:options.signal ?? null });
+        if (queryCompleteness(info) === 'unsupported' || !info?.value) {
+          return { results:[], offset, returned:0, total:null, complete:false, truncated:true, reason:queryReason(info) || 'binary-info-unavailable' };
+        }
+        const all = [];
+        let complete = true;
+        let reason = null;
+        for (const region of info.value.regions || []) {
+          abortIfNeeded(options.signal);
+          if (all.length >= need) { complete = false; reason ||= 'result-limit'; break; }
+          const remaining = Math.max(1, need - all.length);
+          const result = await api.search(snapshot, {
+            regionId:region.id,
+            kind:'text',
+            query:String(query ?? ''),
+            from:0,
+          }, { offset:0, limit:remaining }, { signal:options.signal ?? null });
+          if (queryCompleteness(result) === 'unsupported') continue;
+          if (queryCompleteness(result) !== 'complete' || result?.page?.next != null) {
+            complete = false;
+            reason ||= queryReason(result) || 'search-incomplete';
+          }
+          for (const row of result?.value || []) {
+            const address = toBigInt(row?.addr ?? row?.address);
+            all.push({
+              ...row,
+              addr:undefined,
+              address:undefined,
+              stringAddress:address,
+              regionId:region.id,
+            });
+            if (all.length >= need) break;
+          }
+        }
+        const rows = all.slice(offset, offset + limit);
+        const exhausted = offset + rows.length >= all.length;
+        const pageComplete = complete && exhausted;
+        return {
+          results:rows,
+          offset,
+          returned:rows.length,
+          total:pageComplete ? all.length : null,
+          complete:pageComplete,
+          truncated:!pageComplete,
+          reason:pageComplete ? null : (reason || 'result-limit'),
+        };
+      }, options);
+    },
+  });
+
+  define(context, 'getInstructions', {
+    value:async (address, options = {}) => {
+      const offset = safeCount(options.offset, 0, 1_000_000);
+      const limit = Math.max(1, safeCount(options.limit, 160, 500));
+      const result = await withFreshSnapshot(app,
+        (api, snapshot) => api.instructions(snapshot, { functionId:address }, { offset, limit }, { signal:options.signal ?? null }),
+        options);
+      return copyWithMetadata(result);
+    },
+  });
+
+  define(context, 'decompile', {
+    value:async (address, options = {}) => {
+      const result = await withFreshSnapshot(app,
+        (api, snapshot) => api.decompile(snapshot, address, { signal:options.signal ?? null }), options);
+      if (queryCompleteness(result) === 'unsupported' || result?.value == null) return null;
+      return typeof result.value === 'string'
+        ? result.value
+        : (result.value.pseudocode ?? result.value.text ?? result.value.code ?? null);
+    },
+  });
+
+  define(context, 'pseudocodeFor', { value:() => null });
+
+  define(context, 'getCFG', {
+    value:async (address, options = {}) => {
+      const result = await withFreshSnapshot(app,
+        (api, snapshot) => api.cfg(snapshot, address, { signal:options.signal ?? null }), options);
+      if (queryCompleteness(result) === 'unsupported' || result?.value == null) {
+        return { blocks:[], complete:false, truncated:true, reason:queryReason(result) || 'cfg-unavailable' };
+      }
+      return {
+        ...result.value,
+        complete:queryCompleteness(result) === 'complete',
+        truncated:queryCompleteness(result) !== 'complete',
+        reason:queryReason(result),
+      };
+    },
+  });
+
+  const graphPage = (method, address, options = {}) => {
+    const offset = safeCount(options.offset, 0, 1_000_000);
+    const limit = Math.max(1, safeCount(options.limit, 100, 1_000));
+    return withFreshSnapshot(app, async (api, snapshot) => {
+      const result = await api[method](snapshot, address, { offset, limit }, { signal:options.signal ?? null });
+      return copyWithMetadata(result);
+    }, options);
+  };
+  define(context, 'getXrefs', { value:(address, options = {}) => graphPage('xrefs', address, options) });
+  define(context, 'getCallers', { value:(address, options = {}) => graphPage('callers', address, options) });
+  define(context, 'getCallees', { value:(address, options = {}) => graphPage('callees', address, options) });
+
+  define(context, 'findPaths', {
+    value:async (from, to, options = {}) => withFreshSnapshot(app, async (api, snapshot) => {
+      const result = await api.causalPath(snapshot, { functionId:from }, { functionId:to }, { ...options, signal:options.signal ?? null });
+      if (queryCompleteness(result) === 'unsupported' || result?.value == null) {
+        return { paths:[], returned:0, total:0, complete:false, truncated:true, unsupported:true, reason:queryReason(result) || 'causal-path-unavailable' };
+      }
+      return result.value;
+    }, options),
+  });
+
+  return context;
 }
 
 export default createHexAIContext;
