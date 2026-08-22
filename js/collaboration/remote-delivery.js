@@ -17,17 +17,29 @@ function cloneWorking(log) {
   return working;
 }
 
+function permanentlyBlocked(log, operationId) {
+  return (log.state?.unresolved || []).some((item) => item?.operationId === operationId && item?.reason === 'tombstone-protects-state');
+}
+
 function drainReadyPending(log, results) {
   let progressed = true;
   while (progressed) {
     progressed = false;
     for (const [operationId, operation] of [...log.pending.entries()].sort(([a], [b]) => a.localeCompare(b))) {
       if (!operation.causalParents.every((parent) => log.operations.has(parent))) continue;
+      // Tombstone-protected operations require an explicit resurrection; merely
+      // receiving unrelated envelopes cannot make the same queued SET valid.
+      // Retrying it would duplicate unresolved diagnostics and used to create a
+      // delete/requeue infinite loop.
+      if (permanentlyBlocked(log, operationId)) continue;
       log.pending.delete(operationId);
       const result = log.applyOperation(operation);
       results.push(result);
       if (result.status === 'rejected') return result;
-      progressed = true;
+      // An operation may have all causal parents and still be intentionally
+      // unresolved. applyOperation requeues it, so only a settled operation is
+      // real drain progress.
+      if (result.status !== 'unresolved') progressed = true;
     }
   }
   return null;
