@@ -1,7 +1,9 @@
 /** Insertion-ordered LRU on top of Map. Bounded so memory cannot creep up. */
 export class LRU {
   constructor(limit) {
-    this.limit = limit;
+    const numericLimit = Number(limit);
+    if (!Number.isSafeInteger(numericLimit) || numericLimit < 0) throw new RangeError('LRU limit must be a non-negative safe integer');
+    this.limit = numericLimit;
     this.map = new Map();
   }
   get(key) {
