@@ -14,12 +14,18 @@ export class AgentJobManager {
     if (!goal) throw new TypeError('Agent job goal is required');
     const explicitId = input.jobId ? String(input.jobId) : null;
     let id = explicitId || autoJobId();
-    if (explicitId) {
-      if (this.creatingIds.has(id) || await this.get(id)) throw new Error(`Agent job id already exists: ${id}`);
-    } else {
-      while (this.creatingIds.has(id) || await this.get(id)) id = autoJobId();
+    while (true) {
+      if (this.creatingIds.has(id)) {
+        if (explicitId) throw new Error(`Agent job id already exists: ${id}`);
+        id = autoJobId();
+        continue;
+      }
+      this.creatingIds.add(id);
+      if (!await this.get(id)) break;
+      this.creatingIds.delete(id);
+      if (explicitId) throw new Error(`Agent job id already exists: ${id}`);
+      id = autoJobId();
     }
-    this.creatingIds.add(id);
     try {
       const job = {
         version: CHECKPOINT_VERSION, id,
