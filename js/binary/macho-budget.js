@@ -14,6 +14,11 @@ function metadataOf(image) {
   return image.metadata.machoMetadata ||= { complete: true, reasons: [] };
 }
 
+function metadataLimit(value, fallback) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : fallback;
+}
+
 export function markMachOMetadataPartial(image, reason) {
   const meta = metadataOf(image);
   meta.complete = false;
@@ -21,7 +26,11 @@ export function markMachOMetadataPartial(image, reason) {
 }
 
 export function createMachOMetadataBudget(image, options = {}) {
-  const limits = { ...MACHO_METADATA_LIMITS, ...(options.limits || options.metadataLimits || {}) };
+  const overrides = options.limits || options.metadataLimits || {};
+  const limits = { ...MACHO_METADATA_LIMITS, ...overrides };
+  for (const key of Object.keys(MACHO_METADATA_LIMITS)) {
+    limits[key] = metadataLimit(limits[key], MACHO_METADATA_LIMITS[key]);
+  }
   const signal = options.signal || null;
   const started = Date.now();
   const used = {
