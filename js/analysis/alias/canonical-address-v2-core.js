@@ -11,6 +11,9 @@ export const GENERIC_ROOT_DESCRIPTOR_KINDS = Object.freeze([
   'stack-like',
   'rooted-object',
   'absolute-address',
+  'global-like',
+  'heap-like',
+  'tls-like',
 ]);
 
 const ROOT_KINDS = new Set(GENERIC_ROOT_DESCRIPTOR_KINDS);
@@ -114,16 +117,17 @@ function normalizeGenericDescriptor(input) {
       ...(input.rootIdentity == null ? {} : { rootIdentity: jsonSafe(input.rootIdentity) }),
     });
   }
-  if (kind === 'rooted-object') {
+  if (kind === 'rooted-object' || kind === 'global-like' || kind === 'heap-like' || kind === 'tls-like') {
     const baseOffset = parseInteger(input.baseOffset ?? 0);
     if (baseOffset == null) return null;
     const rootEntityId = input.rootEntityId == null ? null : String(input.rootEntityId).trim();
     if (input.rootEntityId != null && !rootEntityId) return null;
+    const resolvedSpace = addressSpace ?? (kind === 'tls-like' ? 'tls' : null);
     return deepFreeze({
-      kind,
+      kind: 'rooted-object',
       baseOffset,
-      addressSpace,
-      linearOffsets: input.linearOffsets === true,
+      addressSpace: resolvedSpace,
+      linearOffsets: input.linearOffsets !== false,
       ...(rootEntityId ? { rootEntityId } : {}),
       ...(input.rootIdentity == null ? {} : { rootIdentity: jsonSafe(input.rootIdentity) }),
     });

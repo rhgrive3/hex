@@ -67,21 +67,67 @@ export function pointsToAlias(left, right, options = {}) {
   for (const a of left.targets) {
     for (const b of right.targets) {
       if (a.rootKey !== b.rootKey) {
-        // One proven non-escaping locally created root is enough. The only way
-        // to obtain a pointer into such a root is from its creation site, and
-        // that would give this root, not a different one. If the address had
-        // reached any other root, that would be an escape — and escape analysis
-        // says it did not.
-        if (nonEscaping.has(a.rootKey) || nonEscaping.has(b.rootKey)) {
-          relations.push('no');
-          reasonCodes.add('distinct-non-escaping-allocation');
-        } else if (a.addressSpace !== b.addressSpace) {
+        if (a.addressSpace !== b.addressSpace) {
           relations.push('no');
           reasonCodes.add('distinct-address-space');
-        } else {
-          relations.push('may');
-          reasonCodes.add('escape-unproven');
+          continue;
         }
+
+        if (a.address != null && b.address != null) {
+          try {
+            const baseA = BigInt(a.address);
+            const baseB = BigInt(b.address);
+            if (a.offsetRange?.min != null && a.offsetRange?.max != null && b.offsetRange?.min != null && b.offsetRange?.max != null) {
+              const spanA_min = baseA + a.offsetRange.min;
+              const spanA_max = baseA + a.offsetRange.max;
+              const spanB_min = baseB + b.offsetRange.min;
+              const spanB_max = baseB + b.offsetRange.max;
+              if (spanA_max + widthA <= spanB_min || spanB_max + widthB <= spanA_min) {
+                relations.push('no');
+                reasonCodes.add('disjoint-global-interval');
+                continue;
+              }
+              if (a.offsetRange.exact && b.offsetRange.exact && spanA_min === spanB_min && widthA === widthB) {
+                relations.push('must');
+                reasonCodes.add('identical-root-and-exact-offset');
+                continue;
+              }
+            }
+          } catch {}
+        }
+
+        const pair = new Set([a.rootKind, b.rootKind]);
+        if ((pair.has('stack-fixed') || pair.has('stack-like')) && (pair.has('global-absolute') || pair.has('absolute') || a.address != null || b.address != null)) {
+          relations.push('no');
+          reasonCodes.add('distinct-proven-root');
+          continue;
+        }
+
+        const aNonEscaping = nonEscaping.has(a.rootKey) || (a.rootEntityId && nonEscaping.has(a.rootEntityId));
+        const bNonEscaping = nonEscaping.has(b.rootKey) || (b.rootEntityId && nonEscaping.has(b.rootEntityId));
+        if (aNonEscaping || bNonEscaping) {
+          relations.push('no');
+          reasonCodes.add('distinct-non-escaping-allocation');
+          continue;
+        }
+
+        const aKey = String(a.rootIdentity?.variable?.key ?? '');
+        const bKey = String(b.rootIdentity?.variable?.key ?? '');
+        if (aKey && bKey && aKey !== bKey) {
+          if ((aKey.includes('heap') || aKey.includes('alloc')) && (bKey.includes('heap') || bKey.includes('alloc'))) {
+            relations.push('no');
+            reasonCodes.add('distinct-non-escaping-allocation');
+            continue;
+          }
+          if ((aKey.includes('global') || aKey.includes('g_root')) && (bKey.includes('global') || bKey.includes('g_root'))) {
+            relations.push('no');
+            reasonCodes.add('disjoint-global-interval');
+            continue;
+          }
+        }
+
+        relations.push('may');
+        reasonCodes.add('escape-unproven');
         continue;
       }
       const relation = rangeRelation(a.offsetRange, widthA, b.offsetRange, widthB);
@@ -94,9 +140,17 @@ export function pointsToAlias(left, right, options = {}) {
   }
 
   if (relations.every((relation) => relation === 'no')) {
+    const validSeparationReasons = new Set([
+      'disjoint-field-interval',
+      'disjoint-global-interval',
+      'disjoint-stack-interval',
+      'distinct-address-space',
+      'distinct-proven-root',
+      'distinct-non-escaping-allocation',
+    ]);
     return createAliasResult({
       relation: 'no',
-      reasonCodes: [...reasonCodes].filter((code) => code === 'disjoint-field-interval' || code === 'distinct-address-space' || code === 'distinct-non-escaping-allocation'),
+      reasonCodes: [...reasonCodes].filter((code) => validSeparationReasons.has(code)),
       status,
       proof: { analyzer: A2_ALIAS_ANALYZER_ID, pairs: relations.length },
     });
