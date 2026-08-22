@@ -146,12 +146,51 @@ export function createArtifactId(input = {}) {
   });
 }
 
+/**
+ * Records where `jsonSafe()` had to change a value's type.
+ *
+ * `jsonSafe()` is deliberately lossy: it exists to make anything JSON-encodable
+ * for a digest. A BigInt becomes a bare decimal string, a Date becomes an ISO
+ * string, a non-finite number becomes null. That is fine for encoding, but it
+ * means two identities that JavaScript tells apart can hash the same -- an
+ * `identity` of `1n` and of `'1'` produced the same entity id (#1283).
+ *
+ * Rather than change `jsonSafe()`, which would move every id in the product,
+ * this walks the same value and reports the paths whose type the encoding could
+ * not carry. Nothing lossy in the value means `null`, so identities that were
+ * already unambiguous keep exactly the id they have today; only the ones that
+ * were colliding gain a distinguishing dimension.
+ */
+export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = []) {
+  const type = typeof value;
+  if (type === 'bigint') out.push([path, 'bigint']);
+  else if (type === 'number') { if (!Number.isFinite(value)) out.push([path, 'non-finite-number']); }
+  else if (type === 'undefined') out.push([path, 'undefined']);
+  else if (type === 'function') out.push([path, 'function']);
+  else if (type === 'symbol') out.push([path, 'symbol']);
+  else if (value !== null && type === 'object') {
+    if (seen.has(value)) return out.length ? out : null;
+    seen.add(value);
+    if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
+    else if (value instanceof ArrayBuffer) out.push([path, 'bytes']);
+    else if (value instanceof Date) out.push([path, 'date']);
+    else if (Array.isArray(value)) value.forEach((item, index) => lossyTypeWitness(item, `${path}[${index}]`, seen, out));
+    else for (const key of Object.keys(value).sort()) lossyTypeWitness(value[key], `${path}.${key}`, seen, out);
+    seen.delete(value);
+  }
+  return path === '' ? (out.length ? out : null) : out;
+}
+
 export function createEntityId(input = {}) {
+  const witness = lossyTypeWitness(input.identity);
   return typedId('entity', {
     binaryId: nonEmpty(input.binaryId, 'entity-binary-id-required'),
     sliceId: input.sliceId == null ? null : String(input.sliceId),
     kind: nonEmpty(input.kind, 'entity-kind-required'),
     identity: jsonSafe(input.identity),
+    // Absent for every identity `jsonSafe()` can carry without changing a
+    // type, so those ids are exactly what they were before (#1283).
+    ...(witness ? { identityTypes: witness } : {}),
   });
 }
 
