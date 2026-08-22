@@ -51,7 +51,7 @@ export function createEmbedBridgeProxy(options = {}) {
     if (closed) throw new Error('Embed bridge proxy is closed.');
     const controller = new AbortController();
     const externalSignal = requestOptions.signal;
-    const onAbort = () => controller.abort(externalSignal?.reason || 'cancelled');
+    const onAbort = () => controller.abort(externalSignal?.reason ?? 'cancelled');
     if (externalSignal) {
       externalSignal.addEventListener?.('abort', onAbort, { once: true });
       if (externalSignal.aborted) onAbort();

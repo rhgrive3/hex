@@ -13,7 +13,7 @@ export async function requestJSON(url, body, {
   const responseLimit = normalizeLimit(maxResponseBytes);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort('timeout'), Math.max(1, timeoutMs));
-  const abort = () => controller.abort(signal?.reason || 'cancelled');
+  const abort = () => controller.abort(signal?.reason ?? 'cancelled');
   if (signal) {
     signal.addEventListener('abort', abort, { once: true });
     // Close the race between the synchronous check above and listener setup.

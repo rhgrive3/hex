@@ -193,7 +193,7 @@ function budgetState(opts) {
   };
   b.timeout = setTimeout(() => { if (!b.signal.aborted) controller.abort('timeout'); }, timeoutMs);
   if (b.externalSignal) {
-    b.externalAbort = () => { if (!b.signal.aborted) controller.abort(b.externalSignal.reason || 'cancelled'); };
+    b.externalAbort = () => { if (!b.signal.aborted) controller.abort(b.externalSignal.reason ?? 'cancelled'); };
     if (b.externalSignal.aborted) b.externalAbort();
     else b.externalSignal.addEventListener('abort', b.externalAbort, { once:true });
   }

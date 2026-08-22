@@ -23,7 +23,7 @@ export class ChatGPTWebProvider extends AIProvider {
     if (options.signal?.aborted) throw interruptionError(options.signal);
 
     const controller = new AbortController();
-    const onAbort = () => controller.abort(options.signal?.reason || 'cancelled');
+    const onAbort = () => controller.abort(options.signal?.reason ?? 'cancelled');
     if (options.signal) {
       options.signal.addEventListener('abort', onAbort, { once: true });
       if (options.signal.aborted) onAbort();
