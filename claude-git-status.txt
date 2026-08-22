@@ -1,0 +1,7 @@
+ M js/project/index.js
+ M js/query/causal.js
+?? .cursor/
+?? .kiro/
+?? .windsurf/
+?? claude-git-status.txt
+?? claude-session.jsonl

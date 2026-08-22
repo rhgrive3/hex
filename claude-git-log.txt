@@ -1,0 +1,30 @@
+8bbc4b80 (HEAD -> lane/falsy-zero-and-utf8, origin/main, origin/HEAD, main) fix(binary): keep decode budgets bounded against their own inputs (#1383)
+656230b3 fix(project): stop the .hexproj BigInt tag colliding with ordinary objects (#1381)
+c93088bb fix(binary): validate ELF metadata budget limits (#1378)
+a768c434 fix(identity): stop distinct entity identities collapsing to one id (#1374)
+ac10296a fix(artifacts): stop distinct key material sharing one artifact identity (#1373)
+204d5f3f fix: forward explicit falsy abort reasons across the remaining paths (#1371)
+835900dc fix: LRU limit を bounded な容量へ検証する (#1370)
+6f4af777 fix(analyze): make the semantic model row bound exact without hiding truncation (#1355)
+a0be0b46 fix(analysis): forward an explicit falsy abort reason from the query adapter (#1362)
+2f3fc4d4 fix(runtime): forward explicit falsy abort reasons (#1360)
+d3a238fa fix(project): harden artifact index identity (#1363)
+30cab689 fix(ai): stop external input rewriting boundary semantics (#1358)
+08be46d6 fix(ai): stop distinct identities from sharing one key (#1352)
+528bde5f fix(arm64): stop fabricating references and understating vector transfers (#1351)
+0c9c6295 Merge pull request #1347 from rhgrive3/integration/query-bootstrap-final-current-main
+b3308979 (origin/integration/query-bootstrap-final-current-main) chore: retrigger query bootstrap checks
+f03e2766 chore: sync generated userscript
+db1e8ef7 fix(query): rebase function discovery bootstrap on current main
+14be643a fix(format): preserve negative hex sign position (#1350)
+c70ce730 fix(strings): normalize collection budgets (#1348)
+f54d888d fix(query): normalize causal count limits (#1341)
+64e5e729 fix(ai): normalize ContextBroker budgets (#1331)
+be3cec42 fix(ai): preserve agent job id uniqueness
+eb632016 Integrate remaining bounded correctness fixes on current main
+abd40c9e Reapply cancellation and navigation hardening on current main (#1295)
+ef784879 (origin/audit/repository-hardening-current-main-final) chore: retrigger exact-head runtime hardening validation
+764ac59f chore: sync generated userscript
+811b8681 fix(runtime): rebase cancellation and navigation hardening onto post-iOS main
+941cfab1 Fix iOS drag-return ghost taps on current main (#1291)
+2f21af09 fix: bound non-finite tool window limits (#1318)
