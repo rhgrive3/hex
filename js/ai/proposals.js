@@ -17,7 +17,14 @@ export class ProposalStore {
     if (!PROPOSAL_KINDS.has(input.kind)) throw new AIError('invalid_tool_call', `Unsupported proposal kind: ${input.kind}`);
     const evidenceIds = Array.from(new Set((input.evidenceIds || []).map(String).filter((id) => this.evidenceStore?.has(id))));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
-    const id = String(input.id || `proposal_${proposalSequence++}`);
+    let id;
+    if (input.id) {
+      id = String(input.id);
+      if (this.records.has(id)) throw new AIError('invalid_tool_call', `Proposal id already exists: ${id}`);
+    } else {
+      do id = `proposal_${proposalSequence++}`;
+      while (this.records.has(id));
+    }
     const binding = this.binding?.() || null;
     const record = {
       id, kind: input.kind, target: jsonSafe(input.target), before: jsonSafe(input.before), after: jsonSafe(input.after),
