@@ -46,6 +46,12 @@ export function createRelocationBudget({ limits = {}, onLimit = null } = {}) {
     },
     step(cost = 1) {
       if (stopped) return false;
+      // A negative cost gave back work that had already been consumed, so
+      // alternating step(1)/step(-1) never reached maxOperations; fractional,
+      // NaN and Infinity costs put the counter in a state the limit check
+      // could not reason about (#1377). Match DynamicSymbolBudget.step():
+      // only a non-negative safe integer is spendable, anything else stops.
+      if (!Number.isSafeInteger(cost) || cost < 0) return stop('decode work operation cost is invalid');
       operations += cost;
       if (!Number.isSafeInteger(operations) || operations > resolved.maxOperations) return stop(`decode work exceeds ${resolved.maxOperations} operations`);
       if (operations === 1 || (operations & 0xfff) === 0) {

@@ -20,8 +20,29 @@ export function markMachOMetadataPartial(image, reason) {
   if (!meta.reasons.includes(reason)) meta.reasons.push(reason);
 }
 
+/*
+ * Caller-supplied limits used to be merged over the defaults unvalidated, so
+ * `records: NaN` made `next > limits.records` permanently false and removed the
+ * ceiling entirely, while `stringBytes: NaN` leaked a non-finite value out
+ * through `remainingStringBytes` and `remaining()` into bounded decode paths
+ * (#1376). A limit is only a limit if it is a finite positive integer; anything
+ * else falls back to the declared default rather than disabling the budget.
+ */
+function metadataLimit(value, fallback) {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+}
+
+function resolveMetadataLimits(overrides = {}) {
+  const out = {};
+  for (const [key, fallback] of Object.entries(MACHO_METADATA_LIMITS)) {
+    out[key] = metadataLimit(overrides[key], fallback);
+  }
+  return out;
+}
+
 export function createMachOMetadataBudget(image, options = {}) {
-  const limits = { ...MACHO_METADATA_LIMITS, ...(options.limits || options.metadataLimits || {}) };
+  const limits = resolveMetadataLimits(options.limits || options.metadataLimits || {});
   const signal = options.signal || null;
   const started = Date.now();
   const used = {
