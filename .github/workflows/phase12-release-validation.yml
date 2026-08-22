@@ -27,11 +27,12 @@ jobs:
   verify:
     # Phase 12 owns only Phase 12 lanes. Dev Agent hardening has its own
     # ownership/integration spine; package.json is shared there, so do not
-    # misclassify an unrelated Dev Agent component or integration PR as a
-    # Phase 12 candidate.
+    # misclassify an unrelated Dev Agent or Stage 1 integration PR as a Phase
+    # 12 candidate.
     if: >-
       ${{ github.event_name != 'pull_request' ||
-          !startsWith(github.head_ref, 'dev-agent-hardening/') }}
+          (!startsWith(github.head_ref, 'dev-agent-hardening/') &&
+           github.head_ref != 'completion/stage1-integration') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

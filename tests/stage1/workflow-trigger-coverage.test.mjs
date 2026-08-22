@@ -36,4 +36,25 @@ for (const trigger of requiredTriggers) {
 assert.ok(content.includes('candidate-merge-tree:'), 'Workflow missing candidate-merge-tree job');
 assert.ok(content.includes('head:'), 'Workflow missing head job');
 
+// The Stage 1 completion branch is the aggregate integration lane. Component
+// ownership/release jobs must not run their own whole-diff ownership checks on
+// that branch; Stage 1's exact-head verifier is the authoritative aggregate
+// gate. Keep this routing explicit so a shared package.json trigger cannot
+// reintroduce the cross-phase ownership false positive.
+const stage1IntegrationBranch = 'completion/stage1-integration';
+const componentGateWorkflows = [
+  '.github/workflows/phase7-ownership.yml',
+  '.github/workflows/phase10-release-validation.yml',
+  '.github/workflows/phase11-release-validation.yml',
+  '.github/workflows/phase12-release-validation.yml',
+];
+
+for (const workflow of componentGateWorkflows) {
+  const workflowContent = fs.readFileSync(path.join(ROOT, workflow), 'utf8');
+  assert.ok(
+    workflowContent.includes(`github.head_ref != '${stage1IntegrationBranch}'`),
+    `${workflow} must route the Stage 1 integration branch to the aggregate verifier`
+  );
+}
+
 console.log('stage1 workflow trigger coverage: PASS');
