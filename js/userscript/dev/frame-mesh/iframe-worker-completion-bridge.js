@@ -2,7 +2,7 @@ const COMPLETION_SOURCE = 'iframe-worker-pool';
 
 export class IframeWorkerCompletionBridge {
   constructor({ workerPool, coordinator, now = () => new Date().toISOString() } = {}) {
-    if (!workerPool || typeof workerPool.start !== 'function' || typeof workerPool.requireLease !== 'function') {
+    if (!workerPool || typeof workerPool.start !== 'function' || typeof workerPool.followup !== 'function' || typeof workerPool.requireLease !== 'function') {
       throw new TypeError('IframeWorkerCompletionBridge requires an IframeWorkerPool.');
     }
     if (!coordinator || typeof coordinator.enqueue !== 'function' || typeof coordinator.waitEvent !== 'function') {
@@ -15,7 +15,9 @@ export class IframeWorkerCompletionBridge {
     this.runByLease = new Map();
     this.currentBySlot = new Map();
     this.originalStart = workerPool.start.bind(workerPool);
+    this.originalFollowup = workerPool.followup.bind(workerPool);
     workerPool.start = (args) => this.start(args);
+    workerPool.followup = (args) => this.followup(args);
   }
 
   async claim(args = {}, options = {}) {
@@ -45,6 +47,51 @@ export class IframeWorkerCompletionBridge {
        this start. A duplicate start that fails with worker-busy must not erase
        tracking for the already-running turn. */
     const started = await this.originalStart(args);
+    this.trackOccurrence(slot, leaseId, runId);
+    return started;
+  }
+
+  async followup(args = {}) {
+    const slot = this.workerPool.requireLease(args.leaseId);
+    const leaseId = String(slot.leaseId);
+    const runId = this.assertRunOwnership(leaseId, args.runId);
+    if (slot.pending) throw poolBusyError();
+
+    /* Pool followup historically bypassed slot.pending/lastResult entirely.
+       An RPC timeout could therefore abandon only the caller while the iframe
+       kept generating, leaving no retained parent-side completion to resume the
+       Supervisor. Track the same durable turn promise in the canonical Pool
+       slot before the RPC can time out. */
+    const pending = this.originalFollowup(args);
+    slot.pending = pending;
+    slot.lastResult = null;
+    pending.then(
+      (result) => this.retainFollowupResult(slot, pending, result),
+      (error) => this.retainFollowupFailure(slot, pending, error),
+    ).finally(() => this.workerPool.flushWaiters?.());
+    this.trackOccurrence(slot, leaseId, runId);
+    return pending;
+  }
+
+  retainFollowupResult(slot, pending, result) {
+    if (slot.pending !== pending) return;
+    slot.lastResult = result;
+    slot.pending = null;
+  }
+
+  retainFollowupFailure(slot, pending, error) {
+    if (slot.pending !== pending) return;
+    slot.lastResult = {
+      status: 'failed',
+      error: {
+        code: String(error?.code || 'provider-error'),
+        message: String(error?.message || error).slice(0, 512),
+      },
+    };
+    slot.pending = null;
+  }
+
+  trackOccurrence(slot, leaseId, runId) {
     const occurrence = {
       completionId: `pool-completion-${++this.sequence}`,
       slot: slot.index,
@@ -71,7 +118,7 @@ export class IframeWorkerCompletionBridge {
          async start continuation runs. The retained Pool state is authoritative. */
       this.publishAfterRetention(occurrence);
     }
-    return started;
+    return occurrence;
   }
 
   publishAfterRetention(occurrence) {
@@ -175,6 +222,7 @@ export class IframeWorkerCompletionBridge {
 
   close() {
     if (this.workerPool.start !== this.originalStart) this.workerPool.start = this.originalStart;
+    if (this.workerPool.followup !== this.originalFollowup) this.workerPool.followup = this.originalFollowup;
     this.runByLease.clear();
     this.currentBySlot.clear();
   }
@@ -191,6 +239,12 @@ function wantsCompletion(events) {
 function ownershipError(leaseId, detail) {
   const error = new Error(`Iframe Worker lease ${String(leaseId || '')} ${detail}.`);
   error.code = 'worker-lease-run-mismatch';
+  return error;
+}
+
+function poolBusyError() {
+  const error = new Error('Worker slot already has an active task.');
+  error.code = 'worker-busy';
   return error;
 }
 
