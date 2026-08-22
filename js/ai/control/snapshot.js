@@ -37,7 +37,11 @@ export function createTurnSnapshot(local = {}, request = {}) {
 export function createSnapshotContext(local = {}, snapshot, scopeController = null) {
   const frozen = {};
   for (const key of Reflect.ownKeys(local)) {
-    try { frozen[key] = local[key]; } catch { /* best-effort capability capture */ }
+    try {
+      Object.defineProperty(frozen, key, {
+        value:local[key], enumerable:true, configurable:true, writable:true,
+      });
+    } catch { /* best-effort capability capture */ }
   }
   frozen.turnSnapshot = snapshot;
   frozen.binaryIdentity = snapshot.binaryIdentity;
