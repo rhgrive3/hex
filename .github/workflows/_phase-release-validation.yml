@@ -90,6 +90,8 @@ jobs:
       # Keep the broad run for push/manual release boundaries.
       - name: Broad repository regression at release boundary
         if: ${{ inputs.run_broad_regression && github.event_name != 'pull_request' }}
+        env:
+          RUN_BROAD_REGRESSION_REQUESTED: ${{ inputs.run_broad_regression }}
         run: npm run check
       - name: Publish validated ${{ inputs.phase_name }} evidence
         if: success()
