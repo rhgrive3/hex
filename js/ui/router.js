@@ -96,14 +96,26 @@ export class ProductRouter {
   }
 
   navigate(rawPath, { replace = false } = {}) {
-    const path = normalize(rawPath);
+    const requestedPath = normalize(rawPath);
+    const path = matchRoute(this.routes, requestedPath) ? requestedPath : this.defaultPath;
     if (this.current && this.current.fullPath === path) return false;
     this.capture();
-    const nextDepth = replace ? this.depth : this.depth + 1;
+    const previousDepth = this.depth;
+    const nextDepth = replace ? previousDepth : previousDepth + 1;
+
+    // Build the destination before committing browser history. If the route
+    // renderer throws, the current view, URL and history stack must remain one
+    // coherent state instead of leaving a dead entry that only looks opened.
+    this.depth = nextDepth;
+    const rendered = this._render(path, { replace, restoredState: null });
+    if (!rendered) {
+      this.depth = previousDepth;
+      return false;
+    }
+
     const state = { hexUi: true, key: ++this.serial, depth: nextDepth, viewState: null };
-    try { history[replace ? 'replaceState' : 'pushState'](state, '', routeHistoryUrl(path, window.location)); this.depth = nextDepth; }
-    catch { this.depth = nextDepth; window.location.hash = path; }
-    this._render(path, { replace });
+    try { history[replace ? 'replaceState' : 'pushState'](state, '', routeHistoryUrl(path, window.location)); }
+    catch { window.location.hash = path; }
     return true;
   }
 
@@ -127,7 +139,9 @@ export class ProductRouter {
     }
 
     const nextCurrent = { ...resolved, fullPath, query: queryOf(fullPath) };
-    const state = history.state && history.state.hexUi ? history.state.viewState : null;
+    const state = Object.hasOwn(meta, 'restoredState')
+      ? meta.restoredState
+      : (history.state && history.state.hexUi ? history.state.viewState : null);
     const previousView = this.view;
     let nextView;
     try { nextView = this.onRoute(nextCurrent, { ...meta, restoredState: state }) || null; }

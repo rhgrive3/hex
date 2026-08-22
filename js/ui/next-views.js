@@ -113,8 +113,12 @@ export function openFunctionView(view, { router, legacy = {}, address } = {}) {
   const target = address == null ? view.address : addressOf(address);
   if (target == null) return false;
   if (router && typeof router.navigate === 'function' && view.route) {
-    router.navigate(view.route);
-    return true;
+    try {
+      const navigated = router.navigate(view.route);
+      return navigated !== false || router.current?.fullPath === view.route;
+    } catch {
+      return false;
+    }
   }
   const fallback = view.legacy ? legacy[view.legacy] : null;
   if (typeof fallback !== 'function') return false;

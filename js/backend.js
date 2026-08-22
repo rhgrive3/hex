@@ -96,6 +96,27 @@ export class StaleRequestError extends Error {
   }
 }
 
+function cancelledRequestError(message = 'Analysis request cancelled.') {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
+function workerFailureError(workerName, event, fallback = 'The analysis worker failed.') {
+  const message = event?.message || event?.error?.message || fallback;
+  const error = event?.error instanceof Error ? event.error : new Error(message);
+  if (!error.code) error.code = 'WORKER_FAILED';
+  error.workerName = workerName;
+  return error;
+}
+
+function carryCancellation(mapped, source) {
+  mapped.requestId = source?.requestId ?? null;
+  mapped.cancel = () => source?.cancel?.();
+  return mapped;
+}
+
 export class Backend {
   constructor(options = {}) {
     this.legacyWorker = new Worker(new URL('./worker.js', import.meta.url));
@@ -136,12 +157,15 @@ export class Backend {
 
     this.legacyWorker.onmessage = (event) => this._onMessage(event.data, 'legacy');
     this.platformWorker.onmessage = (event) => this._onMessage(event.data, 'platform');
-    const failed = (event) => {
-      const msg = event?.message || 'The analysis worker failed to start.';
-      if (this.onFatal) this.onFatal(msg);
+    const failed = (workerName, event) => {
+      const error = workerFailureError(workerName, event, 'The analysis worker failed to start.');
+      this._rejectWorkerPending(workerName, error);
+      if (this.onFatal) this.onFatal(error.message);
     };
-    this.legacyWorker.onerror = failed;
-    this.platformWorker.onerror = failed;
+    this.legacyWorker.onerror = (event) => failed('legacy', event);
+    this.platformWorker.onerror = (event) => failed('platform', event);
+    this.legacyWorker.onmessageerror = (event) => failed('legacy', event);
+    this.platformWorker.onmessageerror = (event) => failed('platform', event);
 
     if (typeof document !== 'undefined') {
       this._memoryPressureHandler = () => {
@@ -181,6 +205,14 @@ export class Backend {
     return this._artifactOrchestrator;
   }
 
+  _rejectWorkerPending(workerName, error) {
+    for (const [id, pending] of this.pending) {
+      if (pending.workerName !== workerName) continue;
+      this.pending.delete(id);
+      pending.reject(error);
+    }
+  }
+
   _onMessage(message, workerName) {
     if (!message) return;
     if (message.t === 'searchProgress' || message.t === 'scanProgress' || message.t === 'analysisProgress') {
@@ -193,7 +225,9 @@ export class Backend {
       return;
     }
     if (message.t === 'fatal') {
-      if (this.onFatal) this.onFatal(message.error);
+      const error = workerFailureError(workerName, { message: message.error }, 'The analysis worker failed.');
+      this._rejectWorkerPending(workerName, error);
+      if (this.onFatal) this.onFatal(error.message);
       return;
     }
     const pending = this.pending.get(message.id);
@@ -220,7 +254,12 @@ export class Backend {
     const transportEpoch = this.transportEpoch;
     const promise = new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject, uiEpoch, transportEpoch, workerName, onProgress });
-      this._worker(workerName).postMessage({ t, id, requestId: id, epoch: transportEpoch, ...payload }, transfer || []);
+      try {
+        this._worker(workerName).postMessage({ t, id, requestId: id, epoch: transportEpoch, ...payload }, transfer || []);
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
     });
     promise.requestId = id;
     promise.cancel = () => this.cancel(id);
@@ -371,8 +410,11 @@ export class Backend {
       };
       this._archProbeFinish = finish;
       worker.onmessage = (event) => finish(event.data);
-      worker.onerror = (event) => finish({ ok: false, error: event.message, support: { arm64: false, x86_64: false } });
-      worker.postMessage({ t: 'probe' });
+      const fail = (event) => finish({ ok: false, error: event?.message || 'architecture probe worker failed', support: { arm64: false, x86_64: false } });
+      worker.onerror = fail;
+      worker.onmessageerror = fail;
+      try { worker.postMessage({ t: 'probe' }); }
+      catch (error) { finish({ ok:false, error:error.message, support:{ arm64:false, x86_64:false } }); }
     }).finally(() => { this._archProbe = null; this._archProbeFinish = null; });
     return this._archProbe;
   }
@@ -387,12 +429,19 @@ export class Backend {
 
   cancel(request) {
     const requestId = typeof request === 'number' ? request : request?.requestId ?? this.lastRequestId;
-    if (requestId == null) return;
+    if (requestId == null) return false;
     const pending = this.pending.get(requestId);
-    if (pending) this._worker(pending.workerName).postMessage({ t: 'cancel', requestId, epoch: pending.transportEpoch });
+    if (!pending) return false;
+    this.pending.delete(requestId);
+    try { this._worker(pending.workerName).postMessage({ t: 'cancel', requestId, epoch: pending.transportEpoch }); } catch { /* local settlement is authoritative */ }
+    pending.reject(cancelledRequestError());
+    return true;
   }
 
-  cancelSearch(request) { this.cancel(request); }
+  cancelSearch(request) {
+    if (request == null) return false;
+    return this.cancel(request);
+  }
 
   analyze(sliceIndex, options = {}) {
     const explicitRoute = Object.hasOwn(options, 'route');
@@ -641,11 +690,13 @@ export class Backend {
   fieldAccess(params, onProgress) { return this.call('fieldAccess', params, null, onProgress); }
   valueShapes(regionId, onProgress) { return this.call('valueShapes', { regionId }, null, onProgress); }
   fieldAccessMany(regionId, offsets) {
-    return this.call('fieldAccess', { regionId, offsets }).then((res) => {
+    const request = this.call('fieldAccess', { regionId, offsets });
+    const mapped = request.then((res) => {
       const out = new Map();
       for (const key of Object.keys(res?.groups || {})) out.set(key, res.groups[key]);
       return out;
     });
+    return carryCancellation(mapped, request);
   }
   strings(params, onProgress) { return this.call('strings', params, null, onProgress); }
   xrefs(params, onProgress) { return this.call('xrefs', params, null, onProgress); }
@@ -693,26 +744,37 @@ export class Backend {
   _disassembleBytes(bytes, address, architecture, uiEpoch = this.gen, decodeContext = {}) {
     if (!this._disasmWorker) {
       this._disasmWorker = new Worker(new URL('./platform/capstone-disasm-worker.js', import.meta.url));
-      this._disasmWorker.onmessage = (event) => {
+      const worker = this._disasmWorker;
+      worker.onmessage = (event) => {
         const pending = this._disasmPending.get(event.data?.id);
         if (!pending) return;
         this._disasmPending.delete(event.data.id);
         if (pending.uiEpoch !== this.gen) { pending.reject(new StaleRequestError()); return; }
         if (event.data.ok) pending.resolve(event.data); else pending.reject(new Error(event.data.error || 'disassembly failed'));
       };
+      const fail = (event) => {
+        if (this._disasmWorker !== worker) return;
+        this._releaseDisassembly(workerFailureError('disassembly', event, 'disassembly worker failed'));
+      };
+      worker.onerror = fail;
+      worker.onmessageerror = fail;
     }
     const id = this._disasmSeq++;
     const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
     const promise = new Promise((resolve, reject) => {
       this._disasmPending.set(id, { resolve, reject, uiEpoch });
-      this._disasmWorker.postMessage({ id, architecture, address, bytes: copy, riscvIsa:decodeContext.riscvIsa ?? null }, [copy.buffer]);
+      try {
+        this._disasmWorker.postMessage({ id, architecture, address, bytes: copy, riscvIsa:decodeContext.riscvIsa ?? null }, [copy.buffer]);
+      } catch (error) {
+        this._disasmPending.delete(id);
+        reject(error);
+      }
     });
     promise.cancel = () => {
       const pending = this._disasmPending.get(id);
       if (!pending) return;
       this._disasmPending.delete(id);
-      const error = new Error('disassembly cancelled'); error.name = 'AbortError';
-      pending.reject(error);
+      pending.reject(cancelledRequestError('disassembly cancelled'));
     };
     return promise;
   }
@@ -772,11 +834,13 @@ export class Backend {
     const cached = this.cache.get(key);
     if (cached && !cached.error && (!wantAsm || cached.mn)) return Promise.resolve(cached);
     const gen = this.gen;
-    return this.call('chunk', { regionId, chunk, wantAsm }).then((res) => {
+    const request = this.call('chunk', { regionId, chunk, wantAsm });
+    const mapped = request.then((res) => {
       const entry = normalizeChunk(res);
       if (gen === this.gen) this.cache.set(key, entry);
       return entry;
     });
+    return carryCancellation(mapped, request);
   }
 
   request(regionId, chunk, wantAsm) {

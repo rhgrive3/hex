@@ -142,6 +142,45 @@ ok(c.compares && c.compares.some((x) => x.value === 100n && x.engine === 'ir-ssa
   ok(direct.changeSites.length > 0, 'direct pinpoint scan evidence remains available');
 }
 
+// The automatic access-scan timeout must cancel the real scanner request, not
+// just race the UI forward while leaving a worker RPC orphaned in the backend.
+{
+  const shapes = foldShapes({
+    count: 1, capped: false,
+    disp: Int32Array.of(0x20),
+    size: Uint8Array.of(4),
+    flags: Uint8Array.of(SHAPE.DECREASE | SHAPE.CROSS),
+    amtKind: Uint8Array.of(AMOUNT.FIELD),
+    amtDisp: Int32Array.of(0x30),
+    addr: BigUint64Array.of(BASE + 32n),
+    span: Int32Array.of(0x100),
+    amtSize: Uint8Array.of(4),
+    amtSpan: Int32Array.of(0x100),
+  });
+  let cancelled = 0;
+  const scanAccess = () => {
+    const pending = new Promise(() => {});
+    pending.cancel = () => { cancelled++; };
+    return pending;
+  };
+  const started = Date.now();
+  const timed = await pinpointLocation({
+    goal,
+    ranked: [{ addr: BASE, name: 'applyDamage', strings: ['damage', 'hp'] }],
+    program,
+    analyze: async () => model,
+    shapes,
+    scanAccess,
+    accessScanTimeoutMs: 15,
+    budget: { left: 12 },
+    limit: 10,
+  });
+  eq(cancelled, 1, 'timed-out automatic access scan must cancel its worker operation exactly once');
+  ok(Date.now() - started < 1000, 'timed-out access scan must settle promptly');
+  ok(timed && Array.isArray(timed.candidates), 'pinpoint should continue with remaining evidence after a scan timeout');
+}
+
 process.stdout.write('  ok  pinpointLocation consumes SSA RMW + threshold\n');
 process.stdout.write('  ok  pinpoint access scanning batches once across goals\n');
 process.stdout.write('  ok  direct pinpoint preserves legacy scan requests\n');
+process.stdout.write('  ok  timed-out access scan cancels backend work\n');
