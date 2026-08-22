@@ -134,7 +134,7 @@ export function parseOperands(str) {
   return out;
 }
 
-function absHex(v) {
+export function absHex(v) {
   return (v < 0n ? "-" : "") + (v < 0n ? -v : v).toString(16).toUpperCase();
 }
 
@@ -153,7 +153,7 @@ export function immText(op) {
 }
 
 /** 擬似コードに埋める短い形。小さい数は 10 進、大きい数は 16 進。 */
-function immShort(op) {
+export function immShort(op) {
   if (!op) return "";
   if (op.float != null) return String(op.float);
   const v = op.value;
@@ -175,7 +175,7 @@ function shiftExpr(sh) {
   }
 }
 
-function memExpr(m) {
+export function memExpr(m) {
   let s = m.base.text;
   if (m.index) s += " + " + m.index.text + (m.shift ? shiftExpr(m.shift) : "");
   else if (m.disp && m.disp.value != null && m.disp.value !== 0n && m.mode !== "post") {
