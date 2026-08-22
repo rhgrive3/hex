@@ -118,35 +118,27 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Every other viewport suite launches Chromium only. Keep them fully
-  # parallel without downloading WebKit or installing WebKit system packages.
+  # Chromium-only suites share one of three runners. The seven AI/browser
+  # regressions were previously seven separate Actions jobs even though the
+  # repository already defines the exact same suite as `npm run ai:browser`.
+  # Keeping the suite intact on one runner removes six repeated checkout /
+  # Playwright-cache / npm-install setup cycles and sharply reduces runner-slot
+  # contention with cross-binary accuracy.
   viewport-shards:
     name: viewport-${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 9
+      max-parallel: 3
       matrix:
         include:
           - name: analysis-navigation
             command: node tests/ui/analysis-navigation.mjs
           - name: accessibility
             command: node tests/ui/accessibility.mjs
-          - name: ai-launcher
-            command: node tests/ai-ui-launcher.mjs
-          - name: ai-dev-profile
-            command: node tests/ai-ui-dev-profile.mjs
-          - name: ai-panel
-            command: node tests/ai-ui-panel.mjs
-          - name: ai-proposal
-            command: node tests/ai-ui-proposal.mjs
-          - name: ai-fallback
-            command: node tests/ai-ui-fallback.mjs
-          - name: ai-core-integration
-            command: node tests/ai-ui-core-integration.mjs
-          - name: dev-agent-browser
-            command: node tests/dev-agent/round2-browser.mjs
+          - name: ai-browser
+            command: npm run ai:browser
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
