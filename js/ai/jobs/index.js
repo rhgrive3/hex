@@ -21,7 +21,14 @@ export class AgentJobManager {
         continue;
       }
       this.creatingIds.add(id);
-      if (!await this.get(id)) break;
+      let existing;
+      try {
+        existing = await this.get(id);
+      } catch (error) {
+        this.creatingIds.delete(id);
+        throw error;
+      }
+      if (!existing) break;
       this.creatingIds.delete(id);
       if (explicitId) throw new Error(`Agent job id already exists: ${id}`);
       id = autoJobId();
