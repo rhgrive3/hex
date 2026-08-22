@@ -1,5 +1,6 @@
 import { AIError } from './schema.js';
 import { jsonSafe } from './validation.js';
+import { stableDigest } from '../core/identity/index.js';
 
 const PROPOSAL_KINDS = new Set(['rename', 'comment', 'type', 'struct-field', 'patch', 'project-annotation']);
 let proposalSequence = 1;
@@ -107,31 +108,85 @@ export class ProposalStore {
   all() { return Array.from(this.records.values()); }
 }
 
+/**
+ * Stale-state fingerprint.
+ *
+ * `revision` and `bindingRevision` are safety checks: they decide whether the
+ * thing the user approved is still the thing about to be written. A 32-bit
+ * hash is far too small for that job — with a 32-bit digest an unrelated state
+ * passes the guard by accident often enough to matter, and it is trivially
+ * steerable. The canonical text is therefore digested with the same 128-bit
+ * primitive the rest of the product uses for identity.
+ *
+ * `stableDigest` is given the canonical *text*, never the raw value: the text
+ * already carries the type tags, so nothing is lost to `jsonSafe` on the way in.
+ */
 function fingerprint(value) {
-  const text = canonicalIdentity(value);
-  let hash = 5381;
-  for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
-  return (hash >>> 0).toString(16);
+  return stableDigest(canonicalIdentity(value));
 }
 
+/**
+ * Domain-separated canonical text for one value.
+ *
+ * The previous encoding described non-JSON values with ordinary objects
+ * (`{"$bigint":"1"}`, `{"$number":"NaN"}`, `{"$undefined":true}`) while the
+ * ordinary-object branch was free to use those very keys. So `1n` and
+ * `{ $bigint: '1' }` produced the same text, and a proposal approved against
+ * `before: 1n` passed its stale-state guard against a completely different
+ * current state (#1299).
+ *
+ * Renaming the magic keys only moves that collision. Instead every value kind
+ * now carries its own leading tag, and no tag's payload can be produced by
+ * another kind:
+ *
+ *   z null · v undefined · b boolean · i bigint · d number · s string
+ *   x symbol/function · t Date · y bytes · m Map · e Set · a array · o object
+ *
+ * Strings are JSON-quoted after their tag, numbers and bigints are terminated,
+ * so concatenating elements with `,` stays unambiguous.
+ */
 function canonicalIdentity(value, stack = new Set()) {
-  if (typeof value === 'bigint') return `{"$bigint":${JSON.stringify(value.toString())}}`;
-  if (typeof value === 'number') {
-    if (Number.isNaN(value)) return '{"$number":"NaN"}';
-    if (value === Infinity) return '{"$number":"Infinity"}';
-    if (value === -Infinity) return '{"$number":"-Infinity"}';
-    if (Object.is(value, -0)) return '{"$number":"-0"}';
-    return JSON.stringify(value);
+  if (value === null) return 'z';
+  if (value === undefined) return 'v';
+  const type = typeof value;
+  if (type === 'boolean') return value ? 'b1' : 'b0';
+  if (type === 'bigint') return `i${value.toString(10)};`;
+  if (type === 'number') {
+    if (Number.isNaN(value)) return 'dNaN;';
+    if (value === Infinity) return 'dInfinity;';
+    if (value === -Infinity) return 'd-Infinity;';
+    if (Object.is(value, -0)) return 'd-0;';
+    return `d${JSON.stringify(value)};`;
   }
-  if (typeof value === 'string' || typeof value === 'boolean' || value === null) return JSON.stringify(value);
-  if (value === undefined) return '{"$undefined":true}';
-  if (typeof value !== 'object') return JSON.stringify(String(value));
+  if (type === 'string') return `s${JSON.stringify(value)}`;
+  if (type !== 'object') return `x${JSON.stringify(String(value))}`;
+
   if (stack.has(value)) throw new AIError('tool_failed', 'Proposal state contains a cyclic value and cannot be fingerprinted safely.');
   stack.add(value);
   try {
-    if (Array.isArray(value)) return `[${value.map((item) => canonicalIdentity(item, stack)).join(',')}]`;
+    if (value instanceof Date) return `t${JSON.stringify(Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString())}`;
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+      const bytes = value instanceof ArrayBuffer
+        ? new Uint8Array(value)
+        : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      let hexText = '';
+      for (const byte of bytes) hexText += byte.toString(16).padStart(2, '0');
+      return `y${JSON.stringify(hexText)}`;
+    }
+    // Map/Set entry order is part of the value, so it is preserved rather than
+    // sorted: two maps built in a different order are different states.
+    if (value instanceof Map) {
+      return `m[${Array.from(value.entries()).map(([k, v]) => `${canonicalIdentity(k, stack)}:${canonicalIdentity(v, stack)}`).join(',')}]`;
+    }
+    if (value instanceof Set) {
+      return `e[${Array.from(value.values()).map((item) => canonicalIdentity(item, stack)).join(',')}]`;
+    }
+    if (Array.isArray(value)) return `a[${value.map((item) => canonicalIdentity(item, stack)).join(',')}]`;
+    // Own keys only, and `__proto__` among them is data here, not a mutation:
+    // it is read with Object.keys/direct access and never assigned onto a
+    // result object, so it cannot reach a prototype.
     const keys = Object.keys(value).sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalIdentity(value[key], stack)}`).join(',')}}`;
+    return `o{${keys.map((key) => `${JSON.stringify(key)}:${canonicalIdentity(value[key], stack)}`).join(',')}}`;
   } finally {
     stack.delete(value);
   }
