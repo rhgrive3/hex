@@ -45,13 +45,25 @@ export function normalizeAITools(value) {
   return out;
 }
 
+/*
+ * `target[key] = value` with key '__proto__' runs the inherited
+ * Object.prototype.__proto__ setter rather than creating an own property: the
+ * input's own '__proto__' entry is dropped and the sanitized object's
+ * prototype is replaced by attacker-supplied data (#1304). Every key that
+ * comes from outside is therefore defined, never assigned.
+ */
+function defineOwn(target, key, value) {
+  Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
+  return target;
+}
+
 export function sanitizeToolSchema(value, depth = 0) {
   if (depth > 8 || !isObject(value)) return { type: 'object', properties: {} };
   const allowed = new Set(['type','description','enum','const','properties','required','items','oneOf','anyOf','minimum','maximum','minLength','maxLength','pattern','additionalProperties']);
   const out = {};
   for (const [key, item] of Object.entries(value).slice(0, 100)) {
     if (!allowed.has(key)) continue;
-    if (key === 'properties' && isObject(item)) { out.properties = {}; for (const [prop, schema] of Object.entries(item).slice(0, 80)) out.properties[boundedText(prop, 80)] = sanitizeToolSchema(schema, depth + 1); }
+    if (key === 'properties' && isObject(item)) { out.properties = {}; for (const [prop, schema] of Object.entries(item).slice(0, 80)) defineOwn(out.properties, boundedText(prop, 80), sanitizeToolSchema(schema, depth + 1)); }
     else if (key === 'items' && isObject(item)) out.items = sanitizeToolSchema(item, depth + 1);
     else if ((key === 'oneOf' || key === 'anyOf') && Array.isArray(item)) out[key] = item.slice(0, 8).map((schema) => sanitizeToolSchema(schema, depth + 1));
     else if (key === 'required' && Array.isArray(item)) out.required = item.slice(0, 80).map((name) => boundedText(name, 80));
@@ -118,7 +130,7 @@ export function promptWorkbench(context) {
 }
 export function rejectBinaryPayload(value, depth = 0) { if (depth > 10 || !value || typeof value !== 'object') return; const forbidden = new Set(['binary','binaryBytes','fileBytes','rawBinary','byteSource','arrayBuffer']); for (const [key, item] of Object.entries(value)) { if (forbidden.has(key)) throw new HttpError(422, 'binary_upload_forbidden', 'Binary content cannot be sent to the AI worker.'); rejectBinaryPayload(item, depth + 1); } }
 export function normalizeList(value, maxItems) { return Array.isArray(value) ? value.slice(0, maxItems).map((item) => sanitizeValue(item, 0)).filter((item) => item != null) : []; }
-export function sanitizeValue(value, depth) { if (depth > 6) return null; if (typeof value === 'string') return boundedText(value, 6000); if (typeof value === 'number' || typeof value === 'boolean') return value; if (value == null) return null; if (Array.isArray(value)) return value.slice(0, 32).map((item) => sanitizeValue(item, depth + 1)).filter((item) => item != null); if (!isObject(value)) return null; const out = {}; for (const [key, item] of Object.entries(value).slice(0, 40)) { const clean = sanitizeValue(item, depth + 1); if (clean != null) out[boundedText(key, 80)] = clean; } return out; }
+export function sanitizeValue(value, depth) { if (depth > 6) return null; if (typeof value === 'string') return boundedText(value, 6000); if (typeof value === 'number' || typeof value === 'boolean') return value; if (value == null) return null; if (Array.isArray(value)) return value.slice(0, 32).map((item) => sanitizeValue(item, depth + 1)).filter((item) => item != null); if (!isObject(value)) return null; const out = {}; for (const [key, item] of Object.entries(value).slice(0, 40)) { const clean = sanitizeValue(item, depth + 1); if (clean != null) defineOwn(out, boundedText(key, 80), clean); } return out; }
 export function stringList(value, max) { return Array.isArray(value) ? value.slice(0, max).map((item) => boundedText(item, 2000)).filter(Boolean) : []; }
 export function finiteConfidence(value) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : undefined; }
 export function isObject(value) { return value != null && typeof value === 'object' && !Array.isArray(value); }

@@ -86,6 +86,10 @@ export function validateAIResult(result) {
 
 export function addressText(value) {
   if (value == null) return null;
+  // BigInt('') and BigInt('   ') are 0n, so a missing or blank address would
+  // become a legitimate-looking action target at 0x0 (#1301). Blank input is
+  // absent input, not address zero; only an explicit '0' means 0x0.
+  if (typeof value === 'string' && value.trim() === '') return null;
   try {
     const n = typeof value === 'bigint' ? value : BigInt(value);
     return n < 0n ? null : `0x${n.toString(16)}`;
@@ -124,7 +128,19 @@ export function jsonSafe(value, depth = 0) {
   if (Array.isArray(value)) return value.slice(0, 1000).map((item) => jsonSafe(item, depth + 1));
   if (typeof value === 'object') {
     const out = {};
-    for (const [key, item] of Object.entries(value).slice(0, 200)) out[key] = jsonSafe(item, depth + 1);
+    for (const [key, item] of Object.entries(value).slice(0, 200)) {
+      // `out[key] = ...` with key '__proto__' runs the inherited
+      // Object.prototype.__proto__ setter instead of creating an own property:
+      // the input's own '__proto__' data is dropped and the *result's*
+      // prototype is replaced by whatever the input carried (#1300). Defining
+      // the property never reaches that setter.
+      Object.defineProperty(out, key, {
+        value: jsonSafe(item, depth + 1),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
     return out;
   }
   return String(value);
