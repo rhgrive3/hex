@@ -19,7 +19,11 @@ export class StringCollectionBudget {
 
   requestBytes(size) {
     if (this.inputRemaining <= 0) return 0;
-    const n = Math.min(this.inputRemaining, Math.max(0, Number(size) || 0));
+    const requested = Number(size);
+    const n = Math.min(
+      this.inputRemaining,
+      Number.isFinite(requested) ? Math.max(0, requested) : 0,
+    );
     this.inputRemaining -= n;
     return n;
   }
