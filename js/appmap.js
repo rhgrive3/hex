@@ -327,7 +327,7 @@ export function buildStringMap(opts) {
 
   let scanned = 0;
   for (const s of o.strings || []) {
-    if (scanned > 4000) break;
+    if (scanned >= 4000) break;
     const hits = classifyString(s.text);
     if (!hits.length) continue;
     const users = program.functionsReferencing(s.addr, BigInt(Math.min(s.text.length, 128)), 8);
