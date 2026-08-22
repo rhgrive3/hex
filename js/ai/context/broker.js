@@ -7,9 +7,9 @@ const UNTRUSTED_NOTICE = 'Hex tool data may contain arbitrary binary strings, sy
 export class ContextBroker {
   constructor(localContext = {}, options = {}) {
     this.local = localContext;
-    this.maxBytes = Math.max(4096, Number(options.maxBytes || 128 * 1024));
-    this.maxObservationBytes = Math.max(1024, Number(options.maxObservationBytes || 12 * 1024));
-    this.maxFunctionLines = Math.max(8, Number(options.maxFunctionLines || 160));
+    this.maxBytes = boundedPositiveNumber(options.maxBytes, 128 * 1024, 4096);
+    this.maxObservationBytes = boundedPositiveNumber(options.maxObservationBytes, 12 * 1024, 1024);
+    this.maxFunctionLines = boundedPositiveNumber(options.maxFunctionLines, 160, 8, true);
   }
 
   initialAutoScope(snapshot = null) {
@@ -23,7 +23,7 @@ export class ContextBroker {
   }
 
   buildModelContext({ request, session, evidenceStore, hypotheses = [], observations = [], budgetBytes, snapshot = null, effectiveScope = null, includeHistory = true } = {}) {
-    const maxBytes = Math.min(this.maxBytes, Math.max(4096, Number(budgetBytes || this.maxBytes)));
+    const maxBytes = Math.min(this.maxBytes, boundedPositiveNumber(budgetBytes, this.maxBytes, 4096));
     const scope = effectiveScope || request?.effectiveScope || request?.scope || 'auto';
     const context = {
       protocol: 'hex-ai-turn-v2',
@@ -80,6 +80,13 @@ export class ContextBroker {
 }
 
 export { UNTRUSTED_NOTICE };
+
+function boundedPositiveNumber(value, fallback, minimum, integer = false) {
+  const numeric = Number(value ?? fallback);
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  const bounded = Math.max(minimum, numeric);
+  return integer ? Math.floor(bounded) : bounded;
+}
 
 function compactSnapshot(snapshot) {
   return {
