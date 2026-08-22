@@ -650,6 +650,7 @@ await import('./ai-identity-collisions.mjs');
 await import('./ai-boundary-hardening.mjs');
 await import('./analyze-model-row-bound.mjs');
 await import('./abort-reason-preservation.mjs');
+await import('./project-bigint-tag-roundtrip.mjs');
 await import('./artifact-key-collisions.mjs');
 
 console.log('\nAll integrated issue tests PASS!');

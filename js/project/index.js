@@ -75,9 +75,53 @@ export function normalizeNavigation(value = {}) {
   return { currentFunction: value.currentFunction ?? null, history: list(value.history, 'navigation.history').slice(-500), bookmarks: list(value.bookmarks, 'navigation.bookmarks'), lastQuery: value.lastQuery ?? null };
 }
 
+/*
+ * `.hexproj` encodes a BigInt as the single-key object `{ $hexBigInt: hex }`.
+ * The reader cannot tell that wrapper apart from an ordinary object a user
+ * genuinely had, so `{ $hexBigInt: '10' }` came back as `16n` and save+reload
+ * silently rewrote their data (#1366).
+ *
+ * Renaming the tag would only move the collision, so the tag name is reserved
+ * instead: on the way out, any object key matching `$hexBigInt` with one or
+ * more leading `$` gains one more `$`; on the way in, the reader takes one
+ * back. That is injective -- `$hexBigInt` -> `$$hexBigInt` -> `$$$hexBigInt` --
+ * so ordinary data and the tag can never occupy the same shape.
+ *
+ * Files written before this change are unaffected: a real `{ $hexBigInt: hex }`
+ * still reads as a BigInt, because escaped keys never produce that exact shape.
+ */
+const BIGINT_TAG = '$hexBigInt';
+const ESCAPED_TAG = /^\$(\$*)\$hexBigInt$/;
+
+function escapeBigIntTag(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const keys = Object.keys(value);
+  if (!keys.some((key) => key === BIGINT_TAG || ESCAPED_TAG.test(key))) return value;
+  const out = {};
+  for (const key of keys) {
+    const escaped = key === BIGINT_TAG || ESCAPED_TAG.test(key) ? `$${key}` : key;
+    Object.defineProperty(out, escaped, { value: value[key], enumerable: true, configurable: true, writable: true });
+  }
+  return out;
+}
+
+function unescapeBigIntTag(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const keys = Object.keys(value);
+  if (!keys.some((key) => ESCAPED_TAG.test(key))) return value;
+  const out = {};
+  for (const key of keys) {
+    const unescaped = ESCAPED_TAG.test(key) ? key.slice(1) : key;
+    Object.defineProperty(out, unescaped, { value: value[key], enumerable: true, configurable: true, writable: true });
+  }
+  return out;
+}
+
 export function serializeHexProject(project) {
   const normalized = validateHexProject(project);
-  const text = JSON.stringify(normalized, (_key, value) => typeof value === 'bigint' ? { $hexBigInt: value.toString(16) } : value, 2);
+  const text = JSON.stringify(normalized, (_key, value) => (
+    typeof value === 'bigint' ? { [BIGINT_TAG]: value.toString(16) } : escapeBigIntTag(value)
+  ), 2);
   assertProjectSize(encodedByteLength(text));
   return text;
 }
@@ -92,13 +136,14 @@ export function parseHexProject(input) {
   let raw;
   try {
     raw = JSON.parse(text, (_key, value) => {
-      if (value && typeof value === 'object' && Object.keys(value).length === 1 && typeof value.$hexBigInt === 'string') {
-        const encoded = value.$hexBigInt;
+      if (value && typeof value === 'object' && !Array.isArray(value)
+        && Object.keys(value).length === 1 && Object.hasOwn(value, BIGINT_TAG) && typeof value[BIGINT_TAG] === 'string') {
+        const encoded = value[BIGINT_TAG];
         if (!/^-?[0-9a-f]+$/i.test(encoded) || encoded === '-') throw new ProjectFormatError('invalid bigint encoding');
         const negative = encoded.startsWith('-'); const magnitude = negative ? encoded.slice(1) : encoded;
         const parsed = BigInt('0x' + magnitude); return negative ? -parsed : parsed;
       }
-      return value;
+      return unescapeBigIntTag(value);
     });
   } catch (error) {
     if (error instanceof ProjectFormatError) throw error;
