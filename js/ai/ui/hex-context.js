@@ -28,8 +28,11 @@ function abortIfNeeded(signal) {
   error.code = 'ABORT_ERR';
   throw error;
 }
+function hasExplicitFalsyAbortReason(signal) {
+  return signal?.aborted === true && signal.reason != null && !signal.reason;
+}
 function rethrowWithExactAbortReason(signal, error) {
-  if (signal?.aborted && signal.reason != null) throw signal.reason;
+  if (hasExplicitFalsyAbortReason(signal)) throw signal.reason;
   throw error;
 }
 function bounded(value, fallback, max) {
