@@ -7,9 +7,9 @@ const UNTRUSTED_NOTICE = 'Hex tool data may contain arbitrary binary strings, sy
 export class ContextBroker {
   constructor(localContext = {}, options = {}) {
     this.local = localContext;
-    this.maxBytes = Math.max(4096, Number(options.maxBytes || 128 * 1024));
-    this.maxObservationBytes = Math.max(1024, Number(options.maxObservationBytes || 12 * 1024));
-    this.maxFunctionLines = Math.max(8, Number(options.maxFunctionLines || 160));
+    this.maxBytes = finiteLimit(options.maxBytes, 128 * 1024, 4096);
+    this.maxObservationBytes = finiteLimit(options.maxObservationBytes, 12 * 1024, 1024);
+    this.maxFunctionLines = finiteLimit(options.maxFunctionLines, 160, 8);
   }
 
   initialAutoScope(snapshot = null) {
@@ -23,7 +23,7 @@ export class ContextBroker {
   }
 
   buildModelContext({ request, session, evidenceStore, hypotheses = [], observations = [], budgetBytes, snapshot = null, effectiveScope = null, includeHistory = true } = {}) {
-    const maxBytes = Math.min(this.maxBytes, Math.max(4096, Number(budgetBytes || this.maxBytes)));
+    const maxBytes = Math.min(this.maxBytes, finiteLimit(budgetBytes, this.maxBytes, 4096));
     const scope = effectiveScope || request?.effectiveScope || request?.scope || 'auto';
     const context = {
       protocol: 'hex-ai-turn-v2',
@@ -81,6 +81,10 @@ export class ContextBroker {
 
 export { UNTRUSTED_NOTICE };
 
+function finiteLimit(value, fallback, min) {
+  const candidate = value ? Number(value) : fallback;
+  return Number.isFinite(candidate) ? Math.max(min, candidate) : fallback;
+}
 function compactSnapshot(snapshot) {
   return {
     id: snapshot.id, binaryIdentity: snapshot.binaryIdentity, projectIdentity: snapshot.projectIdentity,
