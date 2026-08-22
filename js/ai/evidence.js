@@ -1,17 +1,9 @@
 import { EVIDENCE_STATUSES } from './schema.js';
 import { addressText, jsonSafe } from './validation.js';
 import { evidenceStoreToCanonicalGraph } from '../core/evidence/compat.js';
+import { stableDigest } from '../core/identity/index.js';
 
 const DETERMINISTIC_VERIFICATION = Symbol('deterministic-verification');
-
-function hashText(text) {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, '0');
-}
 
 const SEMANTIC_SOURCE_KEYS = Object.freeze([
   'id', 'kind', 'status', 'address', 'addr', 'functionAddress', 'function', 'row', 'instructionId',
@@ -150,7 +142,9 @@ export class EvidenceStore {
         });
         sourceRef = { detailRef: stored.id, path: '$', bindingKey: stored.binding.key };
       } else {
-        const localId = `evsrc_${hashText(JSON.stringify(jsonSafe([input.sourceTool || 'unknown', input.sourceId || null, Date.now(), this.sourcePayloads.size])) )}`;
+        // Same reasoning as the record id below: this is a Map key, so a 32-bit
+        // collision would overwrite a stored payload rather than add one.
+        const localId = `evsrc_${stableDigest([input.sourceTool || 'unknown', input.sourceId || null, Date.now(), this.sourcePayloads.size]).slice(0, 32)}`;
         this.sourcePayloads.set(localId, input.sourceData);
         sourceRef = { evidenceSourceId: localId, path: '$' };
       }
@@ -160,7 +154,13 @@ export class EvidenceStore {
       input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address || null,
       input.functionAddress || null, input.kind || 'observation', input.title || '',
     ]));
-    const id = String(input.id || `ev_${hashText(identity)}`);
+    // The automatic id is a permanent record key: proposals, verification and
+    // navigation all resolve evidence through it, and `add()` merges into an
+    // existing key. A 32-bit hash is not enough to carry that — distinct
+    // identities collided in practice (#1302), silently folding the second
+    // record into the first and losing evidence. This is the same 128-bit
+    // digest the symbolic evidence graph already derives its ids from.
+    const id = String(input.id || `ev_${stableDigest(identity).slice(0, 32)}`);
     const record = {
       id,
       kind: String(input.kind || 'observation'),
