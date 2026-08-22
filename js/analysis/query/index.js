@@ -6,4 +6,4 @@ export {
 } from "./snapshot.js";
 
 export { AnalysisQueryAPI } from "./api.js";
-export { createAppAnalysisQueryAdapter } from "./app-adapter.js";
+export { createAppAnalysisQueryAdapter } from "./product-adapter.js";
