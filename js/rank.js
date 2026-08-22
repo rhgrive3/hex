@@ -62,6 +62,8 @@ function fairPrefix(values, max) {
 export function rankCandidates({ goal, strings, program, symbols, region, limit = 40, vendors = null }) {
   const notes = [], byAddr = new Map();
   if (!goal) return { candidates: [], matchedStrings: [], notes: ['no-goal'] };
+  const numericLimit = Number(limit);
+  const resultLimit = Number.isFinite(numericLimit) && numericLimit > 0 ? Math.floor(numericLimit) : 0;
   const hasProgram = !!(program && program.callCount + program.refCount > 0);
   if (!hasProgram) notes.push('no-program-index');
 
@@ -210,7 +212,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   }
   out.sort((a, b) => b.score - a.score || (a.addr < b.addr ? -1 : 1));
   return {
-    candidates: out.slice(0, limit), matchedStrings, notes, total: out.length,
+    candidates: out.slice(0, resultLimit), matchedStrings, notes, total: out.length,
     matchedStringsComplete: selectedStrings.complete,
   };
 }
