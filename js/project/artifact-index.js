@@ -47,8 +47,8 @@ export function createArtifactRef(input = {}) {
 export function isArtifactRef(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value)
     && value.version === PROJECT_ARTIFACT_REF_VERSION
-    && typeof value.scope === 'string' && value.scope.length > 0
-    && typeof value.kind === 'string' && value.kind.length > 0
+    && typeof value.scope === 'string' && value.scope.trim().length > 0
+    && typeof value.kind === 'string' && value.kind.trim().length > 0
     && typeof value.artifactId === 'string' && value.artifactId.startsWith('artifact_')
     && !Object.hasOwn(value, 'payload') && !Object.hasOwn(value, 'record');
 }
