@@ -11,6 +11,7 @@ const product = fs.readFileSync(path.join(ROOT, 'js/ui/product.js'), 'utf8');
 const ux = fs.readFileSync(path.join(ROOT, 'js/ux.js'), 'utf8');
 const secondary = fs.readFileSync(path.join(ROOT, 'js/ui/secondary.js'), 'utf8');
 const navigation = fs.readFileSync(path.join(ROOT, 'js/ui/panels/navigation.js'), 'utf8');
+const backend = fs.readFileSync(path.join(ROOT, 'js/backend.js'), 'utf8');
 
 assert.equal(product.includes('triggerLegacyInvestigation'), false, 'canonical investigate must not fake legacy sheet input');
 assert.equal(product.includes('HP・体力') && product.includes('ダメージ計算') && product.includes('所持金・コイン'), true, 'canonical investigate must expose beginner goal presets');
@@ -30,6 +31,8 @@ assert.equal(product.includes('out.length < 1000'), false, 'Explorer must not re
 assert.equal(product.includes('functionList(app.codeRegion(), 600)'), false, 'Explorer must not retain the old 600 function cap');
 assert.equal(navigation.includes('if (running) app.backend.cancelSearch(running)'), true, 'closing search must cancel only the request owned by that sheet');
 assert.equal(navigation.includes('err?.name === "AbortError" || err?.code === "ABORT_ERR"'), true, 'expected search cancellation must not surface as a failure dialog');
+assert.equal(backend.includes('cancelSearch(request) {\n    if (request == null) return false;\n    return this.cancel(request);\n  }'), true,
+  'unowned legacy sheet cleanup must never fall back to cancelling the backend global last request');
 
 // VirtualList supports lazy large indexes without pre-materializing every item.
 const source = { length: 293794, itemAt(index) { return { index }; } };
