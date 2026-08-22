@@ -89,6 +89,33 @@ assert.equal(channel.receive(channelChild).status, 'accepted-with-pending-depend
 assert.equal(channel.receive(channelParent).status, 'applied');
 assert.ok(channelLog.appliedOperationIds().includes('channel:child'), 'public channel receive must use queued causal delivery');
 
+// A tombstone-protected operation already has all causal parents, but it cannot
+// become valid until an explicit resurrection occurs. It must remain pending
+// without making the drain loop spin or duplicating unresolved diagnostics.
+const tombstoneLog = log();
+const tombstoneGate = gate();
+assert.equal(tombstoneLog.applyOperation({
+  operationId: 'op:tombstone', projectIdentity: 'project:1', binaryIdentity: 'binary:1',
+  targetEntityId: 'fn:tomb', factKind: 'name', action: 'remove', causalParents: [],
+  provenance: { source: 'local' },
+}).status, 'applied');
+const blocked = envelope({
+  messageId: 'msg:tombstone-blocked', sequence: 1,
+  operations: [{ operationId: 'op:tombstone-blocked', targetEntityId: 'fn:tomb', factKind: 'name', action: 'set', payload: 'stale', causalParents: ['op:tombstone'] }],
+});
+const blockedResult = applyRemoteEnvelopeQueued(tombstoneLog, tombstoneGate, blocked);
+assert.equal(blockedResult.status, 'accepted-with-pending-dependencies');
+assert.deepEqual(blockedResult.unresolvedOperationIds, ['op:tombstone-blocked']);
+assert.equal(tombstoneLog.snapshot().unresolved.filter((item) => item.operationId === 'op:tombstone-blocked').length, 1);
+const unrelated = envelope({
+  messageId: 'msg:after-tombstone', sequence: 2,
+  operations: [{ operationId: 'op:after-tombstone', targetEntityId: 'fn:other', factKind: 'type', action: 'set', payload: 'int' }],
+});
+const afterBlocked = applyRemoteEnvelopeQueued(tombstoneLog, tombstoneGate, unrelated);
+assert.equal(afterBlocked.status, 'accepted-with-pending-dependencies');
+assert.deepEqual(afterBlocked.unresolvedOperationIds, ['op:tombstone-blocked']);
+assert.equal(tombstoneLog.snapshot().unresolved.filter((item) => item.operationId === 'op:tombstone-blocked').length, 1, 'unrelated envelopes must not retry and duplicate permanently blocked operations');
+
 const bigIntEnvelope = envelope({ messageId: 'msg:bigint', sequence: 1, operations: [{ targetEntityId: 'fn:3', factKind: 'type', action: 'set', payload: { value: 2n ** 63n } }] });
 assert.doesNotThrow(() => gate().validate(bigIntEnvelope));
 
