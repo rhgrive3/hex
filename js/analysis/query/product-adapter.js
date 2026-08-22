@@ -92,6 +92,18 @@ async function canonicalIdentity(app, options = {}) {
   };
 }
 
+async function ensureFunctionDiscovery(app, options = {}) {
+  abortIfNeeded(options.signal);
+  if (typeof app?.ensureFunctions !== 'function') return;
+  const symbols = app?.symbols ?? null;
+  if (symbols?.functionStartsComplete === true || symbols?.functionDiscovery?.complete === true) return;
+  let region = null;
+  try { region = typeof app?.codeRegion === 'function' ? app.codeRegion() : null; } catch { /* use current region */ }
+  region ??= storeValue(app, 'currentRegion');
+  await app.ensureFunctions(region ?? null, options.onProgress);
+  abortIfNeeded(options.signal);
+}
+
 function settleUiRoute(app) {
   const routed = app?.analyzeFunctionAt;
   if (typeof routed !== 'function' || routed[SAFE_ROUTE]) return;
@@ -116,5 +128,9 @@ export function createAppAnalysisQueryAdapter(app) {
   return {
     ...base,
     currentIdentity: (options = {}) => canonicalIdentity(app, options),
+    async functions(snapshot, query = {}, page = {}, options = {}) {
+      await ensureFunctionDiscovery(app, options);
+      return base.functions(snapshot, query, page, options);
+    },
   };
 }
