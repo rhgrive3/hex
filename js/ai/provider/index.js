@@ -39,7 +39,7 @@ export class WorkerAIProvider extends AIProvider {
     if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
     if (typeof this.fetchImpl !== 'function') { this.capabilitiesPrepared = true; return this.getCapabilities(); }
     const controller = new AbortController();
-    const onAbort = () => controller.abort(options.signal?.reason || 'cancelled');
+    const onAbort = () => controller.abort(options.signal?.reason ?? 'cancelled');
     const timeout = setTimeout(() => controller.abort('timeout'), Math.max(1, Math.min(Number(options.timeoutMs) || 5000, 5000)));
     if (options.signal) { options.signal.addEventListener('abort', onAbort, { once: true }); if (options.signal.aborted) onAbort(); }
     this.controllers.add(controller);
@@ -69,7 +69,7 @@ export class WorkerAIProvider extends AIProvider {
   async nextTurn(request, options = {}) {
     if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
     const controller = new AbortController();
-    const onAbort = () => controller.abort(options.signal?.reason || 'cancelled');
+    const onAbort = () => controller.abort(options.signal?.reason ?? 'cancelled');
     if (options.signal) { options.signal.addEventListener('abort', onAbort, { once: true }); if (options.signal.aborted) onAbort(); }
     this.controllers.add(controller);
     try {

@@ -191,7 +191,7 @@ export async function runAgent(config) {
       const remainingMs = Math.max(1, budget.timeoutMs - (Date.now() - started));
       const controller = new AbortController();
       const external = cfg.signal;
-      const abort = () => controller.abort(external?.reason || 'cancelled');
+      const abort = () => controller.abort(external?.reason ?? 'cancelled');
       if (external?.aborted) abort(); else external?.addEventListener?.('abort', abort, {once:true});
       let timer;
       try {

@@ -468,7 +468,7 @@ export class Backend {
     assertCurrent();
     const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
     assertCurrent();
-    if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
+    if (options.signal?.aborted) throw options.signal.reason ?? new DOMException('Aborted', 'AbortError');
     if (!this.platformInfo?.normalizedDyldTruth) {
       return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || 'normalized-macho-analysis-unavailable');
     }
@@ -477,7 +477,7 @@ export class Backend {
       assertCurrent();
       return mergeMachOAnalysisResults(enriched, normalized);
     } catch (error) {
-      if (error?.name === 'AbortError' || options.signal?.aborted) throw options.signal?.reason || error;
+      if (error?.name === 'AbortError' || options.signal?.aborted) throw options.signal?.reason ?? error;
       if (error?.stale) throw error;
       assertCurrent();
       return markMachOSymbolTruthIncomplete(enriched, error?.message || 'normalized-macho-analysis-failed');
@@ -655,7 +655,7 @@ export class Backend {
 
   async _analyzeArtifactPublic(sliceIndex, options = {}) {
     const binaryId = options.binaryId ?? await this.ensureBinaryId({ signal:options.signal, onProgress:options.onIdentityProgress });
-    if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
+    if (options.signal?.aborted) throw options.signal.reason ?? new DOMException('Aborted', 'AbortError');
     return this._analyzeArtifact(sliceIndex, {
       ...options,
       binaryId,

@@ -182,7 +182,7 @@ function createExecutionSignal(parentSignal, timeoutMs) {
   let timer = null;
   let onParentAbort = null;
   if (parentSignal) {
-    onParentAbort = () => controller.abort(parentSignal.reason || "cancelled");
+    onParentAbort = () => controller.abort(parentSignal.reason ?? "cancelled");
     parentSignal.addEventListener("abort", onParentAbort, { once: true });
     if (parentSignal.aborted) onParentAbort();
   }

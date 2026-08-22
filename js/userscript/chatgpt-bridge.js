@@ -31,7 +31,7 @@ export function installChatGPTWebBridge(options = {}) {
       if (active) throw new ChatGPTBridgeError('already-active', 'ChatGPT Web is already handling another Hex turn.', null, 'bridge');
       const controller = new AbortController();
       const externalSignal = requestOptions.signal;
-      const onExternalAbort = () => controller.abort(externalSignal?.reason || 'cancelled');
+      const onExternalAbort = () => controller.abort(externalSignal?.reason ?? 'cancelled');
       externalSignal?.addEventListener?.('abort', onExternalAbort, { once: true });
       if (externalSignal?.aborted) onExternalAbort();
       const sessionKey = String(requestOptions.sessionKey || '').trim();

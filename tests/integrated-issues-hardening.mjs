@@ -649,6 +649,7 @@ await import('./arm64-explainer-semantics.mjs');
 await import('./ai-identity-collisions.mjs');
 await import('./ai-boundary-hardening.mjs');
 await import('./analyze-model-row-bound.mjs');
+await import('./abort-reason-preservation.mjs');
 
 console.log('\nAll integrated issue tests PASS!');
 
