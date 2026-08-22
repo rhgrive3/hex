@@ -6,9 +6,12 @@ export const STRING_SCAN_BUDGET = Object.freeze({
 
 export class StringCollectionBudget {
   constructor(config = STRING_SCAN_BUDGET) {
-    this.inputRemaining = Math.max(0, Number(config.inputBytes) || 0);
-    this.resultLimit = Math.max(1, Number(config.resultLimit) || 1);
-    this.heapLimit = Math.max(1, Number(config.estimatedHeapBytes) || 1);
+    const inputBytes = Number(config.inputBytes);
+    const resultLimit = Number(config.resultLimit);
+    const estimatedHeapBytes = Number(config.estimatedHeapBytes);
+    this.inputRemaining = Number.isFinite(inputBytes) ? Math.max(0, inputBytes) : 0;
+    this.resultLimit = Number.isFinite(resultLimit) ? Math.max(1, Math.floor(resultLimit)) : 1;
+    this.heapLimit = Number.isFinite(estimatedHeapBytes) ? Math.max(1, estimatedHeapBytes) : 1;
     this.results = 0;
     this.estimatedHeap = 0;
     this.truncationReason = null;
