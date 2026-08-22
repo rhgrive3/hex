@@ -79,7 +79,7 @@ export class EmulatorProvider {
       const controller = session.controller();
       let externalAbort = null;
       if (runOptions.signal) {
-        externalAbort = () => controller.abort(runOptions.signal.reason || 'cancelled');
+        externalAbort = () => controller.abort(runOptions.signal.reason ?? 'cancelled');
         if (runOptions.signal.aborted) externalAbort();
         else runOptions.signal.addEventListener('abort', externalAbort, { once: true });
       }

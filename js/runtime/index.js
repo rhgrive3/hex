@@ -8,9 +8,9 @@ function operationController(session, externalSignal) {
   const controller = session.controller();
   let listener = null;
   if (externalSignal) {
-    if (externalSignal.aborted) controller.abort(externalSignal.reason || 'cancelled');
+    if (externalSignal.aborted) controller.abort(externalSignal.reason ?? 'cancelled');
     else {
-      listener = () => controller.abort(externalSignal.reason || 'cancelled');
+      listener = () => controller.abort(externalSignal.reason ?? 'cancelled');
       externalSignal.addEventListener('abort', listener, { once:true });
     }
   }

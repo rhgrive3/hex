@@ -97,7 +97,7 @@ function analyzeArgsWithSignal(args, signal) {
 function linkParentSignal(controller, parentSignal) {
   if (!parentSignal) return () => {};
   const abort = () => {
-    if (!controller.signal.aborted) controller.abort(parentSignal.reason || 'cancelled');
+    if (!controller.signal.aborted) controller.abort(parentSignal.reason ?? 'cancelled');
   };
   parentSignal.addEventListener('abort', abort, { once: true });
   if (parentSignal.aborted) abort();
