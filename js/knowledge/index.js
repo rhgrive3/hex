@@ -12,7 +12,11 @@ function clone(value) {
   if (value == null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(clone);
   if (value instanceof Uint8Array) return value.slice();
-  const out = {}; for (const [key, item] of Object.entries(value)) out[key] = clone(item); return out;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(out, key, { value: clone(item), enumerable:true, writable:true, configurable:true });
+  }
+  return out;
 }
 function searchTermsOf(input = {}) {
   const values = [...(input.names || []), ...(input.roles || []), ...(input.semanticLabels || []), ...(input.comments || [])];
@@ -38,7 +42,8 @@ export class KnowledgeDB {
     this.memory = options.memory || (!this.indexedDB ? new Map() : null);
     this.negativeMemory = options.negativeMemory || (!this.indexedDB ? new Map() : null);
     this._db = null;
-    this.maxCandidates = Math.max(50, Number(options.maxCandidates || 1000));
+    const maxCandidates = Number(options.maxCandidates || 1000);
+    this.maxCandidates = Number.isFinite(maxCandidates) ? Math.max(50, maxCandidates) : 1000;
   }
 
   async remember(input = {}) {
