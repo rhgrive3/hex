@@ -91,5 +91,8 @@ assert.equal(passiveResult.completeness, 'partial',
   'a host without a discovery producer must not fabricate a complete empty function inventory');
 assert.equal(passiveResult.status?.reason, 'function-discovery-incomplete');
 assert.equal(passiveResult.page?.total, 0);
+assert.equal(passiveResult.page?.returned, 0,
+  'incomplete empty discovery must preserve an explicit zero-row page instead of inventing rows');
+assert.deepEqual(passiveResult.value, []);
 
 console.log('analysis query function bootstrap: PASS');
